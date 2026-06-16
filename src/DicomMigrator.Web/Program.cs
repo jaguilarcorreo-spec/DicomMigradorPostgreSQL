@@ -49,8 +49,25 @@ try
     // PostgreSQL es el único motor soportado. El servidor arbitra la concurrencia
     // (MVCC), por lo que no hay PRAGMAs ni interceptor de conexión, y las claves
     // foráneas están siempre activas.
+    //
+    // La cadena de conexión se resuelve en este orden de prioridad (gana el último):
+    //   1) appsettings.json            → SIN contraseña (apto para el repo público)
+    //   2) appsettings.Development.json → cadena real para desarrollo local (git-ignored)
+    //   3) Variable de entorno          → para producción, sin tocar ficheros:
+    //        ConnectionStrings__Default=Host=...;Username=...;Password=...
+    //      (el doble guion bajo "__" es el separador de secciones en .NET)
     var connStr = builder.Configuration.GetConnectionString("Default")
         ?? "Host=localhost;Port=5432;Database=dicommigrator;Username=postgres;Password=postgres";
+
+    // Aviso temprano y claro si la contraseña quedó vacía (p. ej. se desplegó solo con
+    // el appsettings.json del repo sin definir el secreto). Evita un 28P01 críptico.
+    if (System.Text.RegularExpressions.Regex.IsMatch(connStr, @"Password=\s*(;|$)",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase))
+    {
+        Console.WriteLine("[AVISO] La cadena de conexión no tiene contraseña. Defínela en " +
+            "appsettings.Development.json (local) o en la variable de entorno " +
+            "ConnectionStrings__Default (producción).");
+    }
 
     builder.Services.AddDbContextFactory<AppDbContext>(opt => opt
         .UseNpgsql(connStr)

@@ -38,11 +38,35 @@ Para desarrollo y pruebas puedes levantar un PostgreSQL en segundos con Docker:
 
 ```bash
 docker run --name dicommigrador-pg -e POSTGRES_PASSWORD=postgres \
-  -e POSTGRES_DB=dicommigrator -p 5432:5432 -d postgres:16
+  -e POSTGRES_DB=dicommigrator -p 5432:5432 -d postgres:18
 ```
 
-> No subas credenciales reales al repositorio. Usa `appsettings.Development.json`
-> (ignorado por git), variables de entorno o `dotnet user-secrets`.
+### Credenciales (no se suben al repositorio)
+
+`appsettings.json` se versiona **sin contraseña**. La cadena real se resuelve por
+prioridad (gana la última fuente que la defina):
+
+1. `appsettings.json` — placeholder sin contraseña (en el repo).
+2. `appsettings.Development.json` — tu cadena real para desarrollo local. Está en
+   `.gitignore`, así que no se sube. Ejemplo:
+
+   ```json
+   {
+     "ConnectionStrings": {
+       "Default": "Host=localhost;Port=5432;Database=dicommigrator;Username=postgres;Password=TU_PASSWORD"
+     }
+   }
+   ```
+
+3. Variable de entorno — para producción, sin tocar ficheros (el `__` separa secciones):
+
+   ```bash
+   set ConnectionStrings__Default=Host=localhost;Port=5432;Database=dicommigrator;Username=postgres;Password=TU_PASSWORD
+   ```
+
+> Para generar migraciones con `dotnet ef`, el `DesignTimeDbContextFactory` usa la
+> variable `DICOMMIGRATOR_DESIGN_CONNSTR` si está definida; si no, una cadena por
+> defecto. No subas contraseñas reales en ningún fichero versionado.
 
 ## Ejecución
 
