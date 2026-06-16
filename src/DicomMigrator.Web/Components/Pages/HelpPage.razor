@@ -1,0 +1,649 @@
+@page "/ayuda"
+@rendermode InteractiveServer
+@inject ILocalConfigRepository ConfigRepo
+
+<PageTitle>Ayuda — DICOM Migrador</PageTitle>
+
+<div class="page-header">
+    <div>
+        <h1 class="page-title">Ayuda — DICOM Migrador</h1>
+        <p class="page-sub">fo-dicom 5.2 · .NET 9 · Blazor Server · SQLite · Serilog</p>
+    </div>
+</div>
+
+@* ── Tab bar ── *@
+<div class="tab-bar" style="margin-bottom:20px">
+    @foreach (var t in _tabs)
+    {
+        <button class="@(_tab == t.Id ? "tab active" : "tab")" @onclick="@(() => _tab = t.Id)">
+            @t.Label
+        </button>
+    }
+</div>
+
+@* ════════════════════════════════════════
+   VISIÓN GENERAL
+   ════════════════════════════════════════ *@
+@if (_tab == "overview")
+{
+    <HelpSection Title="Flujo general de trabajo" Color="var(--accent)">
+        <p style="margin:0 0 14px 0;color:var(--text-dim);font-size:13px;line-height:1.6">
+            DICOM Migrador combina dos motores complementarios: el <strong>Discovery Engine</strong> descubre y cataloga el inventario del PACS origen,
+            y el motor de <strong>Migración</strong> transfiere los estudios al destino con verificación y reintentos automáticos.
+        </p>
+        @foreach (var (step, i) in _overviewSteps.Select((s,i) => (s,i)))
+        {
+            <HelpStep N="@step.N" Title="@step.Title" Color="@step.Color">@step.Desc</HelpStep>
+            @if (i < _overviewSteps.Length - 1)
+            {
+                <div style="border-left:2px dashed var(--border);height:14px;margin-left:18px"></div>
+            }
+        }
+    </HelpSection>
+
+    <HelpSection Title="Pantallas principales" Color="var(--purple)">
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px">
+            @foreach (var s in _screens)
+            {
+                <div style="padding:12px;background:var(--bg);border:1px solid var(--border);border-radius:8px">
+                    <div style="font-weight:600;font-size:13px;color:@s.Color;margin-bottom:6px">@s.Icon @s.Name</div>
+                    <div style="font-size:11.5px;color:var(--text-dim);line-height:1.5">@s.Desc</div>
+                </div>
+            }
+        </div>
+    </HelpSection>
+}
+
+@* ════════════════════════════════════════
+   DISCOVERY ENGINE
+   ════════════════════════════════════════ *@
+@if (_tab == "discovery")
+{
+    <HelpSection Title="¿Qué es el Discovery Engine?" Color="var(--accent)">
+        <p style="margin:0;color:var(--text-dim);font-size:13px;line-height:1.6">
+            El Discovery Engine cataloga el inventario completo de un PACS de forma fiable, incluso cuando contiene millones de estudios.
+            Resuelve el problema clásico del <strong>truncamiento silencioso</strong>: muchos PACS limitan el número máximo de resultados que devuelven por consulta
+            y cortan la respuesta sin avisar. El motor detecta ese límite y subdivide automáticamente las consultas hasta cubrir todo el inventario sin pérdidas.
+        </p>
+    </HelpSection>
+
+    <HelpSection Title="Particionado adaptativo en 3 niveles" Color="var(--purple)">
+        <p style="margin:0 0 14px 0;color:var(--text-dim);font-size:13px;line-height:1.6">
+            El motor empieza con una partición por día y baja de granularidad sólo cuando detecta posible truncamiento.
+            Si el número de resultados devueltos es <strong>igual o mayor</strong> que el límite configurado, asume que el PACS truncó la respuesta y subdivide.
+        </p>
+        @foreach (var (step, i) in _discoverySteps.Select((s,i) => (s,i)))
+        {
+            <HelpStep N="@step.N" Title="@step.Title" Color="@step.Color">@step.Desc</HelpStep>
+            @if (i < _discoverySteps.Length - 1)
+            {
+                <div style="border-left:2px dashed var(--border);height:14px;margin-left:18px"></div>
+            }
+        }
+    </HelpSection>
+
+    <HelpSection Title="Límite de resultados del PACS" Color="var(--yellow)">
+        <p style="margin:0 0 12px 0;color:var(--text-dim);font-size:13px;line-height:1.6">
+            Es el umbral que dispara la subdivisión. Debes configurarlo <strong>por debajo</strong> del límite real del PACS para tener margen.
+        </p>
+        <table class="data-table" style="width:100%;font-size:12px">
+            <thead>
+                <tr><th>Valor</th><th>Efecto</th><th>Cuándo usarlo</th></tr>
+            </thead>
+            <tbody>
+                <tr><td class="mono">500-800</td><td>Estándar conservador</td><td>PACS típicos con tope 1000</td></tr>
+                <tr><td class="mono">100-300</td><td>Subdivisión más agresiva</td><td>PACS pequeños o tope desconocido</td></tr>
+                <tr><td class="mono">50</td><td>Mucha subdivisión</td><td>Diagnóstico o tests del particionado</td></tr>
+                <tr><td class="mono">10000+</td><td>Prácticamente desactiva la subdivisión</td><td><span style="color:var(--red)">Riesgo de inventario incompleto</span></td></tr>
+            </tbody>
+        </table>
+    </HelpSection>
+
+    <HelpSection Title="Estados de las particiones" Color="var(--green)">
+        <table class="data-table" style="width:100%;font-size:12px">
+            <thead>
+                <tr><th>Estado</th><th>Significado</th></tr>
+            </thead>
+            <tbody>
+                <tr><td><span class="status-badge s-Pending">Pending</span></td><td>Esperando ser procesada por un worker.</td></tr>
+                <tr><td><span class="status-badge s-Running">Running</span></td><td>Worker realizando la consulta al PACS.</td></tr>
+                <tr><td><span class="status-badge s-Completed">Completed</span></td><td>Procesada con éxito, sin truncamiento.</td></tr>
+                <tr><td><span class="status-badge s-Subdivided">Subdivided</span></td><td>Detectado posible truncamiento — se generaron particiones hijas.</td></tr>
+                <tr><td><span class="status-badge s-PossiblyTruncated">PossiblyTruncated</span></td><td>Llegó al nivel máximo de subdivisión y todavía rozó el límite. Datos posiblemente incompletos. <em>Estado terminal — no se reintenta.</em></td></tr>
+                <tr><td><span class="status-badge s-Failed">Failed</span></td><td>Error de comunicación o superó 5 reintentos.</td></tr>
+            </tbody>
+        </table>
+    </HelpSection>
+
+    <HelpSection Title="Inventario y migración derivada" Color="#3B82F6">
+        <p style="margin:0;color:var(--text-dim);font-size:13px;line-height:1.6">
+            Los estudios descubiertos se almacenan en una tabla de inventario con upsert por <code>StudyInstanceUID</code> — un mismo estudio nunca se duplica.
+            Desde la pantalla de detalle del job puedes <strong>exportar el inventario</strong> a CSV o <strong>crear una migración desde el inventario</strong>
+            que usa esos estudios como origen sin volver a consultar al PACS, ganando tiempo y reduciendo carga sobre el origen.
+        </p>
+    </HelpSection>
+
+    <HelpSection Title="Modo CSV — importación de fichero" Color="var(--green)">
+        <p style="margin:0 0 12px 0;color:var(--text-dim);font-size:13px;line-height:1.6">
+            Selecciona <strong>CSV (importar fichero)</strong> como método al crear un job. El motor no consulta al PACS — lee el fichero
+            e inserta los estudios directamente en el inventario. El job pasa a <code>Completed</code> inmediatamente tras el import, sin particiones ni workers.
+        </p>
+        <table class="data-table" style="width:100%;font-size:12px;margin-bottom:12px">
+            <thead><tr><th>Parámetro</th><th>Valor</th></tr></thead>
+            <tbody>
+                <tr><td>Tamaño máximo del fichero</td><td class="mono" style="color:var(--accent)">50 MB</td></tr>
+                <tr><td>Líneas máximas</td><td class="mono" style="color:var(--accent)">500.000</td></tr>
+                <tr><td>Separador admitido</td><td class="mono">Coma ( , ) o punto y coma ( ; ) — autodetectado</td></tr>
+                <tr><td>Codificación</td><td class="mono">UTF-8 (con o sin BOM)</td></tr>
+            </tbody>
+        </table>
+        <p style="margin:0 0 8px 0;color:var(--text-dim);font-size:13px"><strong>Columnas del CSV:</strong></p>
+        <table class="data-table" style="width:100%;font-size:12px">
+            <thead><tr><th>Columna</th><th>Obligatoria</th><th>Aliases admitidos</th></tr></thead>
+            <tbody>
+                <tr><td><code>StudyInstanceUID</code></td><td style="color:var(--red)">Sí</td><td class="mono text-dim">StudyInstanceUID, Study_Instance_UID, UID</td></tr>
+                <tr><td><code>PatientID</code></td><td style="color:var(--text-muted)">No</td><td class="mono text-dim">PatientID, Patient_ID, MRN</td></tr>
+                <tr><td><code>PatientName</code></td><td style="color:var(--text-muted)">No</td><td class="mono text-dim">PatientName, Patient_Name, Name</td></tr>
+                <tr><td><code>AccessionNumber</code></td><td style="color:var(--text-muted)">No</td><td class="mono text-dim">AccessionNumber, Accession_Number, Accession</td></tr>
+                <tr><td><code>StudyDate</code></td><td style="color:var(--text-muted)">No</td><td class="mono text-dim">StudyDate, Study_Date, Date</td></tr>
+                <tr><td><code>StudyTime</code></td><td style="color:var(--text-muted)">No</td><td class="mono text-dim">StudyTime, Study_Time, Time</td></tr>
+                <tr><td><code>Modality</code></td><td style="color:var(--text-muted)">No</td><td class="mono text-dim">Modalities, Modality, Mod</td></tr>
+                <tr><td><code>StudyDescription</code></td><td style="color:var(--text-muted)">No</td><td class="mono text-dim">StudyDescription, Study_Description, Description, Desc</td></tr>
+            </tbody>
+        </table>
+        <p style="margin:10px 0 0 0;color:var(--text-muted);font-size:11px">
+            Los UIDs duplicados dentro del mismo fichero se omiten (solo se inserta el primero).
+            Un estudio ya existente en el inventario se actualiza, no se duplica.
+            Las columnas opcionales ausentes se importan como vacías.
+        </p>
+    </HelpSection>
+
+    <HelpSection Title="Acciones sobre un job" Color="var(--orange)">
+        <table class="data-table" style="width:100%;font-size:12px">
+            <thead><tr><th>Acción</th><th>Descripción</th></tr></thead>
+            <tbody>
+                <tr><td><strong>▶ Iniciar / Reanudar</strong></td><td>Lanza los workers para procesar particiones pendientes.</td></tr>
+                <tr><td><strong>⏸ Pausar</strong></td><td>Detiene los workers. Las particiones en curso terminan limpiamente.</td></tr>
+                <tr><td><strong>✎ Editar</strong></td><td>Modifica nombre, descripción, rango de fechas, método, límite y workers. Si cambias el rango deberás reiniciar el descubrimiento.</td></tr>
+                <tr><td><strong>🧹 Limpiar</strong></td><td>Resetea todas las particiones a Pendiente y borra los estudios descubiertos. <strong>Mantiene la configuración.</strong> Bloqueado si el job está Running.</td></tr>
+                <tr><td><strong>🗑 Eliminar</strong></td><td>Borra el job y toda su información (particiones, estudios, peticiones). Doble confirmación. Bloqueado si el job está Running.</td></tr>
+            </tbody>
+        </table>
+    </HelpSection>
+}
+
+@* ════════════════════════════════════════
+   MIGRACIÓN
+   ════════════════════════════════════════ *@
+@if (_tab == "migration")
+{
+    <HelpSection Title="Flujo del motor de migración" Color="var(--accent)">
+        @foreach (var (step, i) in _migrationSteps.Select((s,i) => (s,i)))
+        {
+            <HelpStep N="@step.N" Title="@step.Title" Color="@step.Color">@step.Desc</HelpStep>
+            @if (i < _migrationSteps.Length - 1)
+            {
+                <div style="border-left:2px dashed var(--border);height:14px;margin-left:18px"></div>
+            }
+        }
+    </HelpSection>
+
+    <HelpSection Title="Multihilo y bloqueo atómico" Color="var(--purple)">
+        <p style="margin:0 0 10px 0;color:var(--text-dim);font-size:13px;line-height:1.6">
+            Cada migración se procesa con <code>N workers</code> en paralelo (configurable). El reparto de estudios usa un
+            <strong>lock atómico en SQLite</strong>: el primer worker que ejecuta el <code>UPDATE ... WHERE Status='Pending' AND LockedByWorker IS NULL</code> se lleva el estudio.
+            Imposible que dos workers procesen el mismo estudio.
+        </p>
+        <p style="margin:0;color:var(--text-dim);font-size:13px;line-height:1.6">
+            El SCP de C-STORE local escucha en el puerto configurado en <strong>Config. local SCU</strong>. Es <strong>compartido</strong> por todos los workers
+            — no se abre un SCP por worker, se desmultiplexa la asociación entrante por <code>StudyInstanceUID</code>.
+        </p>
+    </HelpSection>
+
+    <HelpSection Title="Dos procesos gobernados e independientes" Color="var(--green)">
+        <p style="margin:0 0 10px 0;color:var(--text-dim);font-size:13px;line-height:1.6">
+            Migración y verificación son <strong>dos procesos simétricos e independientes</strong>, cada uno con sus propios
+            controles (Iniciar/Reanudar, Pausar, Parar) y su propio estado. En todas las vistas verás <strong>dos barras separadas</strong>:
+        </p>
+        <ul style="margin:0;padding-left:20px;color:var(--text-dim);font-size:13px;line-height:1.8">
+            <li><span style="color:var(--accent);font-weight:600">Migración (cyan)</span> — porcentaje de estudios efectivamente transferidos al destino.</li>
+            <li><span style="color:var(--purple);font-weight:600">Verificación (púrpura)</span> — porcentaje de estudios cuya presencia en destino se ha confirmado mediante C-FIND/QIDO contra el destino.</li>
+        </ul>
+        <p style="margin:10px 0 0 0;color:var(--text-dim);font-size:13px;line-height:1.6">
+            La verificación puede correr a la vez que la migración o lanzarse después. Como vacía su cola de estudios
+            <em>Migrados</em> de forma autónoma, puede marcarse <code>Completed</code> y volver a relanzarse sola cuando la
+            migración produce nuevos migrados. Mientras eso ocurre, el panel muestra
+            <strong>«⏳ En espera · pendiente de migración»</strong> en lugar de <code>Completed</code>, para no confundir.
+        </p>
+    </HelpSection>
+
+    <HelpSection Title="Auto-pausa por errores de conexión y auto-reanudación" Color="var(--yellow)">
+        <p style="margin:0 0 10px 0;color:var(--text-dim);font-size:13px;line-height:1.6">
+            El sistema distingue entre un <strong>error de conexión transitorio</strong> (el PACS se cae o la red falla) y un
+            <strong>fallo lógico real</strong> del estudio. Un corte de conexión <strong>no consume reintentos</strong> ni manda el
+            estudio a Fallido: lo devuelve a su estado anterior (Pendiente o Migrado) y reintenta la conexión con backoff creciente.
+        </p>
+        <p style="margin:0 0 10px 0;color:var(--text-dim);font-size:13px;line-height:1.6">
+            Tras <strong>5 errores de conexión consecutivos</strong>, el proceso afectado se <strong>auto-pausa</strong> y lo señala
+            con un indicador amarillo («⏸ Auto-pausada · reintentando conexión…»). El servicio <strong>AutoResume</strong> sondea
+            periódicamente el PACS y, en cuanto vuelve a responder, <strong>reanuda solo</strong> el proceso sin intervención manual.
+        </p>
+        <p style="margin:0;color:var(--text-muted);font-size:11px">
+            El umbral (5) y el intervalo de sondeo se documentan en la pestaña <strong>📄 Config. por fichero</strong>
+            (el intervalo es ajustable; el umbral está fijado en código).
+        </p>
+    </HelpSection>
+
+    <HelpSection Title="Acciones sobre una migración" Color="var(--orange)">
+        <p style="margin:0 0 12px 0;color:var(--text-dim);font-size:13px;line-height:1.6">
+            Migración y verificación tienen <strong>cada una su propio juego de botones</strong> (Iniciar/Reanudar, Pausar, Parar),
+            que actúan solo sobre ese proceso.
+        </p>
+        <table class="data-table" style="width:100%;font-size:12px">
+            <thead><tr><th>Acción</th><th>Descripción</th></tr></thead>
+            <tbody>
+                <tr><td><strong>▶ Iniciar / Reanudar</strong></td><td>Lanza (o relanza) los N workers del proceso correspondiente. Al iniciar manualmente se limpia el indicador de auto-pausa.</td></tr>
+                <tr><td><strong>⏸ Pausar</strong></td><td>Los workers terminan su estudio actual y paran. El proceso queda en Paused y puede reanudarse.</td></tr>
+                <tr><td><strong>⏹ Parar</strong></td><td>Detiene el proceso por completo al terminar los hilos activos.</td></tr>
+                <tr><td><strong>↺ Reintentar fallidos de migración</strong></td><td>Marca los estudios en Failed como RetryPending para que vuelvan a la cola de migración.</td></tr>
+                <tr><td><strong>↺ Reintentar fallidos de verificación</strong></td><td>Devuelve los estudios en VerifyFailed a la cola de verificación.</td></tr>
+                <tr><td><strong>✎ Editar</strong></td><td>Modifica nombre, descripción, hilos, max. reintentos, delay de reintento, prioridad de modalidad y, si está en Draft o Paused, el orden por fecha.</td></tr>
+                <tr><td><strong>🗑 Eliminar todos los estudios</strong></td><td>Vacía la lista de estudios manteniendo la configuración. Doble confirmación.</td></tr>
+                <tr><td><strong>🗑 Eliminar migración</strong></td><td>Borra la migración y todos sus datos. Doble confirmación. Bloqueado si Running.</td></tr>
+            </tbody>
+        </table>
+    </HelpSection>
+
+    <HelpSection Title="Búsqueda y exportación de estudios" Color="#3B82F6">
+        <p style="margin:0 0 12px 0;color:var(--text-dim);font-size:13px;line-height:1.6">
+            La pestaña <strong>Estudios</strong> dispone de tres cajas de búsqueda independientes —
+            <strong>Study Instance UID</strong>, <strong>Patient ID</strong> y <strong>Accession Number</strong> —
+            más selectores de estado y modalidad. La búsqueda es parcial (coincidencia por substring) y
+            acumulativa: si rellenas varias cajas, se combinan con AND. Por ejemplo, Patient ID
+            <code>DUMMY001</code> + modalidad <code>CT</code> devuelve solo los CT de ese paciente.
+        </p>
+        <p style="margin:0;color:var(--text-dim);font-size:13px;line-height:1.6">
+            El botón <strong>⬇ CSV</strong> exporta exactamente los estudios que coinciden con los filtros
+            activos en ese momento. La descarga usa streaming por bloques, así que funciona igual con
+            10 estudios que con cientos de miles sin agotar memoria.
+        </p>
+    </HelpSection>
+}
+
+@* ════════════════════════════════════════
+   ESTADOS DEL ESTUDIO
+   ════════════════════════════════════════ *@
+@if (_tab == "states")
+{
+    <HelpSection Title="Ciclo de vida de un estudio" Color="var(--accent)">
+        <p style="margin:0 0 14px 0;color:var(--text-dim);font-size:13px;line-height:1.6">
+            Cada <code>MigrationStudy</code> avanza por una máquina de estados controlada por el worker y el servicio de verificación.
+        </p>
+        <table class="data-table" style="width:100%;font-size:12px">
+            <thead>
+                <tr><th>Status</th><th>Nombre</th><th>Significado</th></tr>
+            </thead>
+            <tbody>
+                @foreach (var s in _states)
+                {
+                    <tr>
+                        <td><span class="status-badge s-@s.Status">@s.Status</span></td>
+                        <td><strong>@s.Name</strong></td>
+                        <td>@s.Desc</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </HelpSection>
+
+    <HelpSection Title="Transiciones" Color="var(--purple)">
+        <ul style="margin:0;padding-left:20px;color:var(--text-dim);font-size:13px;line-height:1.8">
+            <li><code>Pending → Migrating</code>: un worker adquiere el lock.</li>
+            <li><code>Migrating → Migrated</code>: el C-MOVE termina con éxito.</li>
+            <li><code>Migrating → Failed</code>: el C-MOVE falla.</li>
+            <li><code>Failed → RetryPending</code>: el usuario pulsa "Reintentar fallidos" o se alcanza el delay automático.</li>
+            <li><code>RetryPending → Migrating</code>: un worker recoge el estudio. La fecha de migración se borra para reiniciar el contador de tiempo.</li>
+            <li><code>Migrated → VerificationPending → Verified</code>: lanzamiento de verificación, confirmación de presencia en destino.</li>
+            <li><code>VerificationPending → VerificationFailed</code>: el destino no devuelve el estudio o lo devuelve incompleto.</li>
+        </ul>
+    </HelpSection>
+}
+
+@* ════════════════════════════════════════
+   REINTENTOS Y ERRORES
+   ════════════════════════════════════════ *@
+@if (_tab == "retry")
+{
+    <HelpSection Title="Política de reintentos" Color="var(--orange)">
+        <p style="margin:0;color:var(--text-dim);font-size:13px;line-height:1.6">
+            Cada migración tiene un campo <code>MaxRetries</code> (por defecto 3). Cuando un C-MOVE falla, el estudio pasa a <code>Failed</code>
+            y se incrementa su contador <code>AttemptCount</code>. Si pulsas "Reintentar fallidos", todos los estudios <code>Failed</code> con
+            <code>AttemptCount &lt; MaxRetries</code> vuelven a <code>RetryPending</code>. Al recogerlos un worker, su estado vuelve a
+            <code>Migrating</code> y se borra la fecha previa de migración para que el cronómetro se reinicie.
+        </p>
+    </HelpSection>
+
+    <HelpSection Title="Errores típicos de C-MOVE en Orthanc/PACS" Color="var(--red)">
+        <table class="data-table" style="width:100%;font-size:12px">
+            <thead><tr><th>Código</th><th>Causa</th><th>Solución</th></tr></thead>
+            <tbody>
+                <tr><td class="mono">0xA801</td><td>Move Destination Unknown</td><td>Añadir el AET migrador en <code>DicomModalities</code> del PACS origen.</td></tr>
+                <tr><td class="mono">0xC000</td><td>Unable to process</td><td>Mismo motivo: el origen no conoce el destino del C-MOVE.</td></tr>
+                <tr><td class="mono">0x0110</td><td>Processing failure</td><td>El destino rechazó alguna instancia (compresión, SOP Class). Revisar logs del destino.</td></tr>
+                <tr><td class="mono">Timeout</td><td>El estudio es muy grande o la red lenta</td><td>Aumentar timeouts en la configuración del nodo.</td></tr>
+                <tr><td class="mono">401</td><td>QIDO/WADO sin autenticación</td><td>Configurar usuario:contraseña en el campo "Usuario : Contraseña" del nodo.</td></tr>
+                <tr><td class="mono">404</td><td>QIDO/WADO en ruta incorrecta</td><td>Verificar Base URL (ej. <code>/dicom-web</code> para Orthanc con plugin DICOMweb).</td></tr>
+            </tbody>
+        </table>
+    </HelpSection>
+}
+
+@* ════════════════════════════════════════
+   CONFIG. PACS
+   ════════════════════════════════════════ *@
+@if (_tab == "pacs")
+{
+    <HelpSection Title="Datos del SCU local que debes registrar en el PACS origen" Color="var(--accent)">
+        <p style="margin:0 0 12px 0;color:var(--text-dim);font-size:13px;line-height:1.6">
+            Para que el PACS origen pueda enviar estudios al migrador mediante C-MOVE, debes registrar el migrador como una "modalidad" o "destino conocido" en su configuración.
+        </p>
+        <table class="data-table" style="width:100%;font-size:12px">
+            <thead><tr><th>Parámetro</th><th>Valor actual</th></tr></thead>
+            <tbody>
+                <tr><td><strong>AET</strong> (Application Entity Title)</td><td class="mono">@_localAet</td></tr>
+                <tr><td><strong>Host / IP</strong></td><td class="mono">@_localHost</td></tr>
+                <tr><td><strong>Puerto C-STORE SCP</strong></td><td class="mono">@_localPort</td></tr>
+            </tbody>
+        </table>
+        <p style="margin:12px 0 0 0;color:var(--text-muted);font-size:11px">
+            Estos valores se editan en <a href="/config-local" style="color:var(--accent)">Config. local SCU</a>.
+        </p>
+    </HelpSection>
+
+    <HelpSection Title="Ejemplo: Orthanc (orthanc.json)" Color="var(--purple)">
+        <pre style="background:var(--bg);padding:12px;border-radius:6px;font-size:11.5px;line-height:1.5;overflow-x:auto;color:var(--text-dim)">{
+  "DicomAet" : "ORTHANC",
+  "DicomPort" : 4242,
+  "DicomModalities" : {
+    "MIGRATOR_SCU" : [ "@_localAet", "@_localHost", @_localPort ]
+  },
+  "DicomWeb" : {
+    "Enable" : true,
+    "Root"   : "/dicom-web/"
+  },
+  "AuthenticationEnabled" : true,
+  "RegisteredUsers" : { "admin" : "admin" }
+}</pre>
+        <p style="margin:8px 0 0 0;color:var(--text-muted);font-size:11px">
+            El bloque <code>DicomWeb</code> requiere instalar el plugin (<code>orthanc-dicomweb</code> en APT, o la imagen Docker <code>jodogne/orthanc-plugins</code>).
+        </p>
+    </HelpSection>
+
+    <HelpSection Title="Métodos de descubrimiento y transferencia" Color="var(--green)">
+        <table class="data-table" style="width:100%;font-size:12px">
+            <thead><tr><th>Método</th><th>Protocolo</th><th>Cuándo usar</th></tr></thead>
+            <tbody>
+                <tr><td><strong>C-FIND</strong></td><td>DIMSE (TCP, puerto típico 4242 o 104)</td><td>PACS clásicos. Soporte universal. Algunos PACS (Orthanc) ignoran filtros de hora.</td></tr>
+                <tr><td><strong>QIDO-RS</strong></td><td>DICOMweb (HTTP/HTTPS)</td><td>PACS modernos. Mejor filtrado por StudyTime. Requiere plugin web habilitado.</td></tr>
+                <tr><td><strong>C-MOVE</strong></td><td>DIMSE</td><td>Transferencia estándar. El origen envía las instancias al SCP del migrador.</td></tr>
+                <tr><td><strong>CSV</strong></td><td>—</td><td>Importar una lista preexistente de UIDs desde fichero. No consulta al PACS. Ver límites abajo.</td></tr>
+            </tbody>
+        </table>
+    </HelpSection>
+
+    <HelpSection Title="Parámetros configurables de una migración" Color="#3B82F6">
+        <table class="data-table" style="width:100%;font-size:12px">
+            <thead><tr><th>Parámetro</th><th>Descripción</th><th>Valor habitual</th></tr></thead>
+            <tbody>
+                @foreach (var p in _configParams)
+                {
+                    <tr>
+                        <td><code>@p.Key</code></td>
+                        <td>@p.Desc</td>
+                        <td class="mono">@p.Ex</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </HelpSection>
+}
+
+@* ════════════════════════════════════════
+   CONFIG. POR FICHERO
+   ════════════════════════════════════════ *@
+@if (_tab == "files")
+{
+    <HelpSection Title="Qué se configura por fichero y qué por interfaz" Color="var(--accent)">
+        <p style="margin:0 0 14px 0;color:var(--text-dim);font-size:13px;line-height:1.6">
+            La aplicación tiene <strong>tres niveles</strong> de configuración. Conviene saber cuál tocar para cada cosa,
+            porque cambiar el fichero requiere reiniciar la aplicación, mientras que lo de interfaz y base de datos es en caliente.
+        </p>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px">
+            <div style="padding:12px;background:var(--bg);border:1px solid var(--border);border-radius:8px">
+                <div style="font-weight:600;font-size:13px;color:var(--accent);margin-bottom:6px">📄 Fichero <code>appsettings.json</code></div>
+                <div style="font-size:11.5px;color:var(--text-dim);line-height:1.5">
+                    Infraestructura: base de datos, puerto web, logs, mantenimiento de la BD y auto-reanudación.
+                    <strong>Requiere reiniciar</strong> la aplicación para aplicar cambios.
+                </div>
+            </div>
+            <div style="padding:12px;background:var(--bg);border:1px solid var(--border);border-radius:8px">
+                <div style="font-weight:600;font-size:13px;color:var(--green);margin-bottom:6px">🖥 Interfaz / base de datos</div>
+                <div style="font-size:11.5px;color:var(--text-dim);line-height:1.5">
+                    Nodos DICOM, SCU local y los parámetros de cada migración o job de descubrimiento. Se guardan en la
+                    base de datos SQLite y se aplican <strong>en caliente</strong>, sin reiniciar.
+                </div>
+            </div>
+            <div style="padding:12px;background:var(--bg);border:1px solid var(--border);border-radius:8px">
+                <div style="font-weight:600;font-size:13px;color:var(--orange);margin-bottom:6px">🔒 Fijado en código</div>
+                <div style="font-size:11.5px;color:var(--text-dim);line-height:1.5">
+                    Umbrales de auto-pausa por conexión, backoff de reintentos y límites del importador CSV. No son
+                    configurables sin recompilar; se listan abajo como referencia.
+                </div>
+            </div>
+        </div>
+    </HelpSection>
+
+    <HelpSection Title="appsettings.json — ubicación" Color="var(--purple)">
+        <p style="margin:0 0 10px 0;color:var(--text-dim);font-size:13px;line-height:1.6">
+            El fichero está en la raíz del ejecutable publicado, junto a <code>DicomMigrator.Web.exe</code>:
+        </p>
+        <pre style="background:var(--bg);padding:12px;border-radius:6px;font-size:11.5px;line-height:1.5;overflow-x:auto;color:var(--text-dim)">📁 (carpeta de publicación)
+├── DicomMigrator.Web.exe
+├── <strong style="color:var(--accent)">appsettings.json</strong>          ← edita este
+├── appsettings.Development.json   (solo en entorno de desarrollo)
+├── dicommigrator.db               (base de datos SQLite)
+└── 📁 logs/
+    └── dicommigrator-AAAAMMDD.log</pre>
+        <p style="margin:10px 0 0 0;color:var(--text-muted);font-size:11px">
+            Tras editar <code>appsettings.json</code> hay que <strong>reiniciar la aplicación</strong>. Si existe
+            <code>appsettings.Development.json</code> y se ejecuta en modo Development, ese fichero
+            <strong>sobrescribe</strong> las claves coincidentes.
+        </p>
+    </HelpSection>
+
+    <HelpSection Title="Sección Maintenance — purga de auditoría" Color="var(--green)">
+        <p style="margin:0 0 12px 0;color:var(--text-dim);font-size:13px;line-height:1.6">
+            Controla el servicio que purga periódicamente la tabla de auditoría (<code>AuditLog</code>) y compacta la BD.
+        </p>
+        <table class="data-table" style="width:100%;font-size:12px">
+            <thead><tr><th>Clave</th><th>Descripción</th><th>Por defecto</th></tr></thead>
+            <tbody>
+                <tr><td class="mono">Maintenance:AuditLogRetentionDays</td><td>Días de antigüedad a partir de los cuales se borran las entradas de auditoría.</td><td class="mono" style="color:var(--accent)">90</td></tr>
+                <tr><td class="mono">Maintenance:PurgeIntervalHours</td><td>Cada cuántas horas se ejecuta la purga.</td><td class="mono" style="color:var(--accent)">24</td></tr>
+                <tr><td class="mono">Maintenance:RunPurgeOnStartup</td><td>Si ejecuta una purga nada más arrancar, además del ciclo periódico.</td><td class="mono" style="color:var(--accent)">true</td></tr>
+            </tbody>
+        </table>
+    </HelpSection>
+
+    <HelpSection Title="Sección AutoResume — reanudación automática" Color="var(--yellow)">
+        <p style="margin:0 0 12px 0;color:var(--text-dim);font-size:13px;line-height:1.6">
+            Controla el servicio que reanuda solo las migraciones y verificaciones que se auto-pausaron por errores de
+            conexión, en cuanto el PACS afectado vuelve a estar accesible.
+        </p>
+        <table class="data-table" style="width:100%;font-size:12px">
+            <thead><tr><th>Clave</th><th>Descripción</th><th>Por defecto</th></tr></thead>
+            <tbody>
+                <tr><td class="mono">AutoResume:Enabled</td><td>Activa o desactiva la reanudación automática. Si está en <code>false</code>, las migraciones auto-pausadas hay que reanudarlas a mano.</td><td class="mono" style="color:var(--accent)">true</td></tr>
+                <tr><td class="mono">AutoResume:CheckIntervalSeconds</td><td>Cada cuántos segundos comprueba si los procesos auto-pausados pueden reanudarse (sondeo C-ECHO).</td><td class="mono" style="color:var(--accent)">60</td></tr>
+            </tbody>
+        </table>
+    </HelpSection>
+
+    <HelpSection Title="Sección Serilog — logs" Color="#3B82F6">
+        <p style="margin:0 0 12px 0;color:var(--text-dim);font-size:13px;line-height:1.6">
+            Define dónde y cómo se escriben los logs. El <strong>nivel</strong> también puede cambiarse en caliente desde la
+            pantalla de Logs, pero la rotación y la retención solo se ajustan aquí.
+        </p>
+        <table class="data-table" style="width:100%;font-size:12px">
+            <thead><tr><th>Clave</th><th>Descripción</th><th>Por defecto</th></tr></thead>
+            <tbody>
+                <tr><td class="mono">Serilog:MinimumLevel:Default</td><td>Nivel mínimo registrado (Verbose, Debug, Information, Warning, Error, Fatal).</td><td class="mono" style="color:var(--accent)">Information</td></tr>
+                <tr><td class="mono">Serilog:WriteTo[File]:path</td><td>Ruta y patrón del fichero de log. El sufijo de fecha lo añade la rotación.</td><td class="mono">logs/dicommigrator-.log</td></tr>
+                <tr><td class="mono">…rollingInterval</td><td>Frecuencia de rotación del fichero.</td><td class="mono" style="color:var(--accent)">Day</td></tr>
+                <tr><td class="mono">…retainedFileCountLimit</td><td>Número de ficheros de log que se conservan antes de borrar los más antiguos.</td><td class="mono" style="color:var(--accent)">30</td></tr>
+                <tr><td class="mono">…fileSizeLimitBytes</td><td>Tamaño máximo por fichero antes de rotar (junto a <code>rollOnFileSizeLimit</code>).</td><td class="mono" style="color:var(--accent)">52428800 (50 MB)</td></tr>
+            </tbody>
+        </table>
+    </HelpSection>
+
+    <HelpSection Title="Conexión a base de datos y servidor web" Color="var(--orange)">
+        <table class="data-table" style="width:100%;font-size:12px">
+            <thead><tr><th>Clave</th><th>Descripción</th><th>Por defecto</th></tr></thead>
+            <tbody>
+                <tr><td class="mono">ConnectionStrings:Default</td><td>Cadena de conexión a la base de datos SQLite. Cambia la ruta para mover o renombrar la BD.</td><td class="mono">Data Source=dicommigrator.db</td></tr>
+                <tr><td class="mono">Kestrel:Endpoints:Http:Url</td><td>Dirección y puerto en los que escucha la interfaz web.</td><td class="mono" style="color:var(--accent)">http://localhost:5200</td></tr>
+                <tr><td class="mono">AllowedHosts</td><td>Hosts permitidos para servir la aplicación.</td><td class="mono">*</td></tr>
+            </tbody>
+        </table>
+        <p style="margin:10px 0 0 0;color:var(--text-muted);font-size:11px">
+            Para acceder desde otros equipos de la red, cambia <code>localhost</code> por <code>0.0.0.0</code> o la IP de la máquina
+            (p. ej. <code>http://0.0.0.0:5200</code>) y reinicia.
+        </p>
+    </HelpSection>
+
+    <HelpSection Title="Valores fijados en código (no editables por fichero)" Color="var(--red)">
+        <p style="margin:0 0 12px 0;color:var(--text-dim);font-size:13px;line-height:1.6">
+            Estos parámetros gobiernan la auto-pausa por conexión y el importador CSV. Están como constantes en el código
+            (<code>ConnBackoff</code> y el servicio de importación); se listan para referencia, pero no se cambian sin recompilar.
+        </p>
+        <table class="data-table" style="width:100%;font-size:12px">
+            <thead><tr><th>Parámetro</th><th>Descripción</th><th>Valor</th></tr></thead>
+            <tbody>
+                <tr><td>Umbral de auto-pausa</td><td>Errores de conexión consecutivos antes de que un proceso (migración o verificación) se auto-pause.</td><td class="mono" style="color:var(--accent)">5</td></tr>
+                <tr><td>Espera entre errores</td><td>Pausa fija entre errores de conexión mientras se cuenta hacia el umbral (fija, no exponencial, para llegar rápido al umbral).</td><td class="mono" style="color:var(--accent)">10 s</td></tr>
+                <tr><td>Backoff exponencial</td><td>Espera creciente entre reintentos de conexión: 10 s, 20 s, 40 s, 80 s… con tope.</td><td class="mono" style="color:var(--accent)">hasta 5 min</td></tr>
+                <tr><td>Tamaño máx. CSV</td><td>Límite de tamaño del fichero en el importador CSV.</td><td class="mono" style="color:var(--accent)">50 MB</td></tr>
+                <tr><td>Líneas máx. CSV</td><td>Número máximo de líneas admitidas en el importador CSV.</td><td class="mono" style="color:var(--accent)">500.000</td></tr>
+            </tbody>
+        </table>
+    </HelpSection>
+}
+
+@code {
+    private string _tab = "overview";
+
+    // ── Local SCU config (loaded at init) ────────────────────────────────────
+    private string _localAet  = "MIGRATOR_SCU";
+    private int    _localPort = 11113;
+    private string _localHost = "192.168.x.x";
+
+    protected override async Task OnInitializedAsync()
+    {
+        var cfg   = await ConfigRepo.GetAsync();
+        _localAet  = cfg.LocalAet;
+        _localPort = cfg.LocalPort;
+        _localHost = string.IsNullOrWhiteSpace(cfg.LocalHostname)
+            ? "192.168.x.x  ← configura tu IP en Config. local SCU"
+            : cfg.LocalHostname;
+    }
+
+    private record Tab(string Id, string Label);
+    private readonly Tab[] _tabs =
+    [
+        new("overview",   "Visión general"),
+        new("discovery",  "🔍 Discovery Engine"),
+        new("migration",  "⇄ Migración"),
+        new("states",     "Estados del estudio"),
+        new("retry",      "Reintentos y errores"),
+        new("pacs",       "⚙ Config. PACS"),
+        new("files",      "📄 Config. por fichero"),
+    ];
+
+    // ── Overview ────────────────────────────────────────────────────────────
+    private record OverviewStep(string N, string Title, string Color, string Desc);
+    private readonly OverviewStep[] _overviewSteps =
+    [
+        new("1", "Registrar nodos DICOM",          "#3B82F6",       "En 'Nodos DICOM' añades cada PACS (origen y destino) con su AET, host, puerto y, si lo soporta, su endpoint DICOMweb (Base URL, autenticación, paths de QIDO/WADO/STOW)."),
+        new("2", "Configurar SCU local",            "var(--accent)", "En 'Config. local SCU' defines el AET, host e IP locales que verán los PACS al recibir un C-MOVE. Estos datos hay que registrarlos en el PACS origen."),
+        new("3", "Descubrir inventario (opcional)", "var(--purple)", "Crea un Discovery Job para catalogar el PACS origen completo. Útil cuando el origen tiene millones de estudios o no puedes lanzar una migración a ciegas."),
+        new("4", "Crear migración",                 "var(--yellow)", "Define origen, destino, método y prioridad de modalidad. Puedes crearla desde cero o desde el inventario de un Discovery Job (más rápido)."),
+        new("5", "Ejecutar y verificar",            "var(--green)",  "Los N workers procesan estudios en paralelo. La verificación confirma la llegada al destino. Dos barras independientes (migración + verificación) muestran el progreso."),
+        new("6", "Reintentos automáticos",          "var(--red)",    "Estudios fallidos pasan a Failed. Pulsando 'Reintentar fallidos' vuelven a la cola hasta agotar MaxRetries."),
+    ];
+
+    private record Screen(string Icon, string Name, string Color, string Desc);
+    private readonly Screen[] _screens =
+    [
+        new("📊", "Dashboard",       "var(--accent)", "Vista global: métricas agregadas, nodos registrados y desglose de estados con barras de progreso de migración y verificación por cada migración."),
+        new("⇄", "Migraciones",     "var(--purple)", "Listado de migraciones con sus dos barras de progreso. Detalle con tabs (Dashboard, Estudios, Descubrimiento, Ventana, Logs) y acciones (Editar, Eliminar)."),
+        new("🔍", "Discovery Engine", "#3B82F6",       "Listado de jobs de descubrimiento. Detalle con métricas en tiempo real, tabla de particiones con paginación, inventario descubierto y exportación CSV/Excel."),
+        new("⊞", "Nodos DICOM",      "var(--green)",  "CRUD de nodos: AET/host/puerto para DIMSE, Base URL + paths + auth para DICOMweb. Toggle independiente para DICOMweb."),
+        new("⚙", "Config. local SCU","var(--orange)", "AET, hostname y puerto del C-STORE SCP local. Estos datos los necesita el PACS origen para enviarte estudios."),
+        new("🩺", "Diagnóstico",      "var(--yellow)", "Tests de conectividad: C-ECHO, C-FIND y QIDO contra cualquier nodo registrado para verificar que el canal funciona antes de lanzar una migración."),
+        new("📋", "Logs y auditoría", "var(--text)",   "Logs en vivo del sistema. El nivel se cambia en caliente (Verbose, Debug, Information, Warning, Error). Rolling file diario en disco."),
+    ];
+
+    // ── Discovery steps ─────────────────────────────────────────────────────
+    private record DiscoveryStep(string N, string Title, string Color, string Desc);
+    private readonly DiscoveryStep[] _discoverySteps =
+    [
+        new("1", "Particionado inicial por día",  "#3B82F6",       "Se genera una partición tipo 'Day' por cada día del rango configurado. Si el rango es 2026-01-01 → 2026-06-30, se crean ~180 particiones."),
+        new("2", "Worker procesa una partición",  "var(--accent)", "Lock atómico en BD asegura que cada partición la procesa un solo worker. Lanza C-FIND o QIDO-RS con el filtro de fecha y, si aplica, modalidad y franja horaria."),
+        new("3", "Detección de truncamiento",     "var(--yellow)", "Si el PACS devuelve un número de resultados ≥ al límite configurado, asume truncamiento y subdivide automáticamente."),
+        new("4", "Nivel 2 — DayModality",         "var(--purple)", "Genera 10 particiones hijas, una por modalidad (CT, MR, CR, DX, US, MG, NM, PT, XA, OT). La partición original pasa a Subdivided."),
+        new("5", "Nivel 3 — DayModalityTime",     "var(--green)",  "Si una DayModality sigue truncándose, se subdivide en 4 franjas horarias: 00-05, 06-11, 12-17, 18-23. Es el nivel máximo de subdivisión."),
+        new("6", "Estado terminal PossiblyTruncated", "var(--orange)", "Si una partición de nivel 3 todavía roza el límite, queda como PossiblyTruncated y no se reintenta. Indica que el límite es demasiado bajo para esa franja concreta."),
+        new("7", "Upsert al inventario",          "var(--red)",    "Cada estudio descubierto se inserta o actualiza por StudyInstanceUID. Un mismo estudio nunca se duplica, aunque distintas particiones lo devuelvan."),
+    ];
+
+    // ── Migration steps ─────────────────────────────────────────────────────
+    private record MigrationStep(string N, string Title, string Color, string Desc);
+    private readonly MigrationStep[] _migrationSteps =
+    [
+        new("1", "Definición",              "#3B82F6",       "Crear migración: nodo origen, nodo destino, método de descubrimiento, método de transferencia, nº de hilos y prioridad de modalidades."),
+        new("2", "Carga de estudios",        "var(--accent)", "Poblar la tabla MigrationStudy vía C-FIND, QIDO-RS, importación CSV o desde el inventario de un Discovery Job. Cada estudio entra con estado Pending."),
+        new("3", "Ventana de ejecución",     "var(--yellow)", "El WindowScheduler evalúa cada minuto si la ventana horaria está abierta. Si no lo está, pausa automáticamente los workers."),
+        new("4", "Ejecución multihilo",      "var(--green)",  "N workers (configurable) procesan estudios en paralelo con lock atómico en BD. Cada worker coge un estudio, lo migra y actualiza su estado."),
+        new("5", "Transferencia C-MOVE",     "var(--purple)", "El worker ordena al PACS origen un C-MOVE al AET local. El PACS origen envía las instancias vía C-STORE al SCP local."),
+        new("6", "Verificación independiente","var(--orange)", "Multihilo. Lanza C-FIND o QIDO contra el destino para confirmar la presencia del estudio. Estado VerificationPending → Verified o VerificationFailed."),
+        new("7", "Reintentos automáticos",   "var(--red)",    "Si el C-MOVE falla, el estudio pasa a RetryPending. Tras un delay configurable vuelve a la cola. Al superar MaxRetries pasa a Failed."),
+    ];
+
+    // ── Study states ────────────────────────────────────────────────────────
+    private record StudyState(string Status, string Name, string Desc);
+    private readonly StudyState[] _states =
+    [
+        new("Pending",              "Pendiente",                "Recién creado, todavía no procesado por ningún worker."),
+        new("Migrating",            "En curso",                 "Un worker tiene el lock y está realizando el C-MOVE."),
+        new("Migrated",             "Migrado",                  "C-MOVE completado con éxito. Pendiente de verificación."),
+        new("VerificationPending",  "Verificación pendiente",   "Encolado para verificar su presencia en el destino."),
+        new("Verified",             "Verificado",               "Confirmada la presencia del estudio en el destino con series e instancias coherentes."),
+        new("VerificationFailed",   "Verificación fallida",     "El destino no devuelve el estudio o lo devuelve incompleto."),
+        new("Failed",               "Fallido",                  "El C-MOVE falló. Si no se ha superado MaxRetries puede pasar a RetryPending."),
+        new("RetryPending",         "Reintento pendiente",      "Marcado para reintento. Volverá a Migrating cuando un worker lo recoja."),
+    ];
+
+    private record ConfigParam(string Key, string Desc, string Ex);
+    private readonly ConfigParam[] _configParams =
+    [
+        new("WorkerThreads",      "Estudios en migración simultánea. Cada thread es independiente.",         "4"),
+        new("ModalityPriority",   "CSV de modalidades. CT antes que CR, MG antes que OT, etc.",              "CT,MR,CR,DX,US,MG,..."),
+        new("OldestFirst",        "Switch de orden por fecha. ON = más antiguos primero (StudyDate asc). OFF = más recientes primero (desc). Independiente de la prioridad de modalidad.", "OFF"),
+        new("StartFromDate",      "Filtro previo opcional: solo se migran estudios con StudyDate ≥ esta fecha.", "(vacío)"),
+        new("MaxRetries",         "Intentos máximos antes de marcar como Failed.",                           "3"),
+        new("RetryDelaySeconds",  "Segundos que un estudio espera en RetryPending antes de volver a la cola.","60"),
+        new("DiscoveryMethod",    "Método de verificación en destino (auto-seleccionado según capacidades del nodo).", "C-FIND | QIDO-RS"),
+        new("TransferMethod",     "Protocolo de transferencia.",                                            "C-MOVE | C-GET | WADO+STOW"),
+        new("PacsResultLimit",    "(Discovery) Umbral por debajo del cual se asume que no hubo truncamiento.","500"),
+    ];
+}

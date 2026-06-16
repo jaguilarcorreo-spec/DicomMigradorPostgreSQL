@@ -1,0 +1,239 @@
+@page "/logs"
+@rendermode InteractiveServer
+@inject IAuditLogRepository AuditRepo
+@inject IMigrationRepository MigrationRepo
+@inject DicomMigrator.Web.Services.LogLevelService LogLevel
+@implements IDisposable
+
+<PageTitle>Logs y Auditoría — DICOM Migrador</PageTitle>
+
+<div class="page-header">
+    <div>
+        <h1 class="page-title">Logs y Auditoría</h1>
+        <p class="page-sub">Nivel activo: <span style="color:var(--accent)" class="mono">@LogLevel.CurrentLevel</span></p>
+    </div>
+</div>
+
+@* ── Nivel de log (reutilizado del Tester) ── *@
+<div class="card mb2">
+    <div class="card-header"><span class="card-title">Nivel de log de la aplicación</span></div>
+    <div class="card-body">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            @foreach (var lvl in LogLevel.AvailableLevels)
+            {
+                <button class="@LevelCss(lvl)" @onclick="@(() => SetLevel(lvl))">@lvl</button>
+            }
+        </div>
+        <div class="form-hint" style="margin-top:10px">
+            Los ficheros de log rotan diariamente y se conservan 30 días en
+            <span class="mono" style="color:var(--accent)">logs/</span>.
+        </div>
+    </div>
+</div>
+
+@* ── Fichero de log (reutilizado del Tester) ── *@
+<div class="card mb2">
+    <div class="card-header">
+        <span class="card-title">Fichero de log actual</span>
+        <span class="card-sub" style="margin-left:8px;font-size:10px;color:var(--text-muted)">@_logFile</span>
+        <div style="margin-left:auto;display:flex;gap:6px">
+            <button class="btn btn-ghost btn-sm" @onclick="RefreshFileLog">↺ Actualizar</button>
+            @foreach (var f in new[] { "ALL", "INF", "WRN", "ERR" })
+            {
+                <button class="btn btn-ghost btn-sm @(_fileFilter == f ? "btn-primary" : "")"
+                        @onclick="@(() => _fileFilter = f)">@f</button>
+            }
+        </div>
+    </div>
+    <div class="log-viewer" style="max-height:300px;margin:12px">
+        @if (_fileLines.Count == 0)
+        {
+            <div class="text-dim" style="text-align:center;padding:20px;font-size:11px">
+                @(_logFile == "No encontrado" ? "No hay fichero de log todavía." : "Sin entradas.")
+            </div>
+        }
+        @foreach (var line in FilteredLines)
+        {
+            var cls = line.Contains("[ERR]") || line.Contains("[FTL]") ? "log-ERROR"
+                    : line.Contains("[WRN]") ? "log-WARN"
+                    : line.Contains("[DBG]") ? "log-DEBUG"
+                    : "log-INFO";
+            <div class="log-line">
+                <span class="mono @cls" style="font-size:10px;line-height:1.8">@line</span>
+            </div>
+        }
+    </div>
+</div>
+
+@* ── Auditoría de migraciones ── *@
+<div class="card">
+    <div class="card-header">
+        <span class="card-title">Auditoría de migraciones</span>
+        <span class="card-sub" style="font-size:10px;color:var(--text-muted);margin-left:6px">
+            @FilteredAudit.Count de @_auditLogs.Count entradas · máx. 200
+        </span>
+        <div style="margin-left:auto;display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+            <select class="form-input" style="width:180px;padding:4px 8px;font-size:11px" @bind="_migFilter">
+                <option value="0">Todas las migraciones</option>
+                @foreach (var m in _migrations)
+                {
+                    <option value="@m.Id">@m.Name</option>
+                }
+            </select>
+            @foreach (var l in new[] { ("ALL","ALL"), ("INFO","INFO"), ("WARN","WARN"), ("ERROR","ERROR") })
+            {
+                <button class="btn btn-ghost btn-sm @(_levelFilter == l.Item1 ? "btn-primary" : "")"
+                        @onclick="@(() => _levelFilter = l.Item1)">@l.Item2</button>
+            }
+            <button class="btn btn-ghost btn-sm" @onclick="LoadAuditAsync" title="Recargar">↺</button>
+        </div>
+    </div>
+    <div style="overflow:auto;max-height:1400px">
+        @if (_auditLogs.Count == 0)
+        {
+            <div class="empty-state" style="padding:30px 20px">
+                <div class="empty-icon">📋</div>
+                <div class="empty-title">Sin entradas de auditoría</div>
+            </div>
+        }
+        else
+        {
+            <table class="data-table">
+                <thead style="position:sticky;top:0;z-index:1;background:var(--panel)">
+                    <tr>
+                        <th>Timestamp</th>
+                        <th>Usuario/Proceso</th>
+                        <th>Migración</th>
+                        <th>Acción</th>
+                        <th>Resultado</th>
+                        <th>StudyInstanceUID</th>
+                        <th>Mensaje técnico</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var l in FilteredAudit)
+                    {
+                        <tr>
+                            <td class="mono" style="font-size:10px;color:var(--text-muted);white-space:nowrap">
+                                @l.Timestamp.ToString("yyyy-MM-dd HH:mm:ss")
+                            </td>
+                            <td class="mono small" style="color:var(--accent)">@l.UserOrProcess</td>
+                            <td class="small">@(l.Migration?.Name ?? $"#{l.MigrationId}")</td>
+                            <td><span class="tag" style="color:var(--yellow);background:rgba(245,158,11,0.08)">@l.Action</span></td>
+                            <td>
+                                @if (l.Result == "OK")
+                                {
+                                    <span style="color:var(--green);font-size:11px;font-family:var(--font-mono)">✓ OK</span>
+                                }
+                                else
+                                {
+                                    <span style="color:var(--red);font-size:11px;font-family:var(--font-mono)">✕ @l.Result</span>
+                                }
+                            </td>
+                            <td class="mono" style="font-size:9px;color:var(--text-muted);max-width:160px;overflow:hidden;text-overflow:ellipsis">
+                                @l.StudyInstanceUid
+                            </td>
+                            <td class="small" style="max-width:300px">@l.TechnicalMessage</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        }
+    </div>
+</div>
+
+@code {
+    private List<Migration>          _migrations  = [];
+    private List<MigrationAuditLog>  _auditLogs   = [];
+    private List<string>             _fileLines   = [];
+    private string _levelFilter = "ALL";
+    private string _fileFilter  = "ALL";
+    private string _logFile     = "";
+    private int    _migFilter   = 0;
+
+    private List<MigrationAuditLog> FilteredAudit =>
+        _auditLogs
+            .Where(l =>
+                (_levelFilter == "ALL" || l.Level == _levelFilter) &&
+                (_migFilter == 0 || l.MigrationId == _migFilter))
+            .OrderByDescending(l => l.Timestamp)
+            .Take(200)
+            .ToList();
+
+    private List<string> FilteredLines => _fileFilter == "ALL"
+        ? _fileLines
+        : _fileLines.Where(l => l.Contains($"[{_fileFilter}]")).ToList();
+
+    protected override async Task OnInitializedAsync()
+    {
+        LogLevel.OnChange += OnLevelChanged;
+        _migrations = await MigrationRepo.GetAllAsync();
+        await LoadAuditAsync();
+        RefreshFileLog();
+    }
+
+    async Task LoadAuditAsync()
+    {
+        // Single global query — avoids loading 200×N rows when there are many migrations
+        _auditLogs = await AuditRepo.GetRecentAsync(200);
+
+        // Attach Migration navigation property for the migration-filter dropdown
+        var migMap = _migrations.ToDictionary(m => m.Id);
+        foreach (var l in _auditLogs)
+            if (l.Migration is null && migMap.TryGetValue(l.MigrationId, out var m))
+                l.Migration = m;
+    }
+
+    // ── File log viewer (copiado del Tester) ────────────────────────────────
+    void RefreshFileLog()
+    {
+        var candidates = new[]
+        {
+            Path.Combine(Directory.GetCurrentDirectory(), "logs"),
+            Path.Combine(AppContext.BaseDirectory, "logs"),
+        };
+        var logsDir = candidates.FirstOrDefault(Directory.Exists) ?? candidates[0];
+        var today   = DateTime.Now.ToString("yyyyMMdd");
+        _logFile    = "No encontrado";
+        _fileLines  = [];
+        if (!Directory.Exists(logsDir)) return;
+
+        var file = Directory.GetFiles(logsDir, $"*{today}*.log").OrderByDescending(f => f).FirstOrDefault()
+                ?? Directory.GetFiles(logsDir, "*.log").OrderByDescending(f => File.GetLastWriteTime(f)).FirstOrDefault();
+        if (file is null) return;
+        _logFile = Path.GetFileName(file);
+        try
+        {
+            using var fs = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            using var sr = new StreamReader(fs);
+            // Circular buffer of the last N lines — never holds the entire file in RAM,
+            // critical when daily logs grow to hundreds of MB
+            const int MaxLines = 300;
+            var queue = new Queue<string>(MaxLines);
+            while (sr.ReadLine() is { } line)
+            {
+                queue.Enqueue(line);
+                if (queue.Count > MaxLines) queue.Dequeue();
+            }
+            _fileLines = queue.Reverse().ToList();
+        }
+        catch { _fileLines = ["Error al leer el fichero de log."]; }
+        StateHasChanged();
+    }
+
+    void SetLevel(string level) { LogLevel.CurrentLevel = level; LogLevel.NotifyChange(); }
+    void OnLevelChanged() => InvokeAsync(StateHasChanged);
+
+    string LevelCss(string l)
+    {
+        if (LogLevel.CurrentLevel != l) return "btn btn-sm btn-ghost";
+        return l switch
+        {
+            "Error" or "Fatal" => "btn btn-sm btn-danger",
+            "Warning"          => "btn btn-sm btn-yellow",
+            _                  => "btn btn-sm btn-primary",
+        };
+    }
+
+    public void Dispose() => LogLevel.OnChange -= OnLevelChanged;
+}

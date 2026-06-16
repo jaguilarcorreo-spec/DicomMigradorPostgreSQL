@@ -1,0 +1,8 @@
+@* NodeTypeBadge.razor *@
+<span class="node-type node-@Type">
+    @(Type switch { "origin" => "Origen", "destination" => "Destino", _ => "Origen/Destino" })
+</span>
+
+@code {
+    [Parameter] public string Type { get; set; } = "";
+}

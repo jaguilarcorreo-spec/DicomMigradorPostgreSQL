@@ -1,0 +1,1450 @@
+@page "/migraciones"
+@rendermode InteractiveServer
+@inject IMigrationRepository MigrationRepo
+@inject INodeRepository NodeRepo
+@inject IStudyRepository StudyRepo
+@inject IAuditLogRepository AuditRepo
+@inject IDiscoveryService DiscoverySvc
+@inject IVerificationService VerificationSvc
+@inject IConnectionHealthService HealthSvc
+@inject IServiceScopeFactory ScopeFactory
+@using Microsoft.Extensions.DependencyInjection
+@inject IMigrationWorker Worker
+@inject NavigationManager Nav
+@implements IDisposable
+
+<PageTitle>Migraciones — DICOM Migrador</PageTitle>
+
+@* ══════════════════════════════════════════════════════════════════════
+   DETALLE DE MIGRACIÓN
+   ══════════════════════════════════════════════════════════════════════ *@
+@if (_detail is not null)
+{
+    <div class="page-header">
+        <button class="btn btn-ghost" @onclick="BackToList">← Volver</button>
+        <div style="flex:1">
+            <h1 class="page-title">@_detail.Name</h1>
+            <p class="page-sub">@_detail.Description</p>
+        </div>
+        <StatusBadge Status="@_detail.Status" />
+        <button class="btn btn-ghost btn-sm" @onclick="RefreshDetailAsync" title="Actualizar">↺</button>
+        <button class="btn btn-ghost btn-sm" @onclick="OpenEditMigration" title="Editar propiedades">✎ Editar</button>
+        <button class="btn btn-sm" style="background:rgba(239,68,68,0.08);color:var(--red);border:1px solid rgba(239,68,68,0.25)"
+                @onclick="RequestDeleteMigration" title="Eliminar migración">🗑 Eliminar</button>
+    </div>
+
+    @if (!string.IsNullOrEmpty(_delMsg))
+    {
+        <div class="alert-error mb2">⚠ @_delMsg</div>
+    }
+
+    @* ── Panel de control de MIGRACIÓN ── *@
+    <div style="display:flex;align-items:center;gap:8px;padding:12px 16px;
+                background:var(--card);border:1px solid var(--border);border-radius:8px;
+                margin-bottom:14px;flex-wrap:wrap">
+
+        <span style="font-size:11px;color:var(--accent);margin-right:4px">MIGRACIÓN</span>
+
+        @* Iniciar: cuando no está corriendo ni pausada (Draft/Ready/Completed/Cancelled/Failed) *@
+        @if (_detail.Status is not ("Running" or "Paused"))
+        {
+            <button class="btn btn-primary btn-sm" @onclick="StartMigrationAsync" disabled="@_actionBusy">
+                ▶ Iniciar
+            </button>
+        }
+
+        @* Reanudar: Paused *@
+        @if (_detail.Status == "Paused")
+        {
+            <button class="btn btn-primary btn-sm" @onclick="ResumeMigrationAsync" disabled="@_actionBusy">
+                ▶ Reanudar
+            </button>
+        }
+
+        @* Pausar: solo Running — detiene el proceso, no los hilos en curso *@
+        @if (_detail.Status == "Running")
+        {
+            <button class="btn btn-sm" style="background:rgba(245,158,11,0.12);color:var(--yellow);
+                          border:1px solid rgba(245,158,11,0.3)"
+                    @onclick="PauseMigrationAsync" disabled="@_actionBusy">
+                ⏸ Pausar
+            </button>
+        }
+
+        @* Parar: Running o Paused — para el proceso al terminar los hilos activos *@
+        @if (_detail.Status is "Running" or "Paused")
+        {
+            <button class="btn btn-sm" style="background:rgba(239,68,68,0.08);color:var(--red);
+                          border:1px solid rgba(239,68,68,0.2)"
+                    @onclick="StopMigrationAsync" disabled="@_actionBusy">
+                ⏹ Parar
+            </button>
+        }
+
+        @* Indicador de actividad *@
+        @if (_detail.Status == "Running")
+        {
+            <div style="margin-left:auto;display:flex;align-items:center;gap:6px">
+                <div style="width:7px;height:7px;border-radius:50%;background:var(--green);
+                            animation:pulse 1.5s infinite;box-shadow:0 0 6px var(--green)"></div>
+                <span style="font-size:11px;color:var(--green)">En ejecución</span>
+            </div>
+        }
+        else if (_detail.MigrationAutoPaused)
+        {
+            <span style="margin-left:auto;font-size:11px;color:var(--yellow)"
+                  title="Pausada automáticamente por errores de conexión con el origen. Se reanudará sola cuando vuelva a estar accesible.">
+                ⏸ Auto-pausada · reintentando conexión…
+            </span>
+        }
+        else
+        {
+            <span style="margin-left:auto;font-size:11px;color:var(--text-muted)">@_detail.Status</span>
+        }
+    </div>
+
+    @* ── Panel de control de VERIFICACIÓN (independiente de la migración) ── *@
+    <div style="display:flex;align-items:center;gap:8px;padding:12px 16px;
+                background:var(--card);border:1px solid var(--border);border-radius:8px;
+                margin-bottom:14px;flex-wrap:wrap">
+
+        <span style="font-size:11px;color:#a78bfa;margin-right:4px">VERIFICACIÓN</span>
+
+        @* Iniciar: Idle o Completed (re-verificar). Si no hay Migrados, el proceso
+           se auto-para enseguida (los workers salen al ver la cola vacía). *@
+        @if (_detail.VerificationStatus is not ("Running" or "Paused"))
+        {
+            <button class="btn btn-sm" style="background:rgba(167,139,250,0.12);color:#a78bfa;
+                          border:1px solid rgba(167,139,250,0.3)"
+                    @onclick="StartVerificationAsync" disabled="@_actionBusy">
+                ▶ Iniciar
+            </button>
+        }
+
+        @* Reanudar: Paused *@
+        @if (_detail.VerificationStatus == "Paused")
+        {
+            <button class="btn btn-sm" style="background:rgba(167,139,250,0.12);color:#a78bfa;
+                          border:1px solid rgba(167,139,250,0.3)"
+                    @onclick="ResumeVerificationAsync" disabled="@_actionBusy">
+                ▶ Reanudar
+            </button>
+        }
+
+        @* Pausar: Running — detiene el proceso, no los hilos en curso *@
+        @if (_detail.VerificationStatus == "Running")
+        {
+            <button class="btn btn-sm" style="background:rgba(245,158,11,0.12);color:var(--yellow);
+                          border:1px solid rgba(245,158,11,0.3)"
+                    @onclick="PauseVerificationAsync" disabled="@_actionBusy">
+                ⏸ Pausar
+            </button>
+        }
+
+        @* Parar: Running o Paused — para el proceso al terminar los hilos activos *@
+        @if (_detail.VerificationStatus is "Running" or "Paused")
+        {
+            <button class="btn btn-sm" style="background:rgba(239,68,68,0.08);color:var(--red);
+                          border:1px solid rgba(239,68,68,0.2)"
+                    @onclick="StopVerificationAsync" disabled="@_actionBusy">
+                ⏹ Parar
+            </button>
+        }
+
+        @* Indicador de actividad *@
+        @if (_detail.VerificationStatus == "Running")
+        {
+            <div style="margin-left:auto;display:flex;align-items:center;gap:6px">
+                <div style="width:7px;height:7px;border-radius:50%;background:#a78bfa;
+                            animation:pulse 1.5s infinite;box-shadow:0 0 6px #a78bfa"></div>
+                <span style="font-size:11px;color:#a78bfa">Verificando</span>
+            </div>
+        }
+        else if (_detail.VerificationAutoPaused)
+        {
+            <span style="margin-left:auto;font-size:11px;color:var(--yellow)"
+                  title="Pausada automáticamente por errores de conexión con el destino. Se reanudará sola cuando vuelva a estar accesible.">
+                ⏸ Auto-pausada · reintentando conexión…
+            </span>
+        }
+        else if (_detail.VerificationStatus == "Completed"
+                 && _detail.Status is "Running" or "Paused"
+                 && _stats is not null
+                 && (_stats.Pending + _stats.Queued + _stats.Migrating
+                     + _stats.Migrated + _stats.VerificationPending
+                     + _stats.RetryPending) > 0)
+        {
+            @* La verificación vació su cola, pero la migración sigue activa y aún
+               quedan estudios que generarán más trabajo de verificación. Se
+               relanzará sola; "Completed" aquí confundiría. *@
+            <span style="margin-left:auto;font-size:11px;color:var(--text-muted)"
+                  title="Esta tanda de verificación ha terminado. Se reanudará automáticamente a medida que la migración complete más estudios.">
+                ⏳ En espera · pendiente de migración
+            </span>
+        }
+        else
+        {
+            <span style="margin-left:auto;font-size:11px;color:var(--text-muted)">@_detail.VerificationStatus</span>
+        }
+    </div>
+
+    @* ── Panel de salud de conexión (C-ECHO a origen y destino) ── *@
+    <div style="display:flex;align-items:center;gap:18px;padding:10px 16px;
+                background:var(--card);border:1px solid var(--border);border-radius:8px;
+                margin-bottom:14px;flex-wrap:wrap">
+        <span style="font-size:11px;color:var(--text-muted);margin-right:4px">CONEXIÓN</span>
+
+        @RenderNodeHealth("Origen", _health?.Origin)
+        @RenderNodeHealth("Destino", _health?.Destination)
+
+        <button class="btn btn-sm btn-ghost" @onclick="ProbeHealthAsync" disabled="@_probing"
+                style="margin-left:auto;font-size:11px">
+            @(_probing ? "Comprobando…" : "↻ Comprobar")
+        </button>
+        @if (_health is not null)
+        {
+            <span style="font-size:10px;color:var(--text-muted)">
+                @_health.CheckedAt.ToLocalTime().ToString("HH:mm:ss")
+            </span>
+        }
+    </div>
+
+    @if (!string.IsNullOrEmpty(_actionMsg))
+    {
+        <div class="@(_actionOk ? "alert-success" : "alert-error") mb2">@_actionMsg</div>
+    }
+
+    @* ── Panel de configuración horizontal (igual que Discovery) ── *@
+    <div class="card mb2">
+        <div class="card-body" style="display:flex;flex-wrap:wrap;gap:28px;padding:14px 18px">
+            <div>
+                <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.08em">Origen</div>
+                <div style="font-size:13px;color:var(--text);margin-top:3px">
+                    @(_detail.OriginNode?.Alias ?? "?")
+                    <span class="mono" style="font-size:11px;color:var(--text-dim)">(@(_detail.OriginNode?.RemoteAet ?? "?"))</span>
+                </div>
+            </div>
+            <div>
+                <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.08em">Destino</div>
+                <div style="font-size:13px;color:var(--text);margin-top:3px">
+                    @(_detail.DestNode?.Alias ?? "?")
+                    <span class="mono" style="font-size:11px;color:var(--text-dim)">(@(_detail.DestNode?.RemoteAet ?? "?"))</span>
+                </div>
+            </div>
+            <div>
+                <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.08em">Verificación</div>
+                <div class="mono" style="font-size:13px;color:var(--text);margin-top:3px">@_detail.DiscoveryMethod</div>
+            </div>
+            <div>
+                <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.08em">Transferencia</div>
+                <div class="mono" style="font-size:13px;color:var(--text);margin-top:3px">@_detail.TransferMethod</div>
+            </div>
+            <div>
+                <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.08em">Hilos</div>
+                <div class="mono" style="font-size:13px;color:var(--text);margin-top:3px">@_detail.WorkerThreads</div>
+            </div>
+            <div>
+                <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.08em">Max. reintentos</div>
+                <div class="mono" style="font-size:13px;color:var(--text);margin-top:3px">@_detail.MaxRetries</div>
+            </div>
+            <div>
+                <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.08em">Delay reintento</div>
+                <div class="mono" style="font-size:13px;color:var(--text);margin-top:3px">@_detail.RetryDelaySeconds s</div>
+            </div>
+            <div>
+                <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.08em">Prioridad modalidad</div>
+                <div class="mono" style="font-size:13px;color:var(--text);margin-top:3px">
+                    @(string.IsNullOrWhiteSpace(_detail.ModalityPriority) ? "Sin prioridad" : _detail.ModalityPriority)
+                </div>
+            </div>
+            @if (_detail.StartFromDate.HasValue)
+            {
+                <div>
+                    <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.08em">Desde fecha</div>
+                    <div class="mono" style="font-size:13px;color:var(--text);margin-top:3px">@_detail.StartFromDate.Value.ToString("yyyy-MM-dd")</div>
+                </div>
+            }
+            @if (!string.IsNullOrWhiteSpace(_detail.InventoryDateFrom) || !string.IsNullOrWhiteSpace(_detail.InventoryDateTo))
+            {
+                // Dates stored as YYYYMMDD — format as YYYY-MM-DD for display
+                static string Fmt(string? d) => d?.Length == 8
+                    ? $"{d[..4]}-{d[4..6]}-{d[6..8]}" : (d ?? "—");
+                <div>
+                    <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.08em">Rango inventario</div>
+                    <div class="mono" style="font-size:13px;color:var(--text);margin-top:3px">
+                        @Fmt(_detail.InventoryDateFrom) → @Fmt(_detail.InventoryDateTo)
+                    </div>
+                </div>
+            }
+            <div>
+                <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.08em">Orden por fecha</div>
+                <div style="display:flex;align-items:center;gap:8px;margin-top:4px">
+                    <div style="position:relative;width:36px;height:20px;border-radius:10px;
+                                background:@(_detail.OldestFirst ? "var(--accent)" : "rgba(100,116,139,0.4)")">
+                        <div style="position:absolute;top:2px;left:@(_detail.OldestFirst ? "18px" : "2px");
+                                    width:16px;height:16px;border-radius:50%;background:white;
+                                    box-shadow:0 1px 3px rgba(0,0,0,0.3)"></div>
+                    </div>
+                    <span style="font-size:12px;color:var(--text-dim)">
+                        @(_detail.OldestFirst ? "⬆ Más antiguos primero" : "⬇ Más recientes primero")
+                    </span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    @* ── Confirmación de borrado de migración (doble confirmación) ── *@
+    @if (_delStep > 0)
+    {
+        <div class="card mb2" style="border-color:rgba(239,68,68,0.4)">
+            <div class="card-body" style="padding:16px 18px">
+                @if (_delStep == 1)
+                {
+                    <div style="font-size:13px;color:var(--text);margin-bottom:12px">
+                        ¿Eliminar la migración <strong>@_detail.Name</strong>? Se borrará toda su información:
+                        estudios, ventanas de ejecución y registros de auditoría.
+                    </div>
+                    <div style="display:flex;gap:8px">
+                        <button class="btn btn-ghost btn-sm" @onclick="@(() => _delStep = 0)">Cancelar</button>
+                        <button class="btn btn-sm" style="background:rgba(239,68,68,0.12);color:var(--red);border:1px solid rgba(239,68,68,0.3)"
+                                @onclick="@(() => _delStep = 2)">Sí, continuar</button>
+                    </div>
+                }
+                else
+                {
+                    <div style="font-size:13px;color:var(--red);margin-bottom:12px;font-weight:600">
+                        ⚠ Confirmación final: esta acción es irreversible. ¿Eliminar definitivamente la migración y todos sus datos?
+                    </div>
+                    <div style="display:flex;gap:8px">
+                        <button class="btn btn-ghost btn-sm" @onclick="@(() => _delStep = 0)">Cancelar</button>
+                        <button class="btn btn-sm" style="background:var(--red);color:#fff;border:1px solid var(--red)"
+                                @onclick="DeleteMigrationConfirmed" disabled="@_deleting">🗑 Eliminar definitivamente</button>
+                    </div>
+                }
+            </div>
+        </div>
+    }
+
+    @* ── Formulario de edición de propiedades ── *@
+    @if (_editingMig)
+    {
+        <div class="card mb2" style="border-color:rgba(0,180,216,0.3)">
+            <div class="card-header"><span class="card-title">Editar propiedades de la migración</span></div>
+            <div class="card-body" style="display:flex;flex-direction:column;gap:12px;max-width:760px">
+                @if (!string.IsNullOrEmpty(_editMigError)) { <div class="alert-error">⚠ @_editMigError</div> }
+                <div class="form-group">
+                    <label class="form-label">Nombre *</label>
+                    <input class="form-input" @bind="_emName" />
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Descripción</label>
+                    <input class="form-input" @bind="_emDesc" />
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label">Hilos (workers)</label>
+                        <input class="form-input mono" type="number" @bind="_emThreads" />
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Max. reintentos</label>
+                        <input class="form-input mono" type="number" @bind="_emRetries" />
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Delay reintento (s)</label>
+                        <input class="form-input mono" type="number" @bind="_emRetryDelay" min="0" max="3600" />
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Prioridad de modalidad</label>
+                    <input class="form-input mono" @bind="_emPriority" placeholder="CT,MR,MG,CR,OT" />
+                    <div class="form-hint">Orden de prioridad de migración por modalidad, separado por comas.</div>
+                </div>
+                @if (_detail?.Status is "Draft" or "Paused")
+                {
+                    <div class="form-group">
+                        <label class="form-label">Orden por fecha</label>
+                        <div style="display:flex;align-items:center;gap:12px;padding-top:4px">
+                            <div @onclick="@(() => _emOldestFirst = !_emOldestFirst)"
+                                 style="position:relative;width:44px;height:24px;border-radius:12px;cursor:pointer;transition:background 0.2s;
+                                        background:@(_emOldestFirst ? "var(--accent)" : "rgba(100,116,139,0.4)")">
+                                <div style="position:absolute;top:3px;left:@(_emOldestFirst ? "23px" : "3px");
+                                            width:18px;height:18px;border-radius:50%;background:white;
+                                            transition:left 0.2s;box-shadow:0 1px 3px rgba(0,0,0,0.3)"></div>
+                            </div>
+                            <span style="font-size:13px;color:var(--text)">
+                                @(_emOldestFirst ? "⬆ Más antiguos primero" : "⬇ Más recientes primero")
+                            </span>
+                        </div>
+                        <div class="form-hint">Independiente de la prioridad de modalidad.</div>
+                    </div>
+                }
+                <div style="display:flex;gap:8px">
+                    <button class="btn btn-ghost btn-sm" @onclick="@(() => _editingMig = false)">Cancelar</button>
+                    <button class="btn btn-primary btn-sm" @onclick="SaveEditMigrationAsync" disabled="@_actionBusy">💾 Guardar cambios</button>
+                </div>
+            </div>
+        </div>
+    }
+
+    @* ── Tab bar ── *@
+    <div class="tab-bar mb2">
+        @foreach (var t in new[] { ("dashboard","📊 Dashboard"), ("estudios","🗂 Estudios"), ("ventana","🕐 Ventana"), ("logs","📋 Logs") })
+        {
+            <button class="@(_detailTab == t.Item1 ? "tab active" : "tab")" @onclick="@(() => SetDetailTab(t.Item1))">
+                @t.Item2
+            </button>
+        }
+    </div>
+
+    @* ── DASHBOARD ── *@
+    @if (_detailTab == "dashboard" && _stats is not null)
+    {
+        <div class="stats-row mb2">
+            @foreach (var s in new[]
+            {
+                ("Total",     _stats.Total,              "var(--text)"),
+                ("Pendientes",_stats.Pending,            "var(--text-dim)"),
+                ("En curso",  _stats.Migrating,          "var(--accent)"),
+                ("Migrados",  _stats.Migrated,           "var(--green)"),
+                ("Verificados",_stats.Verified,          "var(--purple)"),
+                ("Fallos mig.",  _stats.Failed,          "var(--red)"),
+                ("Fallos verif.",_stats.VerifyFailed,    "#f43f5e"),
+                ("Reintentos",_stats.RetryPending,       "#f97316"),
+            })
+            {
+                <div class="stat-card">
+                    <div class="stat-label">@s.Item1</div>
+                    <div class="stat-value" style="color:@s.Item3;font-size:22px">@s.Item2.ToString("N0")</div>
+                </div>
+            }
+        </div>
+
+        @if (_stats.Total > 0)
+        {
+            <div class="card mb2">
+                <div class="card-body" style="padding:14px 16px;display:flex;flex-direction:column;gap:14px">
+
+                    @* ── Barra de migración ── *@
+                    <div>
+                        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px">
+                            <div style="display:flex;align-items:center;gap:10px">
+                                <span style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.08em">
+                                    Migración
+                                </span>
+                                @if (_stats.WallMigrationSeconds > 0)
+                                {
+                                    <span style="font-size:10px;color:var(--text-dim)" title="Tiempo real de pared (inicio primero estudio → fin último estudio)">
+                                        ⏱ @FormatElapsed(_stats.WallMigrationSeconds)
+                                    </span>
+                                    @if (_stats.TotalMigrationSeconds > _stats.WallMigrationSeconds * 1.1)
+                                    {
+                                        <span style="font-size:10px;color:var(--text-muted)"
+                                              title="Suma del tiempo de cada estudio en todos los workers. Con @(_detail?.WorkerThreads ?? 1) workers en paralelo puede ser hasta @(_detail?.WorkerThreads ?? 1)x el tiempo real.">
+                                            · @FormatElapsed(_stats.TotalMigrationSeconds) CPU total
+                                        </span>
+                                    }
+                                }
+                            </div>
+                            <div style="display:flex;align-items:center;gap:8px">
+                                <span style="font-size:10px;color:var(--text-dim)">
+                                    @(_stats.Migrated + _stats.VerificationPending + _stats.Verified) / @_stats.Total
+                                </span>
+                                <span class="mono" style="color:var(--accent);font-size:14px;font-weight:700;min-width:48px;text-align:right">
+                                    @_stats.ProgressPercent.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)%
+                                </span>
+                            </div>
+                        </div>
+                        <div class="progress-track" style="height:8px">
+                            <div class="progress-fill" style="width:@(_stats.ProgressPercent.ToString("F1", System.Globalization.CultureInfo.InvariantCulture))%;background:var(--accent)"></div>
+                        </div>
+                    </div>
+
+                    @* ── Barra de verificación ── *@
+                    <div>
+                        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px">
+                            <div style="display:flex;align-items:center;gap:10px">
+                                <span style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.08em">
+                                    Verificación
+                                </span>
+                                @if (_stats.WallVerificationSeconds > 0)
+                                {
+                                    <span style="font-size:10px;color:var(--text-dim)" title="Tiempo real de pared (inicio primera verificación → fin última)">
+                                        ⏱ @FormatElapsed(_stats.WallVerificationSeconds)
+                                    </span>
+                                    @if (_stats.TotalVerificationSeconds > _stats.WallVerificationSeconds * 1.1)
+                                    {
+                                        <span style="font-size:10px;color:var(--text-muted)"
+                                              title="Suma del tiempo de cada verificación en todos los workers. Con @(_detail?.WorkerThreads ?? 1) workers en paralelo puede ser hasta @(_detail?.WorkerThreads ?? 1)x el tiempo real.">
+                                            · @FormatElapsed(_stats.TotalVerificationSeconds) CPU total
+                                        </span>
+                                    }
+                                }
+                            </div>
+                            <div style="display:flex;align-items:center;gap:8px">
+                                <span style="font-size:10px;color:var(--text-dim)">
+                                    @_stats.Verified / @_stats.Total
+                                </span>
+                                <span class="mono" style="color:var(--purple);font-size:14px;font-weight:700;min-width:48px;text-align:right">
+                                    @_stats.VerificationPercent.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)%
+                                </span>
+                            </div>
+                        </div>
+                        <div class="progress-track" style="height:8px">
+                            <div class="progress-fill" style="width:@(_stats.VerificationPercent.ToString("F1", System.Globalization.CultureInfo.InvariantCulture))%;background:var(--purple)"></div>
+                        </div>
+                    </div>
+
+                </div>
+            </div>
+        }
+
+        <div class="card">
+            <div class="card-header"><span class="card-title">Acciones sobre estudios</span></div>
+            <div class="card-body" style="display:flex;flex-direction:column;gap:10px">
+                <button class="btn btn-ghost" @onclick="RetryFailedAsync" disabled="@(_stats.Failed == 0 || _actionBusy)">
+                    ↺ Reintentar fallidos de migración (@_stats.Failed)
+                </button>
+                <button class="btn btn-ghost" @onclick="RetryVerifyFailedAsync" disabled="@(_stats.VerifyFailed == 0 || _actionBusy)">
+                    ↺ Reintentar fallidos de verificación (@_stats.VerifyFailed)
+                </button>
+            </div>
+        </div>
+    }
+
+    @* ── ESTUDIOS ── *@
+    @if (_detailTab == "estudios")
+    {
+        <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center">
+            <input class="form-input" style="flex:2;min-width:160px" placeholder="Study Instance UID..."
+                   @bind="_studyFilter.StudyInstanceUid" @bind:event="oninput" />
+            <input class="form-input" style="flex:1;min-width:120px" placeholder="Patient ID..."
+                   @bind="_studyFilter.PatientId" @bind:event="oninput" />
+            <input class="form-input" style="flex:1;min-width:120px" placeholder="Accession Number..."
+                   @bind="_studyFilter.AccessionNumber" @bind:event="oninput" />
+            <select class="form-input" style="width:160px" @bind="_studyFilter.Status">
+                <option value="">Todos los estados</option>
+                @foreach (var s in _studyStatuses)
+                {
+                    <option value="@s">@s</option>
+                }
+            </select>
+            <select class="form-input" style="width:120px" @bind="_studyFilter.Modality">
+                <option value="">Modalidad</option>
+                @foreach (var m in new[] { "CT", "MR", "MG", "CR", "DX", "US", "NM", "PT", "XA", "RF", "OT", "SC", "PR", "SR", "KO" })
+                {
+                    <option value="@m">@m</option>
+                }
+            </select>
+            <button class="btn btn-ghost btn-sm" @onclick="SearchStudiesAsync">🔍 Buscar</button>
+            <button class="btn btn-ghost btn-sm" @onclick="ExportCsvAsync">⬇ CSV</button>
+        </div>
+
+        @if (_studiesLoading)
+        {
+            <div class="loading-msg">Cargando estudios...</div>
+        }
+        else
+        {
+            <div class="card">
+                <div style="overflow-x:auto;overflow-y:auto;max-height:520px">
+                    <table class="data-table">
+                        <thead style="position:sticky;top:0;z-index:1;background:var(--panel)">
+                            <tr>
+                                <th>PatientID</th>
+                                <th>AccessionNumber</th>
+                                <th>StudyDate</th>
+                                <th>Modalidad</th>
+                                <th>Series/Inst (Orig)</th>
+                                <th>Series/Inst (Dest)</th>
+                                <th>Estado</th>
+                                <th>Tiempo migración</th>
+                                <th>Tiempo verificación</th>
+                                <th>Reintentos</th>
+                                <th>Acciones</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var s in _studies)
+                            {
+                                <tr>
+                                    <td class="mono small">@s.PatientId</td>
+                                    <td class="mono small">@s.AccessionNumber</td>
+                                    <td class="mono small text-dim">@s.StudyDate</td>
+                                    <td>
+                                        @if (!string.IsNullOrEmpty(s.ModalitiesInStudy))
+                                        {
+                                            <span class="proto-pill proto-DIMSE">@s.ModalitiesInStudy</span>
+                                        }
+                                    </td>
+                                    <td class="mono small">@s.SourceSeriesCount/@s.SourceInstanceCount</td>
+                                    <td class="mono small" style="color:@(s.TargetInstanceCount == s.SourceInstanceCount ? "var(--green)" : "var(--yellow)")">
+                                        @(s.TargetSeriesCount.HasValue ? $"{s.TargetSeriesCount}/{s.TargetInstanceCount}" : "—")
+                                    </td>
+                                    <td><StatusBadge Status="@s.MigrationStatus" /></td>
+                                    <td class="mono small" style="color:var(--text-dim)">
+                                        @if (s.MigrationDate.HasValue &&
+                                             s.MigrationStatus is "Migrated" or "Verified" or "VerificationPending")
+                                        {
+                                            <div>
+                                                <span style="color:var(--text)" title="Hora de finalización de migración">
+                                                    @s.MigrationDate.Value.ToLocalTime().ToString("HH:mm:ss")
+                                                </span>
+                                                @if (s.MigrationStartDate.HasValue)
+                                                {
+                                                    var secs = (int)(s.MigrationDate.Value - s.MigrationStartDate.Value).TotalSeconds;
+                                                    var dur  = secs < 60 ? $"{secs}s" : $"{secs/60}m {secs%60}s";
+                                                    <span style="color:var(--accent);margin-left:5px" title="Duración transferencia">(@dur)</span>
+                                                }
+                                            </div>
+                                        }
+                                        else if (s.MigrationStatus is "Migrating")
+                                        {
+                                            <span style="color:var(--yellow)">⟳ en curso</span>
+                                        }
+                                        else { <span>—</span> }
+                                    </td>
+                                    <td class="mono small" style="color:var(--text-dim)">
+                                        @if (s.VerificationDate.HasValue && s.MigrationStatus is "Verified")
+                                        {
+                                            <div>
+                                                <span style="color:var(--purple)" title="Hora de finalización verificación">
+                                                    @s.VerificationDate.Value.ToLocalTime().ToString("HH:mm:ss")
+                                                </span>
+                                                @if (s.VerificationStartDate.HasValue)
+                                                {
+                                                    var secs = (int)(s.VerificationDate.Value - s.VerificationStartDate.Value).TotalSeconds;
+                                                    var dur  = secs < 60 ? $"{secs}s" : $"{secs/60}m {secs%60}s";
+                                                    <span style="color:var(--purple);opacity:0.7;margin-left:5px" title="Duración verificación">(@dur)</span>
+                                                }
+                                            </div>
+                                        }
+                                        else if (s.MigrationStatus is "VerificationPending")
+                                        {
+                                            <span style="color:var(--yellow)">⟳ verificando</span>
+                                        }
+                                        else { <span>—</span> }
+                                    </td>
+                                    <td class="mono" style="color:@(s.RetryCount > 0 ? "var(--yellow)" : "var(--text-dim)")">
+                                        @s.RetryCount
+                                    </td>
+                                    <td>
+                                        <div style="display:flex;gap:4px;align-items:center">
+                                            @* Reset → Pending: Failed, Cancelled, Verified, Migrated *@
+                                            @if (s.MigrationStatus is "Failed" or "Cancelled" or "Verified" or "Migrated")
+                                            {
+                                                <button class="btn btn-ghost btn-sm"
+                                                        style="color:var(--accent);border-color:rgba(0,180,216,0.3)"
+                                                        title="Reiniciar estudio a Pending"
+                                                        @onclick="@(() => ResetStudyAsync(s))">▷</button>
+                                            }
+                                            @* Retry: Failed or RetryPending *@
+                                            @if (s.MigrationStatus is "Failed" or "RetryPending")
+                                            {
+                                                <button class="btn btn-ghost btn-sm"
+                                                        title="@s.LastError"
+                                                        @onclick="@(() => RetryStudyAsync(s))">↺</button>
+                                            }
+                                            @* Cancel: anything still in queue *@
+                                            @if (s.MigrationStatus is "Pending" or "Queued" or "RetryPending")
+                                            {
+                                                <button class="btn btn-ghost btn-sm"
+                                                        title="Cancelar este estudio"
+                                                        @onclick="@(() => CancelStudyAsync(s))">✕</button>
+                                            }
+                                        </div>
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+                <div style="padding:10px 16px;border-top:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px">
+                    <span class="small text-dim">
+                        @_studyTotal.ToString("N0") estudios
+                        @if (_studyTotalPages > 1)
+                        {
+                            <span> · mostrando @(((_studyFilter.PageNumber - 1) * _studyFilter.PageSize) + 1)–@Math.Min(_studyFilter.PageNumber * _studyFilter.PageSize, _studyTotal)</span>
+                        }
+                    </span>
+                    @if (_studyTotalPages > 1)
+                    {
+                        <div style="display:flex;align-items:center;gap:8px">
+                            <button class="btn btn-ghost btn-sm" @onclick="@(() => GoToStudyPage(1))" disabled="@(_studyFilter.PageNumber <= 1)" title="Primera">⏮</button>
+                            <button class="btn btn-ghost btn-sm" @onclick="PrevPage" disabled="@(_studyFilter.PageNumber <= 1)">← Ant</button>
+                            <span style="font-size:12px;color:var(--text-dim);display:flex;align-items:center;gap:6px">
+                                Página
+                                <input type="number" min="1" max="@_studyTotalPages" value="@_studyFilter.PageNumber"
+                                       @onchange="GoToStudyPageInput"
+                                       style="width:64px;text-align:center;padding:4px 6px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:var(--font-mono);font-size:12px" />
+                                de @_studyTotalPages.ToString("N0")
+                            </span>
+                            <button class="btn btn-ghost btn-sm" @onclick="NextPage" disabled="@(_studyFilter.PageNumber >= _studyTotalPages)">Sig →</button>
+                            <button class="btn btn-ghost btn-sm" @onclick="@(() => GoToStudyPage(_studyTotalPages))" disabled="@(_studyFilter.PageNumber >= _studyTotalPages)" title="Última">⏭</button>
+                        </div>
+                    }
+                </div>
+            </div>
+        }
+    }
+
+    @* ── VENTANA ── *@
+    @if (_detailTab == "ventana")
+    {
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">Ventana de ejecución</span>
+                <div style="margin-left:auto">
+                    <button class="btn btn-primary btn-sm" @onclick="SaveWindowAsync" disabled="@_actionBusy">💾 Guardar</button>
+                </div>
+            </div>
+            <div class="card-body">
+                <div class="form-section">Días habilitados</div>
+                <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px">
+                    @foreach (var day in _weekDays)
+                    {
+                        var on = _enabledDays.Contains(day.num);
+                        <div class="@(on ? "day-pill day-on" : "day-pill day-off")" style="cursor:pointer"
+                             @onclick="@(() => ToggleDay(day.num))">
+                            @day.label
+                        </div>
+                    }
+                </div>
+
+                <div class="form-section">Horario</div>
+                <div class="form-row-3">
+                    <div class="form-group">
+                        <label class="form-label">Hora inicio</label>
+                        <input class="form-input mono" @bind="_winStart" placeholder="23:00" />
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Hora fin</label>
+                        <input class="form-input mono" @bind="_winEnd" placeholder="06:00" />
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Zona horaria</label>
+                        <input class="form-input mono" @bind="_winTz" placeholder="Europe/Madrid" />
+                    </div>
+                </div>
+
+                @if (_detail?.Window is not null)
+                {
+                    <div class="info-block" style="margin-top:8px">
+                        <div>Ventana activa: <span>@_detail.Window.StartTime.ToString("HH:mm") — @_detail.Window.EndTime.ToString("HH:mm") (@_detail.Window.TimeZoneId)</span></div>
+                        <div>Días: <span>@FormatEnabledDays(_detail.Window.EnabledDays)</span></div>
+                        @if (_detail.Window.CrossesMidnight)
+                        {
+                            <div style="color:var(--yellow)">⚠ La ventana cruza medianoche</div>
+                        }
+                    </div>
+                }
+            </div>
+        </div>
+    }
+
+    @* ── LOGS ── *@
+    @if (_detailTab == "logs")
+    {
+        <div class="card">
+            <div class="card-header">
+                <span class="card-title">Auditoría de la migración</span>
+                <span class="card-sub" style="margin-left:8px;font-size:10px;color:var(--text-muted)">
+                    @Math.Min(_auditLogs.Count, 200) de @_auditLogs.Count entradas · más reciente primero
+                </span>
+                <button class="btn btn-ghost btn-sm" style="margin-left:auto" @onclick="LoadAuditAsync">↺</button>
+            </div>
+            <div class="log-viewer" style="max-height:500px;margin:12px">
+                @if (_auditLogs.Count == 0)
+                {
+                    <div class="text-dim" style="text-align:center;padding:20px;font-size:11px">Sin entradas</div>
+                }
+                @foreach (var l in _auditLogs.OrderByDescending(x => x.Timestamp).Take(200))
+                {
+                    <div class="log-line">
+                        <span class="log-ts">@l.Timestamp.ToString("yyyy-MM-dd HH:mm:ss")</span>
+                        <span class="log-level log-@l.Level">@l.Level</span>
+                        <span style="color:var(--accent);flex-shrink:0;width:80px;font-size:10px">@l.Action</span>
+                        <span style="color:@(l.Result == "OK" ? "var(--green)" : "var(--red)");flex-shrink:0;width:40px;font-size:10px">@l.Result</span>
+                        @if (!string.IsNullOrEmpty(l.StudyInstanceUid))
+                        {
+                            <span style="color:var(--text-muted);flex-shrink:0;font-size:10px">@l.StudyInstanceUid</span>
+                        }
+                        <span style="color:var(--text);font-size:11px;flex:1">@l.TechnicalMessage</span>
+                    </div>
+                }
+            </div>
+        </div>
+    }
+}
+else
+{
+    @* ══════════════════════════════════════════════════════════════════════
+       LISTADO DE MIGRACIONES
+       ══════════════════════════════════════════════════════════════════════ *@
+    <div class="page-header">
+        <div>
+            <h1 class="page-title">Migraciones</h1>
+            <p class="page-sub">@_migrations.Count migración(es) registrada(s)</p>
+        </div>
+        <button class="btn btn-ghost btn-sm" @onclick="OnInitializedAsync" title="Actualizar">↺ Actualizar</button>
+    </div>
+
+    @if (_migrations.Count == 0)
+    {
+        <div class="empty-state">
+            <div class="empty-icon">⇄</div>
+            <div class="empty-title">Sin migraciones</div>
+            <div class="empty-sub">Crea la primera migración para empezar.</div>
+        </div>
+    }
+    else
+    {
+        <div style="display:flex;flex-direction:column;gap:12px">
+            @foreach (var m in _migrations)
+            {
+                var stats = _statsList.FirstOrDefault(s => s.MigrationId == m.Id);
+                <div class="migration-card" @onclick="@(() => OpenDetail(m))">
+                    <div class="migration-card-header">
+                        <div style="flex:1">
+                            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                                <span style="font-weight:700;font-size:13px;color:var(--text)">@m.Name</span>
+                                <StatusBadge Status="@m.Status" />
+                                <span class="tag">@m.DiscoveryMethod</span>
+                                <span class="tag">@m.TransferMethod</span>
+                                <span class="tag">@m.WorkerThreads hilos</span>
+                            </div>
+                            <div class="pacs-card-vendor" style="margin-top:3px">
+                                @m.OriginNode?.Alias → @m.DestNode?.Alias · @m.Description
+                                @if (!string.IsNullOrWhiteSpace(m.InventoryDateFrom) || !string.IsNullOrWhiteSpace(m.InventoryDateTo))
+                                {
+                                    static string Fmt(string? d) => d?.Length == 8 ? $"{d[..4]}-{d[4..6]}-{d[6..8]}" : (d ?? "—");
+                                    <span style="margin-left:8px;color:var(--text-muted)">·</span>
+                                    <span class="mono" style="margin-left:8px;font-size:11px;color:var(--text-muted)">
+                                        @Fmt(m.InventoryDateFrom) → @Fmt(m.InventoryDateTo)
+                                    </span>
+                                }
+                            </div>
+                        </div>
+                        <div style="display:flex;gap:6px;align-items:center" @onclick:stopPropagation="true">
+                            @if (m.Status == "Running")
+                            {
+                                <button class="btn btn-ghost btn-sm" @onclick="@(async () => { await PauseAsync(m); })">⏸ Pausar</button>
+                            }
+                            @if (m.Status == "Paused")
+                            {
+                                <button class="btn btn-primary btn-sm" @onclick="@(async () => { await ResumeAsync(m); })">▶ Reanudar</button>
+                            }
+                            @if (m.Status is "Draft" or "Ready")
+                            {
+                                <button class="btn btn-primary btn-sm" @onclick="@(async () => { await StartAsync(m); })">▶ Iniciar</button>
+                            }
+                        </div>
+                    </div>
+                    @if (stats is not null && stats.Total > 0)
+                    {
+                        <div class="migration-card-body">
+                            <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:8px">
+                                @foreach (var s in new[]
+                                {
+                                    ("Total",      stats.Total,             "var(--text)"),
+                                    ("Pendientes", stats.Pending,           "var(--text-dim)"),
+                                    ("Migrados",   stats.Migrated,          "var(--green)"),
+                                    ("Verificados",stats.Verified,          "var(--purple)"),
+                                    ("Fallidos",   stats.Failed,            "var(--red)"),
+                                })
+                                {
+                                    <div style="text-align:center">
+                                        <div style="font-size:10px;color:var(--text-muted)">@s.Item1</div>
+                                        <div class="mono" style="font-size:15px;font-weight:700;color:@s.Item3">@s.Item2.ToString("N0")</div>
+                                    </div>
+                                }
+                            </div>
+                            <div style="display:flex;flex-direction:column;gap:6px">
+                                @* ── Barra de migración (cyan) ── *@
+                                <div style="display:flex;align-items:center;gap:8px">
+                                    <span style="font-size:10px;color:var(--text-muted);min-width:78px;text-transform:uppercase;letter-spacing:0.06em">Migración</span>
+                                    <div class="progress-track" style="flex:1">
+                                        <div class="progress-fill" style="width:@(stats.ProgressPercent.ToString("F1", System.Globalization.CultureInfo.InvariantCulture))%;background:var(--accent)"></div>
+                                    </div>
+                                    <span class="mono" style="color:var(--accent);font-size:12px;min-width:44px;text-align:right">@stats.ProgressPercent.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)%</span>
+                                </div>
+                                @* ── Barra de verificación (púrpura) ── *@
+                                <div style="display:flex;align-items:center;gap:8px">
+                                    <span style="font-size:10px;color:var(--text-muted);min-width:78px;text-transform:uppercase;letter-spacing:0.06em">Verificación</span>
+                                    <div class="progress-track" style="flex:1">
+                                        <div class="progress-fill" style="width:@(stats.VerificationPercent.ToString("F1", System.Globalization.CultureInfo.InvariantCulture))%;background:var(--purple)"></div>
+                                    </div>
+                                    <span class="mono" style="color:var(--purple);font-size:12px;min-width:44px;text-align:right">@stats.VerificationPercent.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)%</span>
+                                </div>
+                            </div>
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="migration-card-footer">
+                            <span class="small text-dim" style="font-style:italic">Sin estudios cargados</span>
+                        </div>
+                    }
+                </div>
+            }
+        </div>
+    }
+}
+
+@code {
+    // ── Confirm dialogs ───────────────────────────────────────────────────────
+
+    // ── Header delete (double confirm, blocked while Running) + edit ──────────
+    private int    _delStep;          // 0=none, 1=first, 2=final
+    private string _delMsg = "";
+    private bool   _deleting;         // dedicated flag — independent of _actionBusy
+    private bool   _editingMig;
+    private string _editMigError = "";
+    private string _emName = "", _emDesc = "", _emPriority = "";
+    private int    _emThreads = 4, _emRetries = 3, _emRetryDelay = 60;
+    private bool   _emOldestFirst;
+
+    // ── State ─────────────────────────────────────────────────────────────────
+    private List<Migration>     _migrations  = [];
+    private List<DicomNode>     _nodes       = [];
+    private List<MigrationStats> _statsList  = [];
+    private Migration?          _detail;
+    private MigrationStats?     _stats;
+    private string _actionMsg = "";
+    private bool _actionOk, _actionBusy;
+    private string _detailTab = "dashboard";
+    private System.Threading.Timer? _refreshTimer;
+
+    // ── Connection health ─────────────────────────────────────────────────────
+    private ConnectionHealth? _health;
+    private bool _probing;
+
+    // ── Study query ──────────────────────────────────────────────────────────
+    private StudyFilter _studyFilter = new() { PageSize = 500 };
+    private List<MigrationStudy> _studies = [];
+    private int  _studyTotal;
+    private int  _studyTotalPages = 1;
+    private bool _studiesLoading;
+    private static readonly string[] _studyStatuses = ["Pending","Queued","Migrating","Migrated","VerificationPending","Verified","Failed","RetryPending","Cancelled"];
+
+    // ── Window config ─────────────────────────────────────────────────────────
+    private HashSet<int> _enabledDays = new([1, 2, 3, 4, 5]);
+    private string _winStart = "23:00", _winEnd = "06:00", _winTz = "Europe/Madrid";
+    private static readonly (int num, string label)[] _weekDays =
+        [(1,"Lun"),(2,"Mar"),(3,"Mié"),(4,"Jue"),(5,"Vie"),(6,"Sáb"),(7,"Dom")];
+
+    // Map a CSV of day indices ("1,3,5") to localized names ("Lun, Mié, Vie")
+    private static string FormatEnabledDays(string? csv)
+    {
+        if (string.IsNullOrWhiteSpace(csv)) return "—";
+        var names = csv.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(t => int.TryParse(t, out var n) ? n : -1)
+            .Where(n => n is >= 1 and <= 7)
+            .OrderBy(n => n)
+            .Select(n => _weekDays.First(d => d.num == n).label);
+        var list = names.ToList();
+        return list.Count == 0 ? "—" : string.Join(", ", list);
+    }
+
+    // ── Audit logs ────────────────────────────────────────────────────────────
+    private List<MigrationAuditLog> _auditLogs = [];
+
+    // ── Lifecycle ────────────────────────────────────────────────────────────
+    protected override async Task OnInitializedAsync()
+    {
+        _migrations = await MigrationRepo.GetAllAsync();
+        _nodes      = await NodeRepo.GetAllAsync();
+        _statsList  = [];
+        foreach (var m in _migrations)
+            _statsList.Add(await StudyRepo.GetStatsAsync(m.Id));
+    }
+
+    async Task OpenDetail(Migration m)
+    {
+        _detail    = await MigrationRepo.GetByIdAsync(m.Id);
+        _stats     = await StudyRepo.GetStatsAsync(m.Id);
+        _detailTab = "dashboard";
+        _actionMsg = "";
+
+        _delStep = 0; _delMsg = ""; _editingMig = false;
+        if (_detail?.Window is not null)
+        {
+            _enabledDays = _detail.Window.EnabledDays.Split(',')
+                .Select(d => int.TryParse(d.Trim(), out var n) ? n : -1)
+                .Where(n => n > 0).ToHashSet();
+            _winStart = _detail.Window.StartTime.ToString("HH:mm");
+            _winEnd   = _detail.Window.EndTime.ToString("HH:mm");
+            _winTz    = _detail.Window.TimeZoneId;
+        }
+        // Restart auto-refresh if migration OR verification is still active
+        if (_detail?.Status is "Running" or "Paused" || _detail?.VerificationStatus is "Running" or "Paused")
+            StartAutoRefresh();
+        // Cargar salud de conexión (cacheada; sondea si está caduca)
+        _health = null;
+        if (_detail is not null)
+        {
+            try { _health = await HealthSvc.GetHealthAsync(_detail.Id); } catch { /* no crítico */ }
+        }
+        await SearchStudiesAsync();
+    }
+
+    async Task SetDetailTab(string t)
+    {
+        _detailTab = t;
+        if (t == "logs")     await LoadAuditAsync();
+        if (t == "estudios") await SearchStudiesAsync();
+    }
+
+    async Task RefreshDetailAsync()
+    {
+        if (_detail is null) return;
+        _detail = await MigrationRepo.GetByIdAsync(_detail.Id);
+        _stats  = await StudyRepo.GetStatsAsync(_detail!.Id);
+        // Update the stats for this migration in the list too
+        var idx = _migrations.FindIndex(m => m.Id == _detail.Id);
+        if (idx >= 0 && idx < _statsList.Count)
+            _statsList[idx] = _stats;
+        // Si estamos viendo la pestaña de estudios, recargar también la tabla
+        if (_detailTab == "estudios")
+            await SearchStudiesAsync();
+        // Detener auto-refresh solo si NO hay nada que pueda cambiar solo: ni migración
+        // activa (Running/Paused) ni verificación activa (Running/Paused). Una pausa
+        // (manual o automática) puede reanudarse sola, así que mantenemos el refresco.
+        var migActive    = _detail.Status is "Running" or "Paused";
+        var verifyActive = _detail.VerificationStatus is "Running" or "Paused";
+        if (!migActive && !verifyActive)
+            StopAutoRefresh();
+        // Refrescar también la salud de conexión (usa caché por nodo, sin C-ECHO extra)
+        // para que el panel no se quede congelado en un valor antiguo.
+        if (_detail is not null)
+        {
+            try { _health = await HealthSvc.GetHealthAsync(_detail.Id); } catch { /* no crítico */ }
+        }
+        await InvokeAsync(StateHasChanged);
+    }
+
+    void BackToList()
+    {
+        StopAutoRefresh();
+        _detail = null;
+        _ = OnInitializedAsync();
+    }
+
+    // ── Auto-refresh (cada 5 s mientras Running) ─────────────────────────────
+    void StartAutoRefresh()
+    {
+        StopAutoRefresh();
+        _refreshTimer = new System.Threading.Timer(
+            async _ => await RefreshDetailAsync(),
+            null,
+            TimeSpan.FromSeconds(3),
+            TimeSpan.FromSeconds(3));
+    }
+
+    void StopAutoRefresh()
+    {
+        _refreshTimer?.Dispose();
+        _refreshTimer = null;
+    }
+
+    public void Dispose() => StopAutoRefresh();
+
+    // ── Study operations ─────────────────────────────────────────────────────
+    async Task SearchStudiesAsync()
+    {
+        if (_detail is null) return;
+        _studiesLoading = true;
+        _studies = await StudyRepo.GetPagedAsync(_detail.Id, _studyFilter);
+        _studyTotal = await StudyRepo.CountAsync(_detail.Id, _studyFilter);
+        _studyTotalPages = _studyTotal == 0 ? 1 : (int)Math.Ceiling(_studyTotal / (double)_studyFilter.PageSize);
+        if (_studyFilter.PageNumber > _studyTotalPages) _studyFilter.PageNumber = _studyTotalPages;
+        _studiesLoading = false;
+    }
+
+    async Task PrevPage() { if (_studyFilter.PageNumber > 1) { _studyFilter.PageNumber--; await SearchStudiesAsync(); } }
+    async Task NextPage() { if (_studyFilter.PageNumber < _studyTotalPages) { _studyFilter.PageNumber++; await SearchStudiesAsync(); } }
+
+    async Task GoToStudyPage(int page)
+    {
+        if (page < 1) page = 1;
+        if (page > _studyTotalPages) page = _studyTotalPages;
+        _studyFilter.PageNumber = page;
+        await SearchStudiesAsync();
+    }
+
+    async Task GoToStudyPageInput(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), out var p))
+            await GoToStudyPage(p);
+    }
+
+    async Task RetryStudyAsync(MigrationStudy s)
+    {
+        await StudyRepo.UpdateStatusAsync(s.Id, "RetryPending");
+        s.MigrationStatus = "RetryPending";
+        StateHasChanged();
+    }
+
+    /// <summary>Resetea el estudio a Pending como si nunca se hubiese intentado migrar.</summary>
+    async Task ResetStudyAsync(MigrationStudy s)
+    {
+        await StudyRepo.UpdateStatusAsync(s.Id, "Pending");
+        s.MigrationStatus = "Pending";
+        // Clear destination counts so verification is clean next time
+        if (_detail is not null)
+            _stats = await StudyRepo.GetStatsAsync(_detail.Id);
+        StateHasChanged();
+    }
+
+    async Task CancelStudyAsync(MigrationStudy s)
+    {
+        await StudyRepo.CancelStudyAsync(s.Id);
+        await SearchStudiesAsync();
+    }
+
+    void ExportCsvAsync()
+    {
+        if (_detail is null) return;
+        // Build query string from current filters so the export matches what's shown
+        var qs = new List<string>();
+        if (!string.IsNullOrWhiteSpace(_studyFilter.Status))           qs.Add($"status={Uri.EscapeDataString(_studyFilter.Status)}");
+        if (!string.IsNullOrWhiteSpace(_studyFilter.Modality))         qs.Add($"modality={Uri.EscapeDataString(_studyFilter.Modality)}");
+        if (!string.IsNullOrWhiteSpace(_studyFilter.StudyInstanceUid)) qs.Add($"uid={Uri.EscapeDataString(_studyFilter.StudyInstanceUid)}");
+        if (!string.IsNullOrWhiteSpace(_studyFilter.PatientId))        qs.Add($"patientId={Uri.EscapeDataString(_studyFilter.PatientId)}");
+        if (!string.IsNullOrWhiteSpace(_studyFilter.AccessionNumber))  qs.Add($"accession={Uri.EscapeDataString(_studyFilter.AccessionNumber)}");
+        var url = $"/migrations/{_detail.Id}/export.csv";
+        if (qs.Count > 0) url += "?" + string.Join("&", qs);
+        Nav.NavigateTo(url, forceLoad: true);
+    }
+
+    // ── Discovery ─────────────────────────────────────────────────────────────
+    // ── Window ───────────────────────────────────────────────────────────────
+    void ToggleDay(int d) { if (!_enabledDays.Remove(d)) _enabledDays.Add(d); }
+
+    async Task SaveWindowAsync()
+    {
+        if (_detail is null) return;
+        _actionBusy = true;
+        try
+        {
+            var updated = await MigrationRepo.GetByIdAsync(_detail.Id);
+            if (updated is null) return;
+            updated.Window = new ExecutionWindow
+            {
+                MigrationId = _detail.Id,
+                EnabledDays = string.Join(",", _enabledDays.OrderBy(d => d)),
+                StartTime   = TimeOnly.Parse(_winStart),
+                EndTime     = TimeOnly.Parse(_winEnd),
+                TimeZoneId  = _winTz,
+            };
+            await MigrationRepo.UpdateAsync(updated);
+            _detail = updated;
+            ShowMsg("Ventana guardada.", true);
+        }
+        catch (Exception ex) { ShowMsg($"Error: {ex.Message}", false); }
+        finally { _actionBusy = false; }
+    }
+
+    // ── Migration control ────────────────────────────────────────────────────
+    async Task StartMigrationAsync()
+    {
+        if (_detail is null) return;
+        _actionBusy = true;
+        try
+        {
+            await Worker.StartAsync(_detail.Id);
+            await RefreshDetailAsync();
+            StartAutoRefresh();
+            ShowMsg("Migración iniciada.", true);
+        }
+        catch (Exception ex) { ShowMsg($"Error: {ex.Message}", false); }
+        finally { _actionBusy = false; }
+    }
+
+    async Task PauseMigrationAsync()
+    {
+        if (_detail is null) return;
+        _actionBusy = true;
+        try
+        {
+            await Worker.PauseAsync(_detail.Id);
+            await RefreshDetailAsync();
+            ShowMsg("Migración pausada.", true);
+        }
+        catch (Exception ex) { ShowMsg($"Error: {ex.Message}", false); }
+        finally { _actionBusy = false; }
+    }
+
+    async Task ResumeMigrationAsync()
+    {
+        if (_detail is null) return;
+        _actionBusy = true;
+        try
+        {
+            await Worker.ResumeAsync(_detail.Id);
+            await RefreshDetailAsync();
+            StartAutoRefresh();
+            ShowMsg("Migración reanudada.", true);
+        }
+        catch (Exception ex) { ShowMsg($"Error: {ex.Message}", false); }
+        finally { _actionBusy = false; }
+    }
+
+    /// <summary>Parar: detiene el proceso. Los hilos en curso terminan su estudio
+    /// actual (no se interrumpen), pero no se toma más trabajo. Deja estado Cancelled;
+    /// con Iniciar se puede relanzar.</summary>
+    async Task StopMigrationAsync()
+    {
+        if (_detail is null) return;
+        _actionBusy = true;
+        try
+        {
+            await Worker.PauseAsync(_detail.Id);   // cancela el token: los workers salen al terminar el actual
+            await MigrationRepo.UpdateStatusAsync(_detail.Id, "Cancelled");
+            await RefreshDetailAsync();
+            StopAutoRefresh();
+            ShowMsg("Migración detenida.", true);
+        }
+        catch (Exception ex) { ShowMsg($"Error: {ex.Message}", false); }
+        finally { _actionBusy = false; }
+    }
+
+    async Task RetryFailedAsync()
+    {
+        if (_detail is null) return;
+        _actionBusy = true;
+        try { await StudyRepo.RetryFailedAsync(_detail.Id); _stats = await StudyRepo.GetStatsAsync(_detail.Id); ShowMsg("Fallidos de migración marcados para reintento. Inicia la migración para procesarlos.", true); }
+        catch (Exception ex) { ShowMsg($"Error: {ex.Message}", false); }
+        finally { _actionBusy = false; }
+    }
+
+    async Task RetryVerifyFailedAsync()
+    {
+        if (_detail is null) return;
+        _actionBusy = true;
+        try { await StudyRepo.RetryVerifyFailedAsync(_detail.Id); _stats = await StudyRepo.GetStatsAsync(_detail.Id); ShowMsg("Fallidos de verificación devueltos a Migrado. Inicia la verificación para procesarlos.", true); }
+        catch (Exception ex) { ShowMsg($"Error: {ex.Message}", false); }
+        finally { _actionBusy = false; }
+    }
+
+    // ── Header delete (double confirmation, blocked while Running) ───────────
+    void RequestDeleteMigration()
+    {
+        _delMsg = ""; _editingMig = false;
+        if (_detail is null) return;
+        if (_detail.Status == "Running")
+        {
+            _delMsg = "La migración se está ejecutando. Debes pausarla antes de poder eliminarla.";
+            _delStep = 0;
+            return;
+        }
+        // Stop auto-refresh while the confirmation dialog is open —
+        // avoids race conditions between the timer and the delete click.
+        StopAutoRefresh();
+        _delStep = 1;
+    }
+
+    async Task DeleteMigrationConfirmed()
+    {
+        if (_detail is null) return;
+        // Re-verify status with a fresh DB read before destroying data
+        var fresh = await MigrationRepo.GetByIdAsync(_detail.Id);
+        if (fresh?.Status == "Running")
+        {
+            _delMsg = "La migración se está ejecutando. Debes pausarla antes de poder eliminarla.";
+            _delStep = 0;
+            return;
+        }
+        _deleting = true;
+        var id = _detail.Id;
+        try
+        {
+            await MigrationRepo.DeleteAsync(id);
+
+            // Borrar una migración libera muchas filas (estudios + auditoría). Recuperar
+            // ese espacio del fichero con un vacuum incremental, en segundo plano para
+            // no bloquear la navegación.
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    using var scope = ScopeFactory.CreateScope();
+                    var maintenance = scope.ServiceProvider
+                        .GetRequiredService<DicomMigrator.Infrastructure.Data.DatabaseMaintenance>();
+                    await maintenance.IncrementalVacuumAsync();
+                }
+                catch { /* no crítico */ }
+            });
+
+            _delStep = 0;
+            BackToList();
+        }
+        catch (Exception ex)
+        {
+            _delMsg = ex.Message;
+            _delStep = 0;
+        }
+        finally
+        {
+            // Always reset — ensures the button is re-enabled if delete fails
+            _deleting = false;
+        }
+    }
+
+    // ── Edit migration properties ────────────────────────────────────────────
+    void OpenEditMigration()
+    {
+        if (_detail is null) return;
+        _delStep = 0; _delMsg = ""; _editMigError = "";
+        _emName       = _detail.Name;
+        _emDesc       = _detail.Description ?? "";
+        _emThreads    = _detail.WorkerThreads;
+        _emRetries    = _detail.MaxRetries;
+        _emRetryDelay = _detail.RetryDelaySeconds;
+        _emPriority   = _detail.ModalityPriority ?? "";
+        _emOldestFirst = _detail.OldestFirst;
+        _editingMig   = true;
+    }
+
+    async Task SaveEditMigrationAsync()
+    {
+        if (_detail is null) return;
+        if (string.IsNullOrWhiteSpace(_emName)) { _editMigError = "El nombre es obligatorio."; return; }
+        _actionBusy = true; _editMigError = "";
+        try
+        {
+            _detail.Name             = _emName.Trim();
+            _detail.Description      = string.IsNullOrWhiteSpace(_emDesc) ? string.Empty : _emDesc.Trim();
+            _detail.WorkerThreads    = _emThreads;
+            _detail.MaxRetries       = _emRetries;
+            _detail.RetryDelaySeconds = _emRetryDelay;
+            _detail.ModalityPriority = _emPriority?.Trim() ?? "";
+            _detail.OldestFirst      = _emOldestFirst;
+            await MigrationRepo.UpdateAsync(_detail);
+            _editingMig = false;
+            ShowMsg("Propiedades de la migración actualizadas.", true);
+            await RefreshDetailAsync();
+        }
+        catch (Exception ex) { _editMigError = ex.Message; }
+        finally { _actionBusy = false; }
+    }
+
+    async Task ProbeHealthAsync()
+    {
+        if (_detail is null) return;
+        _probing = true;
+        try { _health = await HealthSvc.ProbeNowAsync(_detail.Id); }
+        catch (Exception ex) { ShowMsg($"Error comprobando conexión: {ex.Message}", false); }
+        finally { _probing = false; }
+    }
+
+    RenderFragment RenderNodeHealth(string label, NodeHealth? nh) =>@<div style="display:flex;align-items:center;gap:6px">
+            <span style="font-size:11px;color:var(--text-muted)">@label</span>
+            @if (nh is null)
+            {
+                <span style="font-size:11px;color:var(--text-muted)">—</span>
+            }
+            else if (nh.Reachable)
+            {
+                <span style="width:8px;height:8px;border-radius:50%;background:var(--green);
+                             box-shadow:0 0 6px var(--green)"></span>
+                <span style="font-size:11px;color:var(--green)">Accesible (@nh.DurationMs ms)</span>
+            }
+            else
+            {
+                <span style="width:8px;height:8px;border-radius:50%;background:var(--red);
+                             box-shadow:0 0 6px var(--red)"></span>
+                <span style="font-size:11px;color:var(--red)" title="@nh.Error">Inaccesible</span>
+            }
+        </div>;
+
+    async Task StartVerificationAsync()
+    {
+        if (_detail is null) return;
+        _actionBusy = true;
+        var migId = _detail.Id;
+        try
+        {
+            await VerificationSvc.StartVerificationAsync(migId);
+            ShowMsg("Verificación iniciada.", true);
+            await RefreshDetailAsync();
+            StartAutoRefresh();
+        }
+        catch (Exception ex) { ShowMsg($"Error: {ex.Message}", false); }
+        finally { _actionBusy = false; }
+    }
+
+    async Task PauseVerificationAsync()
+    {
+        if (_detail is null) return;
+        _actionBusy = true;
+        try
+        {
+            await VerificationSvc.PauseVerificationAsync(_detail.Id);
+            ShowMsg("Verificación pausada.", true);
+            await RefreshDetailAsync();
+        }
+        catch (Exception ex) { ShowMsg($"Error: {ex.Message}", false); }
+        finally { _actionBusy = false; }
+    }
+
+    async Task ResumeVerificationAsync()
+    {
+        if (_detail is null) return;
+        _actionBusy = true;
+        try
+        {
+            await VerificationSvc.ResumeVerificationAsync(_detail.Id);
+            ShowMsg("Verificación reanudada.", true);
+            await RefreshDetailAsync();
+            StartAutoRefresh();
+        }
+        catch (Exception ex) { ShowMsg($"Error: {ex.Message}", false); }
+        finally { _actionBusy = false; }
+    }
+
+    async Task StopVerificationAsync()
+    {
+        if (_detail is null) return;
+        _actionBusy = true;
+        try
+        {
+            await VerificationSvc.StopVerificationAsync(_detail.Id);
+            ShowMsg("Verificación detenida.", true);
+            await RefreshDetailAsync();
+        }
+        catch (Exception ex) { ShowMsg($"Error: {ex.Message}", false); }
+        finally { _actionBusy = false; }
+    }
+
+    // Shortcut actions from list view
+    async Task StartAsync(Migration m)  { _actionBusy = true; try { await Worker.StartAsync(m.Id); m.Status = "Running"; } finally { _actionBusy = false; StateHasChanged(); } }
+    async Task PauseAsync(Migration m)  { _actionBusy = true; try { await Worker.PauseAsync(m.Id); m.Status = "Paused"; } finally { _actionBusy = false; StateHasChanged(); } }
+    async Task ResumeAsync(Migration m) { _actionBusy = true; try { await Worker.ResumeAsync(m.Id); m.Status = "Running"; } finally { _actionBusy = false; StateHasChanged(); } }
+
+    // ── Audit logs ────────────────────────────────────────────────────────────
+    async Task LoadAuditAsync()
+    {
+        if (_detail is null) return;
+        _auditLogs = await AuditRepo.GetAsync(_detail.Id, 500);
+    }
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+    void ShowMsg(string msg, bool ok) { _actionMsg = msg; _actionOk = ok; }
+
+    static string FormatElapsed(double totalSeconds)
+    {
+        var ts = TimeSpan.FromSeconds(totalSeconds);
+        if (ts.TotalSeconds < 60)  return $"{(int)ts.TotalSeconds}s";
+        if (ts.TotalMinutes < 60)  return $"{(int)ts.TotalMinutes}m {ts.Seconds}s";
+        return $"{(int)ts.TotalHours}h {ts.Minutes}m {ts.Seconds}s";
+    }
+
+    static string StatusColor(string status) => status switch
+    {
+        "Running"   => "var(--accent)",
+        "Completed" => "var(--purple)",
+        "Paused"    => "var(--yellow)",
+        "Failed"    => "var(--red)",
+        _           => "var(--border2)"
+    };
+}

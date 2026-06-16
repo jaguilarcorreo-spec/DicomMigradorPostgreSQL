@@ -1,0 +1,690 @@
+@page "/nodos"
+@rendermode InteractiveServer
+@inject INodeRepository NodeRepo
+@inject IMigrationRepository MigrationRepo
+@inject IMigrationWorker Worker
+@inject IDimseService DimseService
+@inject ILocalConfigRepository ConfigRepo
+
+<PageTitle>Nodos DICOM — Migrator</PageTitle>
+
+@* ══════════════════ FORMULARIO ══════════════════ *@
+@if (_showForm)
+{
+    <div class="page-header">
+        <button class="btn btn-ghost" @onclick="CancelForm">← Volver</button>
+        <h1 class="page-title">@(_editId.HasValue ? "Editar Nodo" : "Nuevo Nodo DICOM")</h1>
+    </div>
+
+    @if (!string.IsNullOrEmpty(_error))
+    {
+        <div class="alert-error">⚠ @_error</div>
+    }
+
+    @* ── Advertencia migraciones activas ── *@
+    @if (_activeMigrations.Count > 0)
+    {
+        <div style="padding:14px 18px;background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.3);
+                    border-radius:10px;margin-bottom:16px">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">
+                <span style="font-size:18px">⚠</span>
+                <div>
+                    <div style="font-weight:700;color:var(--yellow);font-size:13px">
+                        @_activeMigrations.Count migración(es) activa(s) usan este nodo
+                    </div>
+                    <div style="font-size:11px;color:var(--text-dim);margin-top:3px">
+                        Los cambios en la configuración del nodo no afectarán a los workers en curso
+                        hasta que las migraciones sean pausadas o canceladas y reanudadas.
+                        Se recomienda pausarlas antes de guardar.
+                    </div>
+                </div>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:6px">
+                @foreach (var m in _activeMigrations)
+                {
+                    <div style="display:flex;align-items:center;justify-content:space-between;
+                                background:rgba(245,158,11,0.06);border:1px solid rgba(245,158,11,0.2);
+                                border-radius:7px;padding:8px 14px">
+                        <div>
+                            <span style="font-weight:600;font-size:12px;color:var(--text)">@m.Name</span>
+                            <span style="margin-left:8px;background:rgba(245,158,11,0.15);color:var(--yellow);
+                                         border:1px solid rgba(245,158,11,0.3);border-radius:3px;
+                                         padding:1px 7px;font-size:10px;font-weight:700;font-family:var(--font-mono)">
+                                @m.Status
+                            </span>
+                        </div>
+                        @if (m.Status == "Running")
+                        {
+                            <button class="btn btn-sm"
+                                    style="background:rgba(245,158,11,0.12);color:var(--yellow);border:1px solid rgba(245,158,11,0.3)"
+                                    @onclick="@(async () => await PauseMigrationAsync(m))"
+                                    disabled="@_pausingIds.Contains(m.Id)">
+                                @(_pausingIds.Contains(m.Id) ? "⟳ Pausando..." : "⏸ Pausar ahora")
+                            </button>
+                        }
+                        else
+                        {
+                            <span style="font-size:11px;color:var(--green)">✓ Ya pausada</span>
+                        }
+                    </div>
+                }
+            </div>
+            @if (_activeMigrations.All(m => m.Status != "Running"))
+            {
+                <div style="margin-top:10px;font-size:11px;color:var(--green)">
+                    ✓ Todas las migraciones están pausadas. Puedes guardar los cambios con seguridad.
+                    Al reanudarlas usarán la nueva configuración del nodo.
+                </div>
+            }
+        </div>
+    }
+
+    <div class="card">
+        <div class="tab-bar">
+            <button class="@TabCss("general")"  @onclick="@(() => _tab = "general")">General</button>
+            <button class="@TabCss("dimse")"    @onclick="@(() => _tab = "dimse")">DIMSE</button>
+            <button class="@TabCss("dicomweb")" @onclick="@(() => _tab = "dicomweb")">DICOMweb</button>
+        </div>
+
+        <div class="card-body">
+
+            @* ── GENERAL ── *@
+            @if (_tab == "general")
+            {
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label">Alias *</label>
+                        <input class="form-input" @bind="_alias" placeholder="PACS-ORIGEN-HM" />
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Tipo de nodo *</label>
+                        <select class="form-input" @bind="_nodeType">
+                            <option value="origin">Origen</option>
+                            <option value="destination">Destino</option>
+                            <option value="both">Origen y Destino</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Descripción</label>
+                    <input class="form-input" @bind="_description" placeholder="PACS principal sala TAC..." />
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Estado</label>
+                    <div class="toggle-row">
+                        <input type="checkbox" id="chk-active" @bind="_isActive" />
+                        <label for="chk-active">@(_isActive ? "Activo" : "Inactivo")</label>
+                    </div>
+                </div>
+            }
+
+            @* ── DIMSE ── *@
+            @if (_tab == "dimse")
+            {
+                <div class="form-section">AE Remoto</div>
+                <div class="form-row-3">
+                    <div class="form-group">
+                        <label class="form-label">AE Title remoto *</label>
+                        <input class="form-input mono" @bind="_remoteAet" placeholder="PACS_SCP" maxlength="16" />
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">IP / Hostname *</label>
+                        <input class="form-input mono" @bind="_remoteHost" placeholder="192.168.1.50" />
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Puerto DICOM *</label>
+                        <input class="form-input mono" type="number" @bind="_remotePort" />
+                    </div>
+                </div>
+
+                <div class="form-section">AE Local
+                    <span style="font-size:9px;color:var(--text-muted);font-weight:400;text-transform:none;letter-spacing:0;margin-left:8px">
+                        — configurable en <a href="/localconfig" style="color:var(--accent)">Config. local SCU</a>
+                    </span>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label">AE Title local</label>
+                        <input class="form-input mono" value="@_localAet" disabled />
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Puerto escucha local</label>
+                        <input class="form-input mono" value="@_localPort" disabled />
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label">TLS</label>
+                    <div class="toggle-row">
+                        <input type="checkbox" id="chk-tls" @bind="_useTls" />
+                        <label for="chk-tls">@(_useTls ? "Habilitado" : "Deshabilitado")</label>
+                    </div>
+                </div>
+
+                <div class="advanced-toggle" @onclick="@(() => _advDimse = !_advDimse)">
+                    <span>@(_advDimse ? "▾" : "▸")</span> Opciones avanzadas
+                </div>
+                @if (_advDimse)
+                {
+                    <div class="advanced-body">
+                        <div class="form-row-3">
+                            <div class="form-group">
+                                <label class="form-label">Timeout asociación (s)</label>
+                                <input class="form-input mono" type="number" @bind="_assocTimeout" />
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">Timeout operación (s)</label>
+                                <input class="form-input mono" type="number" @bind="_opTimeout" />
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">Máx. asociaciones simult.</label>
+                                <input class="form-input mono" type="number" @bind="_maxAssoc" />
+                            </div>
+                        </div>
+                    </div>
+                }
+            }
+
+            @* ── DICOMWEB ── *@
+            @if (_tab == "dicomweb")
+            {
+                <div class="form-group">
+                    <label class="form-label">Soporta DICOMweb</label>
+                    <div style="display:flex;align-items:center;gap:10px;margin-top:6px">
+                        <div class="toggle-switch @(_hasDicomWeb ? "on" : "")"
+                             @onclick="@(() => _hasDicomWeb = !_hasDicomWeb)">
+                            <div class="toggle-thumb"></div>
+                        </div>
+                        <span class="toggle-label">@(_hasDicomWeb ? "Habilitado" : "Deshabilitado")</span>
+                    </div>
+                </div>
+
+                @* Always show fields — dimmed when disabled so data is never lost visually *@
+                <div style="opacity:@(_hasDicomWeb ? "1" : "0.5");pointer-events:@(_hasDicomWeb ? "auto" : "none");transition:opacity 0.2s">
+                @if (!_hasDicomWeb && !string.IsNullOrWhiteSpace(_webBaseUrl))
+                {
+                    <div style="margin-bottom:10px;padding:8px 12px;background:rgba(100,116,139,0.08);border:1px solid rgba(100,116,139,0.2);border-radius:7px;font-size:11px;color:var(--text-muted)">
+                        ℹ DICOMweb deshabilitado. La configuración se conserva y se usará cuando se vuelva a habilitar.
+                    </div>
+                }
+                    <div class="form-section">Endpoints</div>
+                    <div class="form-group">
+                        <label class="form-label">Base URL *</label>
+                        <input class="form-input mono" @bind="_webBaseUrl" @bind:event="oninput"
+                               placeholder="https://pacs.hospital.es/dicomweb" />
+                    </div>
+                    <div class="form-row-3">
+                        <div class="form-group">
+                            <label class="form-label">Path QIDO-RS</label>
+                            <input class="form-input mono" @bind="_webQidoPath" @bind:event="oninput" placeholder="/qido-rs" />
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Path WADO-RS</label>
+                            <input class="form-input mono" @bind="_webWadoPath" @bind:event="oninput" placeholder="/wado-rs" />
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Path STOW-RS</label>
+                            <input class="form-input mono" @bind="_webStowPath" @bind:event="oninput" placeholder="/stow-rs" />
+                        </div>
+                    </div>
+
+                    @* ── Preview URLs a guardar ── *@
+                    @if (!string.IsNullOrWhiteSpace(_webBaseUrl))
+                    {
+                        <div style="background:var(--bg);border:1px solid var(--border);border-radius:7px;
+                                    padding:10px 14px;margin-top:4px;margin-bottom:8px">
+                            <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;
+                                        letter-spacing:0.08em;margin-bottom:8px">
+                                URLs que se guardarán
+                            </div>
+                            @foreach (var (label, url) in new[]
+                            {
+                                ("QIDO-RS", _webBaseUrl.TrimEnd('/') + _webQidoPath),
+                                ("WADO-RS", _webBaseUrl.TrimEnd('/') + _webWadoPath),
+                                ("STOW-RS", _webBaseUrl.TrimEnd('/') + _webStowPath),
+                            })
+                            {
+                                <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+                                    <span style="font-size:10px;font-weight:700;color:var(--accent);
+                                                 width:56px;flex-shrink:0;font-family:var(--font-mono)">@label</span>
+                                    <span style="font-size:11px;color:var(--text-dim);
+                                                 font-family:var(--font-mono);word-break:break-all">@url</span>
+                                </div>
+                            }
+                        </div>
+                    }
+
+                    <div class="form-section">Autenticación</div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label class="form-label">Tipo</label>
+                            <select class="form-input" @bind="_authType">
+                                <option value="None">None</option>
+                                <option value="Basic">Basic</option>
+                                <option value="Bearer">Bearer</option>
+                                <option value="ApiKey">ApiKey</option>
+                                <option value="OAuth2">OAuth2</option>
+                            </select>
+                        </div>
+                        @if (_authType != "None")
+                        {
+                            <div class="form-group">
+                                <label class="form-label">
+                                    @(_authType == "Basic" ? "Usuario : Contraseña" : "Token / API Key")
+                                </label>
+                                <input class="form-input mono" type="password" @bind="_secret"
+                                       placeholder="••••••••••••" />
+                            </div>
+                        }
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label">Validar TLS</label>
+                        <div class="toggle-row">
+                            <input type="checkbox" id="chk-tls-web" @bind="_validateTls" />
+                            <label for="chk-tls-web">
+                                @(_validateTls ? "Sí — validar certificado" : "No — ignorar certificado")
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="advanced-toggle" @onclick="@(() => _advWeb = !_advWeb)">
+                        <span>@(_advWeb ? "▾" : "▸")</span> Configuración avanzada
+                    </div>
+                    @if (_advWeb)
+                    {
+                        <div class="advanced-body">
+                            <div class="form-group" style="max-width:200px">
+                                <label class="form-label">Timeout HTTP (s)</label>
+                                <input class="form-input mono" type="number" @bind="_httpTimeout" />
+                            </div>
+                        </div>
+                    }
+                </div>
+            }
+
+            <hr class="divider" />
+            <div class="form-actions">
+                <button class="btn btn-ghost" @onclick="CancelForm">Cancelar</button>
+                <button class="btn btn-primary" @onclick="SaveAsync" disabled="@_saving">
+                    @(_saving ? "Guardando..." : "💾 Guardar nodo")
+                </button>
+            </div>
+        </div>
+    </div>
+}
+else
+{
+    @* ══════════════════ LISTADO ══════════════════ *@
+    <div class="page-header">
+        <div>
+            <h1 class="page-title">Nodos DICOM</h1>
+            <p class="page-sub">@_nodes.Count nodo(s) registrado(s)</p>
+        </div>
+        <button class="btn btn-ghost btn-sm" @onclick="RefreshAsync" title="Actualizar">↺ Actualizar</button>
+        <button class="btn btn-primary" @onclick="OpenNew">+ Nuevo Nodo</button>
+    </div>
+
+    @if (_nodes.Count == 0)
+    {
+        <div class="empty-state">
+            <div class="empty-icon">⊞</div>
+            <div class="empty-title">Sin nodos registrados</div>
+            <div class="empty-sub">Pulsa «+ Nuevo Nodo» para añadir un PACS origen o destino.</div>
+        </div>
+    }
+    else
+    {
+        <div style="display:flex;flex-direction:column;gap:12px">
+            @foreach (var n in _nodes)
+            {
+                <div class="pacs-card">
+                    <div class="pacs-card-header">
+                        <div style="flex:1">
+                            <div class="pacs-card-name">
+                                @n.Alias
+                                <NodeTypeBadge Type="@n.NodeType" />
+                                @if (n.HasDicomWeb) { <span class="proto-pill proto-DICOMweb">DICOMweb</span> }
+                                @if (!n.IsActive)   { <span class="tag">inactivo</span> }
+                            </div>
+                            <div class="pacs-card-vendor">@n.Description</div>
+                        </div>
+                    </div>
+                    <div class="pacs-card-body">
+                        <div>
+                            <div class="pacs-info-label">DIMSE</div>
+                            <div class="pacs-info-val">
+                                AE: <span style="color:var(--text)">@n.RemoteAet</span>
+                            </div>
+                            <div class="pacs-info-val">@n.RemoteHost:@n.RemotePort</div>
+                            @if (n.UseTls) { <span class="tag">🔒 TLS</span> }
+                        </div>
+                        <div>
+                            <div class="pacs-info-label">DICOMweb</div>
+                            @{
+                                var hasWebConfig = !string.IsNullOrWhiteSpace(n.WebBaseUrl)
+                                               || !string.IsNullOrWhiteSpace(n.QidoBaseUrl);
+                                var displayUrl   = n.WebBaseUrl ?? n.QidoBaseUrl;
+                            }
+                            @if (hasWebConfig)
+                            {
+                                <div style="display:flex;align-items:center;gap:6px;margin-bottom:3px">
+                                    @if (n.HasDicomWeb)
+                                    {
+                                        <span style="font-size:9px;font-weight:700;color:var(--green);
+                                                     background:rgba(34,197,94,0.12);border:1px solid rgba(34,197,94,0.3);
+                                                     border-radius:3px;padding:1px 5px">● ON</span>
+                                    }
+                                    else
+                                    {
+                                        <span style="font-size:9px;font-weight:700;color:var(--text-muted);
+                                                     background:rgba(100,116,139,0.12);border:1px solid rgba(100,116,139,0.2);
+                                                     border-radius:3px;padding:1px 5px">○ OFF</span>
+                                    }
+                                    <span class="tag">@n.AuthType</span>
+                                </div>
+                                <div class="pacs-info-val url-small" style="color:@(n.HasDicomWeb ? "var(--text-dim)" : "var(--text-muted)")">
+                                    @displayUrl
+                                </div>
+                            }
+                            else
+                            {
+                                <div class="pacs-info-val text-dim">—</div>
+                            }
+                        </div>
+                        <div>
+                            <div class="pacs-info-label">Límites</div>
+                            <div class="pacs-info-val">Máx. asociaciones: @n.MaxConcurrentAssociations</div>
+                            <div class="pacs-info-val">Timeout op.: @n.OperationTimeoutSeconds s</div>
+                        </div>
+
+                        @* C-ECHO result *@
+                        <div>
+                            <div class="pacs-info-label">C-ECHO</div>
+                            @if (_echoRunning.Contains(n.Id))
+                            {
+                                <span class="echo-spin">⟳ Probando...</span>
+                            }
+                            else if (_echoResults.TryGetValue(n.Id, out var res))
+                            {
+                                @if (res.Success)
+                                {
+                                    <span class="echo-ok">✓ OK · @res.DurationMs ms</span>
+                                }
+                                else
+                                {
+                                    <span class="echo-fail">✕ @(res.ErrorMessage?.Split('\n')[0])</span>
+                                }
+                            }
+                            else
+                            {
+                                <span class="text-dim small">—</span>
+                            }
+                        </div>
+                    </div>
+
+                    <div class="pacs-card-footer">
+                        <div class="@(n.IsActive ? "status-dot-indicator active" : "status-dot-indicator inactive")"></div>
+                        <span class="small text-dim">@(n.IsActive ? "Activo" : "Inactivo")</span>
+                        <div class="spacer"></div>
+                        <button class="btn btn-ghost btn-sm" @onclick="@(() => RunEchoAsync(n))"
+                                disabled="@_echoRunning.Contains(n.Id)">
+                            📡 C-ECHO
+                        </button>
+                        <button class="btn btn-ghost btn-sm" @onclick="@(() => OpenEdit(n))">✎ Editar</button>
+                    </div>
+                </div>
+            }
+        </div>
+    }
+}
+
+@code {
+    private List<DicomNode> _nodes = [];
+    private bool _showForm, _saving;
+    private string _error = "";
+    private string _tab   = "general";
+    private bool _advDimse;
+    private int? _editId;
+
+    // ── Form fields ──────────────────────────────────────────────────────────
+    private string _alias       = "";
+    private string _description = "";
+    private string _nodeType    = "origin";
+    private bool   _isActive    = true;
+
+    private string _remoteAet    = "";
+    private string _remoteHost   = "";
+    private int    _remotePort   = 11112;
+    private bool   _useTls       = false;
+    private int    _assocTimeout = 30;
+    private int    _opTimeout    = 120;
+    private int    _maxAssoc     = 10;
+    private string _localAet     = "MIGRATOR_SCU";
+    private int    _localPort    = 11113;
+
+    private bool   _hasDicomWeb   = false;
+    private string _webBaseUrl    = "";
+    private string _webQidoPath   = "";
+    private string _webWadoPath   = "";
+    private string _webStowPath   = "";
+    private string _authType      = "None";
+    private string _secret        = "";
+    private bool   _validateTls   = true;
+    private int    _httpTimeout   = 30;
+    private bool   _advWeb        = false;
+
+    // ── Echo ─────────────────────────────────────────────────────────────────
+    private HashSet<int>              _echoRunning = [];
+    private Dictionary<int, EchoResult> _echoResults = [];
+
+    // ── Active migrations warning ─────────────────────────────────────────────
+    private List<Migration> _activeMigrations = [];
+    private HashSet<int>    _pausingIds        = [];
+
+    protected override async Task OnInitializedAsync()
+    {
+        _nodes = await NodeRepo.GetAllAsync();
+        var cfg = await ConfigRepo.GetAsync();
+        _localAet  = cfg.LocalAet;
+        _localPort = cfg.LocalPort;
+    }
+
+    async Task RefreshAsync()
+    {
+        _nodes = await NodeRepo.GetAllAsync();
+        StateHasChanged();
+    }
+
+    void OpenNew()
+    {
+        _editId = null;
+        _activeMigrations = [];
+        ResetFields();
+        _tab = "general"; _error = ""; _showForm = true;
+    }
+
+    async Task OpenEdit(DicomNode n)
+    {
+        _editId      = n.Id;
+        _alias       = n.Alias;
+        _description = n.Description;
+        _nodeType    = n.NodeType;
+        _isActive    = n.IsActive;
+        _remoteAet   = n.RemoteAet;
+        _remoteHost  = n.RemoteHost;
+        _remotePort  = n.RemotePort;
+        _useTls      = n.UseTls;
+        _assocTimeout = n.AssociationTimeoutSeconds;
+        _opTimeout   = n.OperationTimeoutSeconds;
+        _maxAssoc    = n.MaxConcurrentAssociations;
+        _hasDicomWeb  = n.HasDicomWeb;
+        _authType     = n.AuthType;
+        _secret       = n.EncryptedSecret ?? "";
+        _validateTls  = n.ValidateTls;
+        _httpTimeout  = n.HttpTimeoutSeconds;
+        _advWeb       = false;
+
+        // Load DICOMweb config — ALWAYS, regardless of HasDicomWeb toggle
+        // HasDicomWeb only controls whether it's USED, not whether data is stored
+        if (!string.IsNullOrWhiteSpace(n.WebBaseUrl))
+        {
+            // New format (v38+) — fields stored separately, load exactly as saved
+            _webBaseUrl  = n.WebBaseUrl;
+            _webQidoPath = n.WebQidoPath ?? "";
+            _webWadoPath = n.WebWadoPath ?? "";
+            _webStowPath = n.WebStowPath ?? "";
+        }
+        else if (!string.IsNullOrWhiteSpace(n.QidoBaseUrl))
+        {
+            // Legacy format — parse combined URL back into base + paths
+            var urls = new[] { n.QidoBaseUrl, n.WadoBaseUrl, n.StowBaseUrl }
+                .Where(u => !string.IsNullOrWhiteSpace(u))
+                .Select(u => u!.TrimEnd('/'))
+                .ToList();
+            var shortest  = urls.OrderBy(u => u.Length).First();
+            var lastSlash = shortest.LastIndexOf('/');
+            _webBaseUrl  = lastSlash > 8 ? shortest[..lastSlash] : shortest;
+            _webQidoPath = ExtractPath(n.QidoBaseUrl!, _webBaseUrl);
+            _webWadoPath = !string.IsNullOrWhiteSpace(n.WadoBaseUrl) ? ExtractPath(n.WadoBaseUrl, _webBaseUrl) : "";
+            _webStowPath = !string.IsNullOrWhiteSpace(n.StowBaseUrl) ? ExtractPath(n.StowBaseUrl, _webBaseUrl) : "";
+        }
+        else
+        {
+            // No DICOMweb config stored at all
+            _webBaseUrl = ""; _webQidoPath = ""; _webWadoPath = ""; _webStowPath = "";
+        }
+
+        _tab = "general"; _error = ""; _showForm = true;
+
+        // Detect active migrations using this node
+        var all = await MigrationRepo.GetAllAsync();
+        _activeMigrations = all
+            .Where(m => (m.OriginNodeId == n.Id || m.DestNodeId == n.Id)
+                     && m.Status is "Running" or "Paused")
+            .ToList();
+        StateHasChanged();
+    }
+
+    /// <summary>Returns the path portion of <paramref name="fullUrl"/> after <paramref name="baseUrl"/>.</summary>
+    private static string ExtractPath(string fullUrl, string baseUrl)
+    {
+        var full = fullUrl.TrimEnd('/');
+        var base_ = baseUrl.TrimEnd('/');
+        return full.StartsWith(base_, StringComparison.OrdinalIgnoreCase)
+            ? full[base_.Length..]
+            : "/" + full.Split('/').Last();
+    }
+
+    async Task PauseMigrationAsync(Migration m)
+    {
+        _pausingIds.Add(m.Id);
+        StateHasChanged();
+        try
+        {
+            await Worker.PauseAsync(m.Id);
+            m.Status = "Paused";
+        }
+        finally
+        {
+            _pausingIds.Remove(m.Id);
+            StateHasChanged();
+        }
+    }
+
+    void CancelForm()
+    {
+        _showForm = false;
+        _error = "";
+        _activeMigrations = [];
+    }
+
+    async Task RunEchoAsync(DicomNode n)
+    {
+        _echoRunning.Add(n.Id);
+        _echoResults.Remove(n.Id);
+        StateHasChanged();
+        try
+        {
+            var r = await DimseService.EchoAsync(n);
+            _echoResults[n.Id] = r;
+        }
+        catch (Exception ex)
+        {
+            _echoResults[n.Id] = new EchoResult { Success = false, ErrorMessage = ex.Message };
+        }
+        finally
+        {
+            _echoRunning.Remove(n.Id);
+            StateHasChanged();
+        }
+    }
+
+    async Task SaveAsync()
+    {
+        _error = "";
+        if (string.IsNullOrWhiteSpace(_alias))
+        {
+            _error = "El alias del nodo es obligatorio."; _tab = "general"; return;
+        }
+        if (string.IsNullOrWhiteSpace(_remoteAet) || string.IsNullOrWhiteSpace(_remoteHost))
+        {
+            _error = "AE Title remoto e IP son obligatorios."; _tab = "dimse"; return;
+        }
+
+        _saving = true;
+        try
+        {
+            var node = new DicomNode
+            {
+                Id                        = _editId ?? 0,
+                Alias                     = _alias.Trim(),
+                Description               = _description.Trim(),
+                NodeType                  = _nodeType,
+                IsActive                  = _isActive,
+                LocalAet                  = _localAet,
+                RemoteAet                 = _remoteAet.Trim().ToUpperInvariant(),
+                RemoteHost                = _remoteHost.Trim(),
+                RemotePort                = _remotePort,
+                UseTls                    = _useTls,
+                AssociationTimeoutSeconds = _assocTimeout,
+                OperationTimeoutSeconds   = _opTimeout,
+                MaxConcurrentAssociations = _maxAssoc,
+                HasDicomWeb               = _hasDicomWeb,
+                // Always persist DICOMweb config — toggle only controls whether it's USED
+                WebBaseUrl                = string.IsNullOrWhiteSpace(_webBaseUrl)  ? null : _webBaseUrl.Trim(),
+                WebQidoPath               = string.IsNullOrWhiteSpace(_webQidoPath) ? null : _webQidoPath.Trim(),
+                WebWadoPath               = string.IsNullOrWhiteSpace(_webWadoPath) ? null : _webWadoPath.Trim(),
+                WebStowPath               = string.IsNullOrWhiteSpace(_webStowPath) ? null : _webStowPath.Trim(),
+                QidoBaseUrl               = string.IsNullOrWhiteSpace(_webBaseUrl)  ? null : (_webBaseUrl.TrimEnd('/') + _webQidoPath),
+                WadoBaseUrl               = string.IsNullOrWhiteSpace(_webBaseUrl)  ? null : (_webBaseUrl.TrimEnd('/') + _webWadoPath),
+                StowBaseUrl               = string.IsNullOrWhiteSpace(_webBaseUrl)  ? null : (_webBaseUrl.TrimEnd('/') + _webStowPath),
+                AuthType                  = _authType,
+                EncryptedSecret           = string.IsNullOrWhiteSpace(_secret) ? null : _secret,
+                ValidateTls               = _validateTls,
+                HttpTimeoutSeconds        = _httpTimeout,
+            };
+
+            if (_editId.HasValue) await NodeRepo.UpdateAsync(node);
+            else                  await NodeRepo.CreateAsync(node);
+
+            _nodes    = await NodeRepo.GetAllAsync();
+            _showForm = false;
+        }
+        catch (Exception ex) { _error = $"Error al guardar: {ex.Message}"; }
+        finally { _saving = false; }
+    }
+
+    void ResetFields()
+    {
+        _alias = ""; _description = ""; _nodeType = "origin"; _isActive = true;
+        _remoteAet = ""; _remoteHost = ""; _remotePort = 11112; _useTls = false;
+        _assocTimeout = 30; _opTimeout = 120; _maxAssoc = 10;
+        _hasDicomWeb = false; _webBaseUrl = ""; _webQidoPath = "";
+        _webWadoPath = ""; _webStowPath = "";
+        _authType = "None"; _secret = ""; _validateTls = true; _httpTimeout = 30;
+        _advDimse = false; _advWeb = false;
+    }
+
+    string TabCss(string t) => _tab == t ? "tab active" : "tab";
+}

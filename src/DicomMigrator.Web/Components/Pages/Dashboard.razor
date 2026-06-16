@@ -1,0 +1,231 @@
+@page "/"
+@rendermode InteractiveServer
+@implements IDisposable
+@inject IMigrationRepository MigrationRepo
+@inject IStudyRepository StudyRepo
+@inject INodeRepository NodeRepo
+
+<PageTitle>Dashboard — DICOM Migrador</PageTitle>
+
+<div class="page-header">
+    <div>
+        <h1 class="page-title">Dashboard</h1>
+        <p class="page-sub">Estado global de las migraciones</p>
+    </div>
+    <button class="btn btn-ghost btn-sm" @onclick="RefreshAsync">↺ Actualizar</button>
+</div>
+
+@if (_loading)
+{
+    <div class="loading-msg">Cargando...</div>
+}
+else
+{
+    @* ── KPIs globales ── *@
+    <div class="grid-4 mb2">
+        <div class="stat-card">
+            <div class="stat-label">Migraciones</div>
+            <div class="stat-value">@_migrations.Count</div>
+            <div class="stat-sub">@_migrations.Count(m => m.Status == "Running") en ejecución</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">Total estudios</div>
+            <div class="stat-value">@Fmt(_allStats.Sum(s => s.Total))</div>
+            <div class="stat-sub">en todas las migraciones</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">Verificados</div>
+            <div class="stat-value stat-green">@Fmt(_allStats.Sum(s => s.Verified))</div>
+            <div class="stat-sub">@GlobalPct(_allStats.Sum(s => s.Verified), _allStats.Sum(s => s.Total))% del total</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-label">Fallidos</div>
+            <div class="stat-value stat-red">@Fmt(_allStats.Sum(s => s.Failed))</div>
+            <div class="stat-sub">requieren atención</div>
+        </div>
+    </div>
+
+    <div class="grid-2 mb2">
+
+        @* ── Nodos registrados ── *@
+        <div class="card">
+            <div class="card-header"><span class="card-title">Nodos DICOM</span></div>
+            @if (_nodes.Count == 0)
+            {
+                <div class="empty-state" style="padding:30px 20px">
+                    <div class="empty-icon">⊞</div>
+                    <div class="empty-title">Sin nodos registrados</div>
+                    <div class="empty-sub"><a href="/nodos" style="color:var(--accent)">Añadir nodo</a></div>
+                </div>
+            }
+            else
+            {
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Nodo</th>
+                            <th>Tipo</th>
+                            <th>Endpoint</th>
+                            <th>Estado</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var n in _nodes)
+                        {
+                            <tr>
+                                <td style="font-weight:600">@n.Alias</td>
+                                <td><NodeTypeBadge Type="@n.NodeType" /></td>
+                                <td class="mono small text-dim">@n.RemoteHost:@n.RemotePort</td>
+                                <td>
+                                    @if (n.IsActive)
+                                    {
+                                        <div style="display:flex;align-items:center;gap:5px">
+                                            <div class="status-dot-indicator active"></div>
+                                            <span class="small text-dim">Activo</span>
+                                        </div>
+                                    }
+                                    else
+                                    {
+                                        <div style="display:flex;align-items:center;gap:5px">
+                                            <div class="status-dot-indicator inactive"></div>
+                                            <span class="small text-dim">Inactivo</span>
+                                        </div>
+                                    }
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+        </div>
+    </div>
+
+    @* ── Detalle de estadísticas ── *@
+    @if (_allStats.Any(s => s.Total > 0))
+    {
+        <div class="card">
+            <div class="card-header"><span class="card-title">Desglose de estados</span></div>
+            <div style="overflow-x:auto">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Migración</th>
+                            <th>Total</th>
+                            <th style="color:#64748b">Pend.</th>
+                            <th style="color:var(--accent)">Migr.</th>
+                            <th style="color:var(--green)">Migrado</th>
+                            <th style="color:var(--purple)">Verif.</th>
+                            <th style="color:var(--red)">Fallido</th>
+                            <th style="color:#f97316">Reint.</th>
+                            <th style="color:var(--accent)">Migración</th>
+                            <th style="color:var(--purple)">Verificación</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var s in _allStats.Where(x => x.Total > 0))
+                        {
+                            var m = _migrations.FirstOrDefault(x => x.Id == s.MigrationId);
+                            <tr>
+                                <td style="font-weight:600;font-size:12px">@m?.Name</td>
+                                <td class="mono">@Fmt(s.Total)</td>
+                                <td class="mono" style="color:#64748b">@Fmt(s.Pending)</td>
+                                <td class="mono" style="color:var(--accent)">@Fmt(s.Migrating)</td>
+                                <td class="mono" style="color:var(--green)">@Fmt(s.Migrated)</td>
+                                <td class="mono" style="color:var(--purple)">@Fmt(s.Verified)</td>
+                                <td class="mono" style="color:var(--red)">@Fmt(s.Failed)</td>
+                                <td class="mono" style="color:#f97316">@Fmt(s.RetryPending)</td>
+                                <td style="min-width:140px">
+                                    <div style="display:flex;align-items:center;gap:6px">
+                                        <div class="progress-track" style="flex:1">
+                                            <div class="progress-fill" style="width:@s.ProgressPercent%;background:var(--accent)"></div>
+                                        </div>
+                                        <span class="mono" style="font-size:10px;color:var(--accent);min-width:38px;text-align:right">@s.ProgressPercent%</span>
+                                    </div>
+                                </td>
+                                <td style="min-width:140px">
+                                    <div style="display:flex;align-items:center;gap:6px">
+                                        <div class="progress-track" style="flex:1">
+                                            <div class="progress-fill" style="width:@s.VerificationPercent%;background:var(--purple)"></div>
+                                        </div>
+                                        <span class="mono" style="font-size:10px;color:var(--purple);min-width:38px;text-align:right">@s.VerificationPercent%</span>
+                                    </div>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    }
+}
+
+@code {
+    private List<Migration>     _migrations = [];
+    private List<DicomNode>     _nodes      = [];
+    private List<MigrationStats> _allStats  = [];
+    private bool _loading = true;
+    private System.Threading.Timer? _timer;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAsync();
+        StartAutoRefreshIfNeeded();
+    }
+
+    async Task LoadAsync()
+    {
+        _migrations = await MigrationRepo.GetAllAsync();
+        _nodes      = await NodeRepo.GetAllAsync();
+        _allStats   = [];
+        foreach (var m in _migrations)
+            _allStats.Add(await StudyRepo.GetStatsAsync(m.Id));
+        _loading = false;
+        await InvokeAsync(StateHasChanged);
+    }
+
+    async Task RefreshAsync()
+    {
+        await LoadAsync();
+        StartAutoRefreshIfNeeded();
+    }
+
+    void StartAutoRefreshIfNeeded()
+    {
+        // Refresh every 3s while any migration is actively progressing
+        bool hasActive = _migrations.Any(m => m.Status is "Running" or "Paused");
+        if (hasActive && _timer is null)
+        {
+            _timer = new System.Threading.Timer(async _ =>
+            {
+                await LoadAsync();
+                // If no migration is active anymore, stop the timer
+                if (!_migrations.Any(m => m.Status is "Running" or "Paused"))
+                    StopAutoRefresh();
+            }, null, TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(3));
+        }
+        else if (!hasActive && _timer is not null)
+        {
+            StopAutoRefresh();
+        }
+    }
+
+    void StopAutoRefresh()
+    {
+        _timer?.Dispose();
+        _timer = null;
+    }
+
+    public void Dispose() => StopAutoRefresh();
+
+    static string Fmt(long n)   => n.ToString("N0");
+    static int GlobalPct(long a, long b) => b > 0 ? (int)Math.Round(a * 100.0 / b) : 0;
+
+    static string StatusColor(string status) => status switch
+    {
+        "Running"   => "var(--accent)",
+        "Completed" => "var(--purple)",
+        "Paused"    => "var(--yellow)",
+        "Failed"    => "var(--red)",
+        _           => "var(--border2)"
+    };
+}

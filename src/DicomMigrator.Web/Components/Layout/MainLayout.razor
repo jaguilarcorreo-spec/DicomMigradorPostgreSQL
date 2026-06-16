@@ -1,0 +1,90 @@
+@inherits LayoutComponentBase
+@inject ILocalConfigRepository ConfigRepo
+@inject NavigationManager Nav
+@implements IDisposable
+
+<div class="app-shell">
+    <nav class="sidebar">
+        <div class="sidebar-logo">
+            <div class="logo-icon">M</div>
+            <div>
+                <div class="logo-title">DICOM Migrador</div>
+                <div class="logo-sub">fo-dicom · .NET 9</div>
+            </div>
+        </div>
+
+        <div class="nav-group">
+            <div class="nav-group-label">Principal</div>
+            <NavLink class="nav-item" href="/" Match="NavLinkMatch.All">
+                <span class="nav-icon">◈</span> Dashboard
+            </NavLink>
+        </div>
+
+        <div class="nav-group">
+            <div class="nav-group-label">Migración</div>
+            <NavLink class="nav-item" href="/migraciones">
+                <span class="nav-icon">⇄</span> Migraciones
+            </NavLink>
+            <NavLink class="nav-item" href="/discovery">
+                <span class="nav-icon">🔍</span> Discovery Engine
+            </NavLink>
+            <NavLink class="nav-item" href="/nodos">
+                <span class="nav-icon">⊞</span> Nodos DICOM
+            </NavLink>
+            <NavLink class="nav-item" href="/diagnostico">
+                <span class="nav-icon">🔬</span> Diagnóstico
+            </NavLink>
+        </div>
+
+        <div class="nav-group">
+            <div class="nav-group-label">Sistema</div>
+            <NavLink class="nav-item" href="/logs">
+                <span class="nav-icon">⌨</span> Logs y auditoría
+            </NavLink>
+            <NavLink class="nav-item" href="/localconfig">
+                <span class="nav-icon">⚙</span> Config. local SCU
+            </NavLink>
+            <NavLink class="nav-item" href="/ayuda">
+                <span class="nav-icon">?</span> Ayuda
+            </NavLink>
+            <NavLink class="nav-item" href="/about">
+                <span class="nav-icon">ℹ</span> Acerca de
+            </NavLink>
+        </div>
+
+        <div class="sidebar-footer">
+            fo-dicom v5.2 · .NET 9<br />
+            <span class="mono" style="color:var(--accent)">@_aet</span> · :@_port
+        </div>
+    </nav>
+
+    <main class="main-content">
+        @Body
+    </main>
+</div>
+
+@code {
+    private string _aet  = "MIGRATOR_SCU";
+    private int    _port = 11113;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadConfig();
+        Nav.LocationChanged += OnLocationChanged;
+    }
+
+    async void OnLocationChanged(object? sender, LocationChangedEventArgs e)
+    {
+        await LoadConfig();
+        await InvokeAsync(StateHasChanged);
+    }
+
+    async Task LoadConfig()
+    {
+        var cfg = await ConfigRepo.GetAsync();
+        _aet  = cfg.LocalAet;
+        _port = cfg.LocalPort;
+    }
+
+    public void Dispose() => Nav.LocationChanged -= OnLocationChanged;
+}

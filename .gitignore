@@ -1,0 +1,32 @@
+# ── Compilación .NET ────────────────────────────────────────────────────────
+bin/
+obj/
+out/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# ── Visual Studio / Rider / VS Code ─────────────────────────────────────────
+.vs/
+.vscode/
+.idea/
+*.csproj.user
+
+# ── Publicación ─────────────────────────────────────────────────────────────
+publish/
+*.publishsettings
+
+# ── Logs y datos locales ────────────────────────────────────────────────────
+logs/
+*.log
+
+# ── Secretos / configuración local ──────────────────────────────────────────
+# No subir credenciales reales de la base de datos. Usa appsettings.Development.json
+# (ignorado) o variables de entorno / user-secrets para la cadena de conexión.
+appsettings.Development.json
+secrets.json
+
+# ── Sistema operativo ───────────────────────────────────────────────────────
+Thumbs.db
+.DS_Store

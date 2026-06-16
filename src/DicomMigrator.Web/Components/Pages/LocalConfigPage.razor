@@ -1,0 +1,165 @@
+@page "/localconfig"
+@rendermode InteractiveServer
+@inject ILocalConfigRepository ConfigRepo
+@inject DicomMigrator.Web.Services.LocalConfigState ConfigState
+
+<PageTitle>Configuración local SCU</PageTitle>
+
+<div class="page-header">
+    <div>
+        <h1 class="page-title">Configuración local SCU</h1>
+        <p class="page-sub">Identidad DICOM de esta aplicación como cliente (SCU) y límites globales</p>
+    </div>
+</div>
+
+@if (_loading)
+{
+    <div class="loading-msg">Cargando...</div>
+}
+else
+{
+    @if (!string.IsNullOrEmpty(_error)) { <div class="alert-error">⚠ @_error</div> }
+    @if (_saved)                        { <div class="alert-success">✓ Configuración guardada correctamente.</div> }
+
+    <div class="grid-2">
+        <div class="card">
+            <div class="card-header"><span class="card-title">Identidad DIMSE (SCU)</span></div>
+            <div class="card-body">
+                <div class="form-section">AE Title local</div>
+                <div class="form-group">
+                    <label class="form-label">AE Title *</label>
+                    <input class="form-input mono" @bind="_aet" placeholder="MIGRATOR_SCU" maxlength="16" />
+                    <div class="form-hint">Máximo 16 caracteres. El administrador del PACS debe añadirte con este AE Title.</div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label">Puerto local de escucha</label>
+                        <input class="form-input mono" type="number" @bind="_port" min="1" max="65535" />
+                        <div class="form-hint">Puerto C-STORE para recibir instancias en C-MOVE.</div>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">IP / Hostname local</label>
+                        <input class="form-input mono" @bind="_hostname" placeholder="192.168.1.100 (opcional)" />
+                    </div>
+                </div>
+
+                <div class="form-section">Límites globales de concurrencia</div>
+                <div class="form-group" style="max-width:220px">
+                    <label class="form-label">Máx. migraciones simultáneas</label>
+                    <input class="form-input mono" type="number" @bind="_maxMigrations" min="1" max="20" />
+                    <div class="form-hint">Número máximo de migraciones en estado Running a la vez.</div>
+                </div>
+
+                <div class="form-group">
+                    <label class="form-label">Descripción / Notas</label>
+                    <input class="form-input" @bind="_description" placeholder="Servidor de migración sala CPD..." />
+                </div>
+
+                <hr class="divider" />
+                <div class="form-actions">
+                    <button class="btn btn-ghost" @onclick="ResetAsync">↺ Restablecer</button>
+                    <button class="btn btn-primary" @onclick="SaveAsync" disabled="@_saving">
+                        @(_saving ? "Guardando..." : "💾 Guardar configuración")
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-header"><span class="card-title">Configuración activa</span></div>
+            <div class="card-body">
+                <div class="config-preview">
+                    <div class="config-row">
+                        <span class="config-key">AE Title local</span>
+                        <span class="config-val mono">@_aet</span>
+                    </div>
+                    <div class="config-row">
+                        <span class="config-key">Puerto escucha</span>
+                        <span class="config-val mono">@_port</span>
+                    </div>
+                    <div class="config-row">
+                        <span class="config-key">Hostname</span>
+                        <span class="config-val mono">@(string.IsNullOrEmpty(_hostname) ? "—" : _hostname)</span>
+                    </div>
+                    <div class="config-row">
+                        <span class="config-key">Máx. migraciones</span>
+                        <span class="config-val mono">@_maxMigrations</span>
+                    </div>
+                    <div class="config-row">
+                        <span class="config-key">Última actualización</span>
+                        <span class="config-val mono">@_updatedAt.ToString("yyyy-MM-dd HH:mm:ss")</span>
+                    </div>
+                </div>
+
+                <div class="form-section" style="margin-top:20px">Datos para el PACS administrador</div>
+                <div class="info-block">
+                    <div>AE Title: <span>@_aet</span></div>
+                    @if (!string.IsNullOrEmpty(_hostname))
+                    {
+                        <div>IP / Host: <span>@_hostname</span></div>
+                    }
+                    <div>Puerto: <span>@_port</span></div>
+                </div>
+                <div class="form-hint" style="margin-top:8px">
+                    Facilita estos datos al administrador de cada PACS origen y destino para que autorice
+                    a este servidor de migración como AE.
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private bool   _loading = true, _saving, _saved;
+    private string _error = "", _aet = "MIGRATOR_SCU", _hostname = "", _description = "";
+    private int    _port = 11113, _maxMigrations = 3;
+    private DateTime _updatedAt = DateTime.UtcNow;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var cfg = await ConfigRepo.GetAsync();
+        LoadFrom(cfg);
+        _loading = false;
+    }
+
+    async Task SaveAsync()
+    {
+        _error = ""; _saved = false;
+        if (string.IsNullOrWhiteSpace(_aet)) { _error = "El AE Title es obligatorio."; return; }
+        if (_aet.Length > 16)               { _error = "El AE Title no puede superar 16 caracteres."; return; }
+
+        _saving = true;
+        try
+        {
+            var cfg = await ConfigRepo.SaveAsync(new LocalConfiguration
+            {
+                LocalAet                = _aet.Trim().ToUpperInvariant(),
+                LocalPort               = _port,
+                LocalHostname           = _hostname.Trim(),
+                Description             = _description.Trim(),
+                MaxConcurrentMigrations = _maxMigrations,
+            });
+            LoadFrom(cfg);
+            ConfigState.Update(cfg.LocalAet, cfg.LocalPort);
+            _saved = true;
+        }
+        catch (Exception ex) { _error = $"Error al guardar: {ex.Message}"; }
+        finally { _saving = false; }
+    }
+
+    async Task ResetAsync()
+    {
+        LoadFrom(await ConfigRepo.GetAsync());
+        _saved = false; _error = "";
+    }
+
+    void LoadFrom(LocalConfiguration cfg)
+    {
+        _aet           = cfg.LocalAet;
+        _port          = cfg.LocalPort;
+        _hostname      = cfg.LocalHostname;
+        _description   = cfg.Description;
+        _maxMigrations = cfg.MaxConcurrentMigrations;
+        _updatedAt     = cfg.UpdatedAt;
+    }
+}

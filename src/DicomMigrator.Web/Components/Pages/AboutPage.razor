@@ -1,0 +1,265 @@
+@page "/about"
+@rendermode InteractiveServer
+@inject ILocalConfigRepository ConfigRepo
+@inject INodeRepository NodeRepo
+@inject IMigrationRepository MigrationRepo
+@inject IStudyRepository StudyRepo
+
+<PageTitle>Acerca de — DICOM Migrador</PageTitle>
+
+<div class="page-header">
+    <h1 class="page-title">Acerca de</h1>
+</div>
+
+<div class="grid-2">
+
+    @* ── Información de la aplicación ── *@
+    <div class="card">
+        <div class="card-header"><span class="card-title">DICOM Migrador</span></div>
+        <div class="card-body">
+            <div class="config-preview">
+                <div class="config-row">
+                    <span class="config-key">Versión</span>
+                    <span class="config-val mono" style="color:var(--accent)">1.1.0</span>
+                </div>
+                <div class="config-row">
+                    <span class="config-key">Fecha de compilación</span>
+                    <span class="config-val mono">@_buildDate</span>
+                </div>
+                <div class="config-row">
+                    <span class="config-key">Desarrollado por</span>
+                    <span class="config-val" style="color:var(--text)">Jesús Aguilar</span>
+                </div>
+                <div class="config-row">
+                    <span class="config-key">Entorno</span>
+                    <span class="config-val mono">@_environment</span>
+                </div>
+                <div class="config-row">
+                    <span class="config-key">Framework</span>
+                    <span class="config-val mono">.NET @System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription</span>
+                </div>
+                <div class="config-row">
+                    <span class="config-key">Plataforma</span>
+                    <span class="config-val mono">@System.Runtime.InteropServices.RuntimeInformation.OSDescription</span>
+                </div>
+                <div class="config-row">
+                    <span class="config-key">Directorio de trabajo</span>
+                    <span class="config-val mono" style="font-size:10px;word-break:break-all">@_workDir</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    @* ── Stack tecnológico ── *@
+    <div class="card">
+        <div class="card-header"><span class="card-title">Stack tecnológico</span></div>
+        <div class="card-body">
+            <div class="config-preview">
+                <div class="config-row">
+                    <span class="config-key">Frontend / Backend</span>
+                    <span class="config-val mono">Blazor Server · .NET 9</span>
+                </div>
+                <div class="config-row">
+                    <span class="config-key">DICOM DIMSE</span>
+                    <span class="config-val mono">fo-dicom 5.2</span>
+                </div>
+                <div class="config-row">
+                    <span class="config-key">DICOMweb</span>
+                    <span class="config-val mono">HttpClient · QIDO / WADO / STOW</span>
+                </div>
+                <div class="config-row">
+                    <span class="config-key">Base de datos</span>
+                    <span class="config-val mono">SQLite · EF Core 9</span>
+                </div>
+                <div class="config-row">
+                    <span class="config-key">Logging</span>
+                    <span class="config-val mono">Serilog · Rolling File</span>
+                </div>
+                <div class="config-row">
+                    <span class="config-key">Arquitectura</span>
+                    <span class="config-val mono">Core / Infrastructure / Web</span>
+                </div>
+            </div>
+
+            <div style="margin-top:16px">
+                <div class="form-section" style="margin-top:0">Operaciones soportadas</div>
+                <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px">
+                    @foreach (var p in _protocols)
+                    {
+                        <span class="tag" style="@(p.Ok
+                            ? "color:#4ade80;border-color:rgba(74,222,128,0.3);background:rgba(74,222,128,0.08)"
+                            : "color:var(--text-dim);border-color:var(--border)")">
+                            @(p.Ok ? "✓ " : "○ ")@p.Name
+                        </span>
+                    }
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+@* ── Estado de la base de datos ── *@
+<div class="card" style="margin-top:16px">
+    <div class="card-header">
+        <span class="card-title">Base de datos</span>
+        @if (_dbOk)
+        {
+            <span style="margin-left:8px;font-size:11px;color:var(--green)">● Operativa</span>
+        }
+        else
+        {
+            <span style="margin-left:8px;font-size:11px;color:var(--red)">● Error</span>
+        }
+    </div>
+    <div class="card-body">
+        @if (!string.IsNullOrEmpty(_dbError))
+        {
+            <div class="alert-error">@_dbError</div>
+        }
+        else
+        {
+            <div class="config-preview">
+                <div class="config-row">
+                    <span class="config-key">Fichero SQLite</span>
+                    <span class="config-val mono" style="font-size:10px;word-break:break-all">@_dbPath</span>
+                </div>
+                <div class="config-row">
+                    <span class="config-key">Tamaño</span>
+                    <span class="config-val mono">@_dbSize</span>
+                </div>
+                <div class="config-row">
+                    <span class="config-key">Nodos registrados</span>
+                    <span class="config-val mono" style="color:var(--accent)">@_nodeCount</span>
+                </div>
+                <div class="config-row">
+                    <span class="config-key">Migraciones</span>
+                    <span class="config-val mono" style="color:var(--accent)">@_migrationCount</span>
+                </div>
+                <div class="config-row">
+                    <span class="config-key">Estudios totales</span>
+                    <span class="config-val mono" style="color:var(--accent)">@_studyCount</span>
+                </div>
+                <div class="config-row">
+                    <span class="config-key">Config. SCU local</span>
+                    <span class="config-val mono">@_localAet · :@_localPort</span>
+                </div>
+            </div>
+        }
+    </div>
+</div>
+
+@* ── Descripción ── *@
+<div class="card" style="margin-top:16px">
+    <div class="card-header"><span class="card-title">Descripción</span></div>
+    <div class="card-body" style="font-size:12px;color:var(--text-dim);line-height:2">
+        <p>
+            <strong style="color:var(--text)">DICOM Migrador</strong> es una herramienta para gestionar
+            migraciones masivas de estudios DICOM entre sistemas PACS, VNA y archivos en la nube,
+            utilizando los protocolos estándar DIMSE y DICOMweb.
+        </p>
+        <p style="margin-top:10px">
+            Permite definir nodos origen y destino, descubrir estudios mediante C-FIND, QIDO-RS o importación
+            CSV, ejecutar la transferencia con múltiples hilos de trabajo respetando ventanas horarias
+            configurables, y verificar automáticamente la integridad de cada estudio en destino.
+        </p>
+        <p style="margin-top:10px">
+            Desarrollado sobre el mismo núcleo fo-dicom que <strong style="color:var(--text)">DICOM PACS Tester</strong>,
+            reutilizando los servicios DIMSE y DICOMweb de dicho proyecto.
+        </p>
+    </div>
+</div>
+
+@code {
+    private string _buildDate   = "—";
+    private string _environment = "Production";
+    private string _workDir     = "—";
+
+    private bool   _dbOk     = false;
+    private string _dbError  = "";
+    private string _dbPath   = "—";
+    private string _dbSize   = "—";
+    private int    _nodeCount, _migrationCount;
+    private long   _studyCount;
+    private string _localAet  = "—";
+    private int    _localPort;
+
+    private readonly (string Name, bool Ok)[] _protocols =
+    [
+        ("C-ECHO",                  true),
+        ("C-FIND (SCU)",            true),
+        ("C-MOVE (SCU + SCP)",      true),
+        ("C-GET",                   false),
+        ("QIDO-RS",                 true),
+        ("WADO-RS Metadata",        true),
+        ("WADO-RS Retrieve",        true),
+        ("STOW-RS",                 false),
+        ("Importación CSV",         true),
+        ("Verificación automática", true),
+        ("Ventana de ejecución",    true),
+        ("Reintentos automáticos",  true),
+    ];
+
+    protected override async Task OnInitializedAsync()
+    {
+        // ── Runtime info ─────────────────────────────────────────────────────
+        var exePath = System.Environment.ProcessPath
+                      ?? System.Reflection.Assembly.GetExecutingAssembly().Location;
+        _buildDate = !string.IsNullOrEmpty(exePath) && System.IO.File.Exists(exePath)
+            ? System.IO.File.GetLastWriteTime(exePath).ToString("yyyy-MM-dd HH:mm")
+            : "—";
+        _environment = System.Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") ?? "Production";
+        _workDir     = System.IO.Directory.GetCurrentDirectory();
+
+        // ── DB info ──────────────────────────────────────────────────────────
+        try
+        {
+            // Localizar el fichero SQLite
+            var candidates = new[]
+            {
+                System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "dicommigrator.db"),
+                System.IO.Path.Combine(AppContext.BaseDirectory, "dicommigrator.db"),
+            };
+            _dbPath = candidates.FirstOrDefault(System.IO.File.Exists) ?? candidates[0];
+
+            if (System.IO.File.Exists(_dbPath))
+            {
+                var bytes = new System.IO.FileInfo(_dbPath).Length;
+                _dbSize = bytes switch
+                {
+                    < 1024        => $"{bytes} B",
+                    < 1024 * 1024 => $"{bytes / 1024.0:F1} KB",
+                    _             => $"{bytes / 1024.0 / 1024.0:F2} MB",
+                };
+            }
+            else
+            {
+                _dbSize = "0 B (sin datos aún)";
+            }
+
+            // Consultar contadores reales
+            var nodes      = await NodeRepo.GetAllAsync();
+            var migrations = await MigrationRepo.GetAllAsync();
+            _nodeCount      = nodes.Count;
+            _migrationCount = migrations.Count;
+
+            long total = 0;
+            foreach (var m in migrations)
+            {
+                var stats = await StudyRepo.GetStatsAsync(m.Id);
+                total += stats.Total;
+            }
+            _studyCount = total;
+
+            var cfg    = await ConfigRepo.GetAsync();
+            _localAet  = cfg.LocalAet;
+            _localPort = cfg.LocalPort;
+
+            _dbOk = true;
+        }
+        catch (Exception ex)
+        {
+            _dbOk    = false;
+            _dbError = $"Error al consultar la base de datos: {ex.Message}";
+        }
+    }
+}

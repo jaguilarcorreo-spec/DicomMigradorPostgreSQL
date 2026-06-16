@@ -1,0 +1,949 @@
+@page "/discovery"
+@rendermode InteractiveServer
+@using DicomMigrator.Core.Interfaces
+@using DicomMigrator.Core.Models
+@inject IDiscoveryJobRepository JobRepo
+@inject IDiscoveredStudyRepository StudyRepo
+@inject INodeRepository NodeRepo
+@inject IMigrationRepository MigrationRepo
+@inject IStudyRepository MigStudyRepo
+@inject IDiscoveryEngine Engine
+@inject IJSRuntime JS
+@inject NavigationManager Nav
+@implements IDisposable
+
+<PageTitle>Discovery Engine — Migrator</PageTitle>
+
+@if (_detail is not null)
+{
+    @* ═══════════════════ DETALLE DE JOB ═══════════════════ *@
+    <div class="page-header">
+        <button class="btn btn-ghost" @onclick="BackToList">← Volver</button>
+        <div>
+            <h1 class="page-title">@_detail.Name</h1>
+            <p class="page-sub">@(_detail.Description ?? "Discovery Job")</p>
+        </div>
+        <StatusBadge Status="@_detail.Status" />
+        <button class="btn btn-ghost btn-sm" @onclick="RefreshDetailAsync" title="Actualizar">↺</button>
+        <button class="btn btn-ghost btn-sm" @onclick="OpenEditJob" title="Editar propiedades">✎ Editar</button>
+        <button class="btn btn-sm" style="background:rgba(245,158,11,0.08);color:var(--yellow);border:1px solid rgba(245,158,11,0.25)"
+                @onclick="RequestResetJob" title="Limpiar particiones y estudios descubiertos">🧹 Limpiar</button>
+        <button class="btn btn-sm" style="background:rgba(239,68,68,0.08);color:var(--red);border:1px solid rgba(239,68,68,0.25)"
+                @onclick="RequestDeleteJob" title="Eliminar job">🗑 Eliminar</button>
+    </div>
+
+    @if (!string.IsNullOrEmpty(_deleteMsg))
+    {
+        <div class="alert-error">⚠ @_deleteMsg</div>
+    }
+
+    @if (!string.IsNullOrEmpty(_actionMsg))
+    {
+        <div class="alert-success">@_actionMsg</div>
+    }
+
+    @* ── Panel de control ── *@
+    <div class="card mb2">
+        <div class="card-body" style="display:flex;align-items:center;gap:14px">
+            <span style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.08em">Control</span>
+            @if (_detail.DiscoveryType == "CSV")
+            {
+                @* CSV jobs complete immediately on import — no workers to start *@
+                <span style="font-size:12px;color:var(--text-muted);font-style:italic">
+                    Job CSV — inventario importado. Usa "Crear migración desde este inventario".
+                </span>
+            }
+            else if (_detail.Status is "Draft" or "Completed")
+            {
+                <button class="btn btn-primary btn-sm" @onclick="StartJobAsync" disabled="@_busy">▶ Iniciar</button>
+            }
+            else if (_detail.Status == "Running")
+            {
+                <button class="btn btn-sm" style="background:rgba(245,158,11,0.12);color:var(--yellow);border:1px solid rgba(245,158,11,0.3)"
+                        @onclick="PauseJobAsync" disabled="@_busy">⏸ Pausar</button>
+            }
+            else if (_detail.Status == "Paused")
+            {
+                <button class="btn btn-primary btn-sm" @onclick="ResumeJobAsync" disabled="@_busy">▶ Reanudar</button>
+            }
+            @if (_stats.FailedPartitions > 0 && _detail.Status is not "Running")
+            {
+                <button class="btn btn-sm" style="background:rgba(239,68,68,0.08);color:var(--red);border:1px solid rgba(239,68,68,0.25)"
+                        @onclick="RetryFailedAsync" disabled="@_busy"
+                        title="Resetea las particiones fallidas a Pendiente para que los workers las reprocesen">
+                    ↺ Reintentar fallidas (@_stats.FailedPartitions)
+                </button>
+            }
+            <div style="margin-left:auto;display:flex;align-items:center;gap:8px">
+                @if (_detail.Status == "Running")
+                {
+                    <span style="width:7px;height:7px;border-radius:50%;background:var(--green);display:inline-block"></span>
+                    <span style="font-size:12px;color:var(--green)">En ejecución</span>
+                }
+            </div>
+        </div>
+    </div>
+
+    @* ── Configuración del job ── *@
+    <div class="card mb2">
+        <div class="card-body" style="display:flex;flex-wrap:wrap;gap:28px;padding:14px 18px">
+            <div>
+                <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.08em">PACS origen</div>
+                <div style="font-size:13px;color:var(--text);margin-top:3px">
+                    @(_detail.SourcePacs?.Alias ?? "?")
+                    <span class="mono" style="font-size:11px;color:var(--text-dim)">(@(_detail.SourcePacs?.RemoteAet ?? "?"))</span>
+                </div>
+            </div>
+            <div>
+                <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.08em">Rango de fechas</div>
+                <div class="mono" style="font-size:13px;color:var(--text);margin-top:3px">
+                    @if (_detail.DiscoveryType == "CSV")
+                    {
+                        // For CSV jobs show the actual study date range from the inventory
+                        static string Fmt(string? d) => d?.Length == 8 ? $"{d[..4]}-{d[4..6]}-{d[6..8]}" : (d ?? "—");
+                        @($"{Fmt(_invDateFrom)} → {Fmt(_invDateTo)}")
+                    }
+                    else
+                    {
+                        @($"{(_detail.StartDate?.ToString("yyyy-MM-dd") ?? "—")} → {(_detail.EndDate?.ToString("yyyy-MM-dd") ?? "—")}")
+                    }
+                </div>
+            </div>
+            <div>
+                <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.08em">Método</div>
+                <div style="font-size:13px;color:var(--text);margin-top:3px">@_detail.QueryMethod</div>
+            </div>
+            <div>
+                <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.08em">Límite resultados</div>
+                <div class="mono" style="font-size:13px;color:var(--text);margin-top:3px">@_detail.PacsResultLimit</div>
+            </div>
+            <div>
+                <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.08em">Workers</div>
+                <div class="mono" style="font-size:13px;color:var(--text);margin-top:3px">@_detail.WorkerThreads</div>
+            </div>
+        </div>
+    </div>
+
+    @* ── Confirmación de limpieza ── *@
+    @if (_resetStep > 0)
+    {
+        <div class="card mb2" style="border-color:rgba(245,158,11,0.4)">
+            <div class="card-body" style="padding:16px 18px">
+                <div style="font-size:13px;color:var(--text);margin-bottom:12px">
+                    🧹 ¿Limpiar el job <strong>@_detail.Name</strong>? Se restablecerán todas las particiones al estado inicial
+                    (Pendiente), se pondrán sus contadores a cero y se eliminarán los estudios descubiertos y el registro de peticiones.
+                    <strong>La configuración se mantiene</strong> y el job quedará como si nunca se hubiera iniciado.
+                </div>
+                <div style="display:flex;gap:8px">
+                    <button class="btn btn-ghost btn-sm" @onclick="@(() => _resetStep = 0)">Cancelar</button>
+                    <button class="btn btn-sm" style="background:rgba(245,158,11,0.15);color:var(--yellow);border:1px solid rgba(245,158,11,0.4)"
+                            @onclick="ResetJobConfirmed" disabled="@_busy">🧹 Sí, limpiar</button>
+                </div>
+            </div>
+        </div>
+    }
+
+    @* ── Confirmación de borrado (doble confirmación) ── *@
+    @if (_deleteStep > 0)
+    {
+        <div class="card mb2" style="border-color:rgba(239,68,68,0.4)">
+            <div class="card-body" style="padding:16px 18px">
+                @if (_deleteStep == 1)
+                {
+                    <div style="font-size:13px;color:var(--text);margin-bottom:12px">
+                        ¿Eliminar el job <strong>@_detail.Name</strong>? Se borrará toda su información:
+                        particiones, peticiones registradas y los estudios descubiertos por este job.
+                    </div>
+                    <div style="display:flex;gap:8px">
+                        <button class="btn btn-ghost btn-sm" @onclick="@(() => _deleteStep = 0)">Cancelar</button>
+                        <button class="btn btn-sm" style="background:rgba(239,68,68,0.12);color:var(--red);border:1px solid rgba(239,68,68,0.3)"
+                                @onclick="@(() => _deleteStep = 2)">Sí, continuar</button>
+                    </div>
+                }
+                else
+                {
+                    <div style="font-size:13px;color:var(--red);margin-bottom:12px;font-weight:600">
+                        ⚠ Confirmación final: esta acción es irreversible. ¿Eliminar definitivamente el job y todos sus datos?
+                    </div>
+                    <div style="display:flex;gap:8px">
+                        <button class="btn btn-ghost btn-sm" @onclick="@(() => _deleteStep = 0)">Cancelar</button>
+                        <button class="btn btn-sm" style="background:var(--red);color:#fff;border:1px solid var(--red)"
+                                @onclick="DeleteJobConfirmed" disabled="@_busy">🗑 Eliminar definitivamente</button>
+                    </div>
+                }
+            </div>
+        </div>
+    }
+
+    @* ── Formulario de edición de propiedades ── *@
+    @if (_editing)
+    {
+        <div class="card mb2" style="border-color:rgba(0,180,216,0.3)">
+            <div class="card-header"><span class="card-title">Editar propiedades del job</span></div>
+            <div class="card-body" style="display:flex;flex-direction:column;gap:12px;max-width:760px">
+                @if (!string.IsNullOrEmpty(_editError)) { <div class="alert-error">⚠ @_editError</div> }
+                <div class="form-group">
+                    <label class="form-label">Nombre *</label>
+                    <input class="form-input" @bind="_eName" />
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Descripción</label>
+                    <input class="form-input" @bind="_eDesc" />
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label">Fecha desde</label>
+                        <input class="form-input mono" type="date" @bind="_eStart" />
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Fecha hasta</label>
+                        <input class="form-input mono" type="date" @bind="_eEnd" />
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label">Método de consulta</label>
+                        <select class="form-input" @bind="_eMethod">
+                            <option value="CFIND">C-FIND (DIMSE)</option>
+                            <option value="QIDO">QIDO-RS (DICOMweb)</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Límite resultados del PACS</label>
+                        <input class="form-input mono" type="number" @bind="_eLimit" />
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Workers concurrentes</label>
+                        <input class="form-input mono" type="number" @bind="_eThreads" />
+                    </div>
+                </div>
+                @if (DatesChanged())
+                {
+                    <div style="padding:8px 12px;background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.25);border-radius:7px;font-size:11px;color:var(--yellow)">
+                        ⚠ Has cambiado el rango de fechas. Las particiones existentes no se regeneran automáticamente;
+                        deberás reiniciar el descubrimiento para aplicar el nuevo rango.
+                    </div>
+                }
+                <div style="display:flex;gap:8px">
+                    <button class="btn btn-ghost btn-sm" @onclick="@(() => _editing = false)">Cancelar</button>
+                    <button class="btn btn-primary btn-sm" @onclick="SaveEditAsync" disabled="@_busy">💾 Guardar cambios</button>
+                </div>
+            </div>
+        </div>
+    }
+
+    @* ── Métricas ── *@
+    <div class="stat-grid" style="display:grid;grid-template-columns:repeat(7,1fr);gap:12px;margin-bottom:16px">
+        <div class="stat-card"><div class="stat-label">Particiones</div><div class="stat-value">@_stats.TotalPartitions</div></div>
+        <div class="stat-card"><div class="stat-label">Completas</div><div class="stat-value" style="color:var(--green)">@_stats.CompletedPartitions</div></div>
+        <div class="stat-card" title="Subdivididas en particiones hijas por truncamiento detectado"><div class="stat-label">Subdivididas</div><div class="stat-value" style="color:#3b82f6">@_stats.SubdividedPartitions</div></div>
+        <div class="stat-card"><div class="stat-label">Pendientes</div><div class="stat-value">@_stats.PendingPartitions</div></div>
+        <div class="stat-card"><div class="stat-label">Truncadas</div><div class="stat-value" style="color:var(--yellow)">@_stats.TruncatedPartitions</div></div>
+        <div class="stat-card"><div class="stat-label">Estudios</div><div class="stat-value" style="color:var(--accent)">@_stats.StudiesDiscovered</div></div>
+        <div class="stat-card"><div class="stat-label">Errores</div><div class="stat-value" style="color:var(--red)">@_stats.FailedPartitions</div></div>
+    </div>
+
+    @* ── Barra de progreso ── *@
+    @if (_stats.TotalPartitions > 0)
+    {
+        <div class="card mb2">
+            <div class="card-body" style="padding:14px 16px">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+                    <div style="display:flex;align-items:center;gap:10px">
+                        <span style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.08em">Progreso</span>
+                        @if (_stats.ElapsedSeconds > 0)
+                        {
+                            <span style="font-size:10px;color:var(--text-dim)">⏱ @FormatElapsed(_stats.ElapsedSeconds)</span>
+                        }
+                        @if (_stats.EstimatedRemainingSeconds.HasValue)
+                        {
+                            <span style="font-size:10px;color:var(--text-muted)">· ~@FormatElapsed(_stats.EstimatedRemainingSeconds.Value) restante</span>
+                        }
+                    </div>
+                    <div style="display:flex;align-items:center;gap:8px">
+                        <span style="font-size:10px;color:var(--text-dim)">@_stats.ProcessedPartitions / @_stats.TotalPartitions</span>
+                        <span class="mono" style="color:var(--accent);font-size:14px;font-weight:700;min-width:48px;text-align:right">
+                            @_stats.ProgressPercent.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)%
+                        </span>
+                    </div>
+                </div>
+                <div class="progress-track" style="height:8px">
+                    <div class="progress-fill" style="width:@(_stats.ProgressPercent.ToString("F1", System.Globalization.CultureInfo.InvariantCulture))%;background:var(--accent)"></div>
+                </div>
+                <div style="display:flex;gap:16px;margin-top:10px;font-size:11px;color:var(--text-dim)">
+                    <span>Peticiones: <strong style="color:var(--text)">@_stats.TotalRequests</strong></span>
+                    <span>OK: <strong style="color:var(--green)">@_stats.OkRequests</strong></span>
+                    <span title="Peticiones C-FIND/QIDO que recibieron error del PACS">Peticiones fallidas: <strong style="color:var(--red)">@_stats.FailedRequests</strong></span>
+                    <span>·</span>
+                    <span>Nuevos: <strong style="color:var(--accent)">@_stats.StudiesNew</strong></span>
+                    <span>Existentes: <strong style="color:var(--text)">@_stats.StudiesExisting</strong></span>
+                </div>
+            </div>
+        </div>
+    }
+
+    @* ── Acciones sobre el inventario descubierto ── *@
+    @if (_stats.StudiesDiscovered > 0 || _stats.StudiesNew > 0)
+    {
+        <div class="card mb2">
+            <div class="card-header"><span class="card-title">Inventario descubierto</span></div>
+            <div class="card-body" style="display:flex;flex-direction:column;gap:12px">
+                <div style="font-size:12px;color:var(--text-dim)">
+                    Estudios descubiertos por este job almacenados en el inventario.
+                    Puedes exportarlos o crear una migración que los use como origen sin volver a consultar el PACS.
+                </div>
+                <div style="display:flex;gap:8px;flex-wrap:wrap">
+                    <button class="btn btn-ghost btn-sm" @onclick="ExportCsvAsync" disabled="@_busy">⭳ Exportar CSV</button>
+                </div>
+
+                @* Crear migración desde inventario *@
+                @if (!_showCreateMigration)
+                {
+                    <button class="btn btn-primary btn-sm" style="align-self:flex-start"
+                            @onclick="@(() => _showCreateMigration = true)" disabled="@_busy">
+                        ⇄ Crear migración desde este inventario
+                    </button>
+                }
+                else
+                {
+                    <div style="padding:12px 14px;background:rgba(0,180,216,0.05);border:1px solid rgba(0,180,216,0.2);border-radius:8px;display:flex;flex-direction:column;gap:10px">
+                        <div class="form-group" style="margin:0">
+                            <label class="form-label">Nombre de la migración</label>
+                            <input class="form-input" @bind="_migName" placeholder="Migración desde @_detail.Name" />
+                        </div>
+                        <div class="form-group" style="margin:0">
+                            <label class="form-label">PACS destino</label>
+                            <select class="form-input" @bind="_migDestId">
+                                <option value="0">— Seleccionar —</option>
+                                @foreach (var n in DestCandidates())
+                                {
+                                    <option value="@n.Id">@n.Alias (@n.RemoteAet)</option>
+                                }
+                            </select>
+                        </div>
+                        @if (!string.IsNullOrEmpty(_migError)) { <div style="color:var(--red);font-size:11px">@_migError</div> }
+                        <div style="display:flex;gap:8px">
+                            <button class="btn btn-ghost btn-sm" @onclick="@(() => _showCreateMigration = false)">Cancelar</button>
+                            <button class="btn btn-primary btn-sm" @onclick="CreateMigrationFromInventoryAsync" disabled="@_busy">
+                                Crear migración
+                            </button>
+                        </div>
+                    </div>
+                }
+            </div>
+        </div>
+    }
+
+    @* ── Tabla de particiones ── *@
+    <div class="card">
+        <div class="card-header" style="display:flex;align-items:center;justify-content:space-between">
+            <span class="card-title">Particiones (@_partTotal.ToString("N0"))</span>
+            @if (_partTotalPages > 1)
+            {
+                <span style="font-size:11px;color:var(--text-dim)">
+                    Mostrando @(((_partPage - 1) * PartPageSize) + 1)–@Math.Min(_partPage * PartPageSize, _partTotal) de @_partTotal.ToString("N0")
+                </span>
+            }
+        </div>
+        <div class="card-body" style="overflow-x:auto;max-height:340px;overflow-y:auto">
+            <table class="data-table" style="width:100%">
+                <thead style="position:sticky;top:0;z-index:1;background:var(--panel)">
+                    <tr>
+                        <th>Fecha</th><th>Tipo</th><th>Modalidad</th><th>Horario</th>
+                        <th>Estado</th><th>Encontrados</th><th>Nuevos</th><th>Intentos</th><th>Duración</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var p in _partitions)
+                    {
+                        <tr>
+                            <td class="mono small">@(p.StartDate?.ToString("yyyy-MM-dd") ?? "—")</td>
+                            <td class="mono small text-dim">@p.PartitionType</td>
+                            <td>@if (!string.IsNullOrEmpty(p.Modality)) { <span class="tag mono">@p.Modality</span> }</td>
+                            <td class="mono small text-dim">@(p.StudyTimeFrom is null ? "—" : $"{p.StudyTimeFrom[..2]}-{p.StudyTimeTo![..2]}")</td>
+                            <td><StatusBadge Status="@p.Status" /></td>
+                            <td class="mono small">@p.StudiesFound</td>
+                            <td class="mono small" style="color:var(--accent)">@p.StudiesInserted</td>
+                            <td class="mono small text-dim">@p.AttemptCount</td>
+                            <td class="mono small text-dim">@(p.DurationMs.HasValue ? $"{p.DurationMs.Value/1000:F1}s" : "—")</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+
+        @* ── Paginación ── *@
+        @if (_partTotalPages > 1)
+        {
+            <div style="display:flex;align-items:center;justify-content:center;gap:8px;padding:12px;border-top:1px solid var(--border)">
+                <button class="btn btn-ghost btn-sm" @onclick="@(() => GoToPartPage(1))" disabled="@FirstPageDisabled()" title="Primera">⏮</button>
+                <button class="btn btn-ghost btn-sm" @onclick="@(() => GoToPartPage(_partPage - 1))" disabled="@FirstPageDisabled()" title="Anterior">← Ant</button>
+
+                <span style="font-size:12px;color:var(--text-dim);display:flex;align-items:center;gap:6px">
+                    Página
+                    <input type="number" min="1" max="@_partTotalPages" value="@_partPage"
+                           @onchange="GoToPartPageInput"
+                           style="width:64px;text-align:center;padding:4px 6px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:var(--font-mono);font-size:12px" />
+                    de @_partTotalPages.ToString("N0")
+                </span>
+
+                <button class="btn btn-ghost btn-sm" @onclick="@(() => GoToPartPage(_partPage + 1))" disabled="@LastPageDisabled()" title="Siguiente">Sig →</button>
+                <button class="btn btn-ghost btn-sm" @onclick="@(() => GoToPartPage(_partTotalPages))" disabled="@LastPageDisabled()" title="Última">⏭</button>
+            </div>
+        }
+    </div>
+}
+else if (_showForm)
+{
+    @* ═══════════════════ FORMULARIO NUEVO JOB ═══════════════════ *@
+    <div class="page-header">
+        <button class="btn btn-ghost" @onclick="@(() => _showForm = false)">← Volver</button>
+        <h1 class="page-title">Nuevo Discovery Job</h1>
+    </div>
+
+    @if (!string.IsNullOrEmpty(_error)) { <div class="alert-error">⚠ @_error</div> }
+
+    <div class="card">
+        <div class="card-body" style="display:flex;flex-direction:column;gap:14px;max-width:760px">
+            <div class="form-group">
+                <label class="form-label">Nombre *</label>
+                <input class="form-input" @bind="_fName" placeholder="Descubrimiento histórico 2024" />
+            </div>
+            <div class="form-group">
+                <label class="form-label">Descripción</label>
+                <input class="form-input" @bind="_fDesc" />
+            </div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label class="form-label">PACS origen *</label>
+                    <select class="form-input" @bind="_fPacsId">
+                        <option value="0">— Seleccionar —</option>
+                        @foreach (var n in _nodes)
+                        {
+                            <option value="@n.Id">@n.Alias (@n.RemoteAet)</option>
+                        }
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Método de consulta</label>
+                    <select class="form-input" @bind="_fMethod">
+                        <option value="CFIND">C-FIND (DIMSE)</option>
+                        <option value="QIDO">QIDO-RS (DICOMweb)</option>
+                        <option value="CSV">CSV (importar fichero)</option>
+                    </select>
+                </div>
+            </div>
+
+            @* ── Campos exclusivos del modo Temporal (C-FIND / QIDO) ── *@
+            @if (_fMethod != "CSV")
+            {
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label">Fecha desde *</label>
+                        <input class="form-input mono" type="date" @bind="_fStart" />
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Fecha hasta *</label>
+                        <input class="form-input mono" type="date" @bind="_fEnd" />
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label">Límite resultados del PACS</label>
+                        <input class="form-input mono" type="number" @bind="_fLimit" />
+                        <div class="form-hint">Si una partición devuelve ≥ este valor, se subdivide automáticamente.</div>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Workers concurrentes</label>
+                        <input class="form-input mono" type="number" @bind="_fThreads" />
+                    </div>
+                </div>
+                @if (ShowDaysPreview())
+                {
+                    <div style="padding:10px 14px;background:rgba(0,180,216,0.06);border:1px solid rgba(0,180,216,0.2);border-radius:7px;font-size:12px;color:var(--text-dim)">
+                        Se generarán <strong style="color:var(--accent)">@DaysCount()</strong> particiones diarias
+                        (@_fStart.ToString("yyyy-MM-dd") → @_fEnd.ToString("yyyy-MM-dd")).
+                    </div>
+                }
+            }
+
+            @* ── Campos exclusivos del modo CSV ── *@
+            @if (_fMethod == "CSV")
+            {
+                <div class="form-group">
+                    <label class="form-label">Fichero CSV *</label>
+                    <InputFile OnChange="@(e => { _csvFile = e.File; _csvError = ""; })"
+                               accept=".csv,.txt"
+                               style="display:block;padding:8px 0;color:var(--text-dim);font-size:12px" />
+                    @if (_csvFile is not null)
+                    {
+                        <div class="form-hint" style="color:var(--green)">
+                            ✓ @_csvFile.Name — @((_csvFile.Size / 1024.0).ToString("F1")) KB
+                        </div>
+                    }
+                    @if (!string.IsNullOrEmpty(_csvError))
+                    {
+                        <div class="form-hint" style="color:var(--red)">⚠ @_csvError</div>
+                    }
+                    <div class="form-hint">
+                        Columna obligatoria: <code>StudyInstanceUID</code>.
+                        Opcionales: PatientID, PatientName, AccessionNumber, StudyDate, StudyTime, Modality, StudyDescription.<br/>
+                        Separador: coma o punto y coma. Tamaño máximo: <strong>50 MB</strong> · <strong>500.000 líneas</strong>.
+                    </div>
+                </div>
+            }
+
+            <div style="display:flex;gap:8px">
+                <button class="btn btn-ghost" @onclick="@(() => _showForm = false)">Cancelar</button>
+                <button class="btn btn-primary" @onclick="CreateJobAsync" disabled="@_busy">💾 Crear Job</button>
+            </div>
+        </div>
+    </div>
+}
+else
+{
+    @* ═══════════════════ LISTADO DE JOBS ═══════════════════ *@
+    <div class="page-header">
+        <div>
+            <h1 class="page-title">Discovery Engine</h1>
+            <p class="page-sub">@_jobs.Count job(s) de descubrimiento</p>
+        </div>
+        <button class="btn btn-ghost btn-sm" @onclick="LoadJobsAsync" title="Actualizar">↺ Actualizar</button>
+        <button class="btn btn-primary" @onclick="OpenNew">+ Nuevo Job</button>
+    </div>
+
+    @if (_jobs.Count == 0)
+    {
+        <div class="card"><div class="card-body" style="text-align:center;padding:40px;color:var(--text-dim)">
+            No hay Discovery Jobs todavía. Crea uno para empezar a inventariar estudios del PACS origen.
+        </div></div>
+    }
+    else
+    {
+        <div style="display:flex;flex-direction:column;gap:10px">
+            @foreach (var j in _jobs)
+            {
+                <div class="card" style="cursor:pointer" @onclick="@(() => OpenDetail(j))">
+                    <div class="card-body" style="display:flex;align-items:center;gap:16px">
+                        <div style="flex:1">
+                            <div style="display:flex;align-items:center;gap:10px">
+                                <span style="font-weight:600">@j.Name</span>
+                                <StatusBadge Status="@j.Status" />
+                                <span class="tag mono">@j.QueryMethod</span>
+                                <span class="tag">@j.DiscoveryType</span>
+                            </div>
+                            <div style="font-size:11px;color:var(--text-dim);margin-top:4px">
+                                Origen: @(j.SourcePacs?.Alias ?? "?")
+                                @if (j.StartDate.HasValue)
+                                {
+                                    <span> · @j.StartDate.Value.ToString("yyyy-MM-dd") → @(j.EndDate?.ToString("yyyy-MM-dd") ?? "")</span>
+                                }
+                            </div>
+                        </div>
+                        <span class="btn btn-ghost btn-sm">Abrir →</span>
+                    </div>
+                </div>
+            }
+        </div>
+    }
+}
+
+@code {
+    private List<DiscoveryJob>  _jobs = [];
+    private List<DicomNode>     _nodes = [];
+    private DiscoveryJob?       _detail;
+    private DiscoveryStats      _stats = new();
+    private List<DiscoveryPartition> _partitions = [];
+    private int _partPage = 1;
+    private int _partTotal, _partTotalPages = 1;
+    private const int PartPageSize = 100;
+    // Inventory date range — loaded for CSV jobs from min/max StudyDate in inventory
+    private string? _invDateFrom, _invDateTo;
+    private bool _showForm, _busy;
+    private string _actionMsg = "", _error = "";
+    private System.Threading.Timer? _timer;
+
+    private bool _showCreateMigration;
+    private string _migName = "", _migError = "";
+    private int _migDestId;
+
+    // delete + edit state
+    private int    _deleteStep;          // 0=none, 1=first confirm, 2=final confirm
+    private int    _resetStep;           // 0=none, 1=confirm
+    private string _deleteMsg = "";
+    private bool   _editing;
+    private string _editError = "";
+    private string _eName = "", _eDesc = "", _eMethod = "CFIND";
+    private int    _eLimit = 500, _eThreads = 4;
+    private DateOnly _eStart, _eEnd;
+
+    private string _fName = "", _fDesc = "";
+    private int _fPacsId, _fThreads = 4, _fLimit = 500;
+    private string _fMethod = "CFIND";
+    private DateOnly _fStart, _fEnd;
+    // CSV mode
+    private IBrowserFile? _csvFile;
+    private string        _csvError = "";
+    private const long    CsvMaxBytes = 50 * 1024 * 1024;  // 50 MB
+    private const int     CsvMaxLines = 500_000;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadJobsAsync();
+        _nodes = await NodeRepo.GetAllAsync();
+    }
+
+    async Task LoadJobsAsync()
+    {
+        _jobs = await JobRepo.GetAllAsync();
+        StateHasChanged();
+    }
+
+    void OpenNew()
+    {
+        _fName = ""; _fDesc = ""; _fPacsId = 0; _fMethod = "CFIND";
+        _fThreads = 4; _fLimit = 500;
+        _fStart = DateOnly.FromDateTime(DateTime.Today.AddDays(-7));
+        _fEnd   = DateOnly.FromDateTime(DateTime.Today);
+        _csvFile = null; _csvError = "";
+        _error = ""; _showForm = true;
+    }
+
+    async Task CreateJobAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_fName)) { _error = "El nombre es obligatorio."; return; }
+        if (_fPacsId == 0) { _error = "Selecciona un PACS origen."; return; }
+
+        if (_fMethod == "CSV")
+        {
+            // ── CSV mode validation ──────────────────────────────────────
+            if (_csvFile is null) { _error = "Selecciona un fichero CSV."; return; }
+            if (_csvFile.Size > CsvMaxBytes)
+            {
+                _error = $"El fichero supera el límite de 50 MB ({_csvFile.Size / 1024 / 1024} MB).";
+                return;
+            }
+        }
+        else
+        {
+            if (_fEnd.CompareTo(_fStart) < 0) { _error = "La fecha hasta debe ser posterior a la fecha desde."; return; }
+        }
+
+        _busy = true;
+        try
+        {
+            var job = await JobRepo.CreateAsync(new DiscoveryJob
+            {
+                Name            = _fName.Trim(),
+                Description     = _fDesc?.Trim(),
+                SourcePacsId    = _fPacsId,
+                DiscoveryType   = _fMethod == "CSV" ? "CSV" : "Temporal",
+                QueryMethod     = _fMethod,
+                StartDate       = _fMethod == "CSV" ? null : _fStart,
+                EndDate         = _fMethod == "CSV" ? null : _fEnd,
+                PacsResultLimit = _fLimit,
+                WorkerThreads   = _fThreads,
+                Status          = "Draft",
+            });
+
+            if (_fMethod == "CSV")
+            {
+                // Stream the file directly — never fully loaded in memory
+                await using var stream = _csvFile!.OpenReadStream(maxAllowedSize: CsvMaxBytes);
+                var result = await JobRepo.ImportFromCsvAsync(job.Id, stream);
+                _showForm = false;
+                await LoadJobsAsync();
+                await OpenDetail(job);
+                _actionMsg = $"CSV importado: {result.Inserted} nuevos, {result.Updated} actualizados, " +
+                             $"{result.Skipped} omitidos, {result.Errors} errores.";
+                if (result.ErrorDetails.Count > 0)
+                    _actionMsg += " " + string.Join(" | ", result.ErrorDetails.Take(3));
+            }
+            else
+            {
+                await Engine.GeneratePartitionsAsync(job.Id);
+                _showForm = false;
+                await LoadJobsAsync();
+                await OpenDetail(job);
+            }
+        }
+        catch (Exception ex) { _error = ex.Message; }
+        finally { _busy = false; }
+    }
+
+    async Task OpenDetail(DiscoveryJob j)
+    {
+        _partPage = 1;
+        _deleteStep = 0; _deleteMsg = ""; _editing = false; _resetStep = 0;
+        _detail = await JobRepo.GetByIdAsync(j.Id);
+        await RefreshDetailAsync();
+        if (_detail?.Status == "Running") StartAutoRefresh();
+    }
+
+    void BackToList()
+    {
+        StopAutoRefresh();
+        _detail = null; _actionMsg = "";
+        _ = LoadJobsAsync();
+    }
+
+    async Task RefreshDetailAsync()
+    {
+        if (_detail is null) return;
+        _detail     = await JobRepo.GetByIdAsync(_detail.Id);
+        _stats      = await JobRepo.GetStatsAsync(_detail!.Id);
+        var (items, total) = await JobRepo.GetPartitionsPagedAsync(_detail.Id, _partPage, PartPageSize);
+        _partitions      = items;
+        _partTotal       = total;
+        _partTotalPages  = total == 0 ? 1 : (int)Math.Ceiling(total / (double)PartPageSize);
+        if (_partPage > _partTotalPages) { _partPage = _partTotalPages; }
+        if (_detail.Status is not ("Running")) StopAutoRefresh();
+        // For CSV jobs, compute date range from inventory (no StartDate/EndDate on the job itself)
+        if (_detail.DiscoveryType == "CSV")
+            (_invDateFrom, _invDateTo) = await StudyRepo.GetStudyDateRangeAsync(_detail.Id);
+        else
+            (_invDateFrom, _invDateTo) = (null, null);
+        await InvokeAsync(StateHasChanged);
+    }
+
+    async Task GoToPartPage(int page)
+    {
+        if (page < 1) page = 1;
+        if (page > _partTotalPages) page = _partTotalPages;
+        _partPage = page;
+        await RefreshDetailAsync();
+    }
+
+    async Task GoToPartPageInput(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), out var p))
+            await GoToPartPage(p);
+    }
+
+    async Task StartJobAsync()
+    {
+        if (_detail is null) return;
+        _busy = true;
+        try { await Engine.StartAsync(_detail.Id); _actionMsg = "Descubrimiento iniciado."; await RefreshDetailAsync(); StartAutoRefresh(); }
+        finally { _busy = false; }
+    }
+
+    async Task PauseJobAsync()
+    {
+        if (_detail is null) return;
+        _busy = true;
+        try { await Engine.PauseAsync(_detail.Id); _actionMsg = "Descubrimiento pausado."; await RefreshDetailAsync(); }
+        finally { _busy = false; }
+    }
+
+    async Task ResumeJobAsync()
+    {
+        if (_detail is null) return;
+        _busy = true;
+        try { await Engine.ResumeAsync(_detail.Id); _actionMsg = "Descubrimiento reanudado."; await RefreshDetailAsync(); StartAutoRefresh(); }
+        finally { _busy = false; }
+    }
+
+    async Task RetryFailedAsync()
+    {
+        if (_detail is null) return;
+        _busy = true;
+        try
+        {
+            var reset = await JobRepo.RetryFailedPartitionsAsync(_detail.Id);
+            _actionMsg = $"{reset} partición(es) fallidas reseteadas a Pendiente. Pulsa Iniciar para reprocesarlas.";
+            await RefreshDetailAsync();
+        }
+        catch (Exception ex) { _actionMsg = $"Error: {ex.Message}"; }
+        finally { _busy = false; }
+    }
+
+    Task ExportCsvAsync()
+    {
+        if (_detail is null) return Task.CompletedTask;
+        Nav.NavigateTo($"/discovery/{_detail.Id}/export.csv", forceLoad: true);
+        _actionMsg = "Descarga iniciada en el navegador.";
+        return Task.CompletedTask;
+    }
+
+    async Task CreateMigrationFromInventoryAsync()
+    {
+        if (_detail is null) return;
+        if (_migDestId == 0) { _migError = "Selecciona un PACS destino."; return; }
+        _busy = true; _migError = "";
+        try
+        {
+            // Calculate study date range from the inventory
+            var (dateFrom, dateTo) = await StudyRepo.GetStudyDateRangeAsync(_detail.Id);
+
+            var name = string.IsNullOrWhiteSpace(_migName)
+                ? $"Migracion desde {_detail.Name}" : _migName.Trim();
+
+            var destNode = _nodes.FirstOrDefault(n => n.Id == _migDestId);
+            var verifyMethod = destNode?.HasDicomWeb == true &&
+                               (!string.IsNullOrWhiteSpace(destNode.WebBaseUrl) ||
+                                !string.IsNullOrWhiteSpace(destNode.QidoBaseUrl))
+                ? "QIDO-RS" : "C-FIND";
+
+            var migration = await MigrationRepo.CreateAsync(new Migration
+            {
+                Name              = name,
+                Description       = $"Origen: inventario del Discovery Job '{_detail.Name}'",
+                OriginNodeId      = _detail.SourcePacsId,
+                DestNodeId        = _migDestId,
+                DiscoveryMethod   = verifyMethod,
+                TransferMethod    = "C-MOVE",
+                Status            = "Draft",
+                WorkerThreads     = 4,
+                MaxRetries        = 3,
+                ModalityPriority  = "CT,MR,CR,DX,US,MG,NM,PT,XA,RF,OT,SC,PR,SR,KO",
+                InventoryDateFrom = dateFrom,
+                InventoryDateTo   = dateTo,
+            });
+            var imported = await MigStudyRepo.ImportFromInventoryAsync(
+                migration.Id,
+                new DiscoveredStudyFilter { DiscoveryJobId = _detail.Id });
+            _actionMsg = $"Migracion creada con {imported} estudios.";
+            _showCreateMigration = false;
+            Nav.NavigateTo("/migraciones");
+        }
+        catch (Exception ex) { _migError = ex.Message; }
+        finally { _busy = false; }
+    }
+
+    // ── Reset (clean) job: partitions back to Pending, studies removed, config kept ──
+    void RequestResetJob()
+    {
+        _deleteMsg = ""; _deleteStep = 0; _editing = false;
+        if (_detail is null) return;
+        if (_detail.Status == "Running")
+        {
+            _deleteMsg = "El job se está ejecutando. Debes pausarlo antes de poder limpiarlo.";
+            _resetStep = 0;
+            return;
+        }
+        _resetStep = 1;
+    }
+
+    async Task ResetJobConfirmed()
+    {
+        if (_detail is null) return;
+        var fresh = await JobRepo.GetByIdAsync(_detail.Id);
+        if (fresh?.Status == "Running")
+        {
+            _deleteMsg = "El job se está ejecutando. Debes pausarlo antes de poder limpiarlo.";
+            _resetStep = 0;
+            return;
+        }
+        _busy = true;
+        try
+        {
+            StopAutoRefresh();
+            await JobRepo.ResetJobAsync(_detail.Id);
+            _resetStep = 0;
+            _partPage = 1;
+            _actionMsg = "Job limpiado. Las particiones están listas para un nuevo descubrimiento.";
+            await RefreshDetailAsync();
+        }
+        catch (Exception ex) { _deleteMsg = ex.Message; _resetStep = 0; }
+        finally { _busy = false; }
+    }
+
+    // ── Delete job (double confirmation, blocked while Running) ──────────────
+    void RequestDeleteJob()
+    {
+        _deleteMsg = ""; _editing = false; _resetStep = 0;
+        if (_detail is null) return;
+        if (_detail.Status == "Running")
+        {
+            _deleteMsg = "El job se está ejecutando. Debes pausarlo antes de poder eliminarlo.";
+            _deleteStep = 0;
+            return;
+        }
+        _deleteStep = 1;   // start confirmation flow
+    }
+
+    async Task DeleteJobConfirmed()
+    {
+        if (_detail is null) return;
+        // Re-check status in case it changed
+        var fresh = await JobRepo.GetByIdAsync(_detail.Id);
+        if (fresh?.Status == "Running")
+        {
+            _deleteMsg = "El job se está ejecutando. Debes pausarlo antes de poder eliminarlo.";
+            _deleteStep = 0;
+            return;
+        }
+        _busy = true;
+        try
+        {
+            StopAutoRefresh();
+            await JobRepo.DeleteAsync(_detail.Id);
+            _deleteStep = 0;
+            _detail = null;
+            await LoadJobsAsync();
+        }
+        catch (Exception ex) { _deleteMsg = ex.Message; _deleteStep = 0; }
+        finally { _busy = false; }
+    }
+
+    // ── Edit job properties ──────────────────────────────────────────────────
+    void OpenEditJob()
+    {
+        if (_detail is null) return;
+        _deleteStep = 0; _deleteMsg = ""; _editError = ""; _resetStep = 0;
+        _eName    = _detail.Name;
+        _eDesc    = _detail.Description ?? "";
+        _eMethod  = _detail.QueryMethod;
+        _eLimit   = _detail.PacsResultLimit;
+        _eThreads = _detail.WorkerThreads;
+        _eStart   = _detail.StartDate ?? DateOnly.FromDateTime(DateTime.Today);
+        _eEnd     = _detail.EndDate   ?? DateOnly.FromDateTime(DateTime.Today);
+        _editing  = true;
+    }
+
+    bool DatesChanged()
+    {
+        if (_detail is null) return false;
+        return _eStart != (_detail.StartDate ?? default) || _eEnd != (_detail.EndDate ?? default);
+    }
+
+    async Task SaveEditAsync()
+    {
+        if (_detail is null) return;
+        if (string.IsNullOrWhiteSpace(_eName)) { _editError = "El nombre es obligatorio."; return; }
+        if (_eEnd.CompareTo(_eStart) < 0) { _editError = "La fecha hasta debe ser posterior a la fecha desde."; return; }
+        _busy = true; _editError = "";
+        try
+        {
+            // Capturar si cambian las fechas ANTES de sobreescribir _detail
+            var datesChanged = DatesChanged();
+
+            _detail.Name            = _eName.Trim();
+            _detail.Description     = string.IsNullOrWhiteSpace(_eDesc) ? string.Empty : _eDesc.Trim();
+            _detail.QueryMethod     = _eMethod;
+            _detail.PacsResultLimit = _eLimit;
+            _detail.WorkerThreads   = _eThreads;
+            _detail.StartDate       = _eStart;
+            _detail.EndDate         = _eEnd;
+            await JobRepo.UpdateAsync(_detail);
+
+            // Si cambió el rango de fechas, las particiones anteriores quedan
+            // obsoletas: se borran para que se regeneren en el próximo inicio.
+            if (datesChanged && _detail.DiscoveryType == "Temporal")
+            {
+                await JobRepo.DeletePartitionsAsync(_detail.Id);
+                _actionMsg = "Propiedades actualizadas. Rango de fechas cambiado: las particiones se regenerarán al iniciar.";
+            }
+            else
+            {
+                _actionMsg = "Propiedades del job actualizadas.";
+            }
+
+            _editing = false;
+            await RefreshDetailAsync();
+        }
+        catch (Exception ex) { _editError = ex.Message; }
+        finally { _busy = false; }
+    }
+}

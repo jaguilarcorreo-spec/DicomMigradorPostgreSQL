@@ -1,0 +1,8 @@
+@* StatusBadge.razor — copiado del Tester *@
+<span class="status-badge s-@Status">
+    <span class="status-dot"></span>@Status
+</span>
+
+@code {
+    [Parameter] public string Status { get; set; } = "";
+}

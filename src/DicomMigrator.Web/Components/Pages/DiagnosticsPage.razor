@@ -1,0 +1,506 @@
+@page "/diagnostico"
+@rendermode InteractiveServer
+@inject ILocalConfigRepository ConfigRepo
+@inject INodeRepository NodeRepo
+@inject IDimseService DimseService
+@inject IJSRuntime JS
+
+<PageTitle>Diagnóstico — DICOM Migrador</PageTitle>
+
+<div class="page-header">
+    <div>
+        <h1 class="page-title">Diagnóstico de Conectividad</h1>
+        <p class="page-sub">Verifica la configuración de red y AET antes de migrar</p>
+    </div>
+    <button class="btn btn-primary" @onclick="RunAllChecksAsync" disabled="@_running">
+        @(_running ? "⟳ Ejecutando..." : "▶ Ejecutar diagnóstico completo")
+    </button>
+</div>
+
+@* ══════════════════════════════════════════════════════════
+   ALERT 0xA801
+   ══════════════════════════════════════════════════════════ *@
+<div style="display:flex;gap:12px;padding:14px 18px;background:rgba(239,68,68,0.07);
+            border:1px solid rgba(239,68,68,0.3);border-radius:10px;margin-bottom:20px">
+    <div style="font-size:20px;flex-shrink:0">🔴</div>
+    <div>
+        <div style="font-weight:700;color:var(--red);font-size:13px;margin-bottom:5px">
+            Error 0xA801 — Move Destination Unknown activo
+        </div>
+        <div style="font-size:12px;color:var(--text-dim);line-height:1.8">
+            El PACS origen devuelve <span class="tag mono" style="color:var(--red)">0xA801</span> porque
+            <strong style="color:var(--text)">no tiene registrado el AET de este migrador</strong>.
+            Debes añadirlo en la configuración del PACS origen antes de lanzar ninguna migración.
+            Usa el generador de abajo para obtener la configuración exacta.
+        </div>
+    </div>
+</div>
+
+@* ══════════════════════════════════════════════════════════
+   DATOS DEL SERVIDOR LOCAL
+   ══════════════════════════════════════════════════════════ *@
+<div class="card mb2">
+    <div class="card-header">
+        <span class="card-title">Configuración local SCU (este servidor)</span>
+        <a href="/localconfig" class="btn btn-ghost btn-sm" style="margin-left:auto">✎ Editar</a>
+    </div>
+    <div class="card-body">
+        <div class="grid-4">
+            <div class="stat-card">
+                <div class="stat-label">AE Title Local</div>
+                <div class="stat-value mono" style="font-size:18px;color:var(--accent)">@_aet</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Puerto SCP (C-STORE)</div>
+                <div class="stat-value mono" style="font-size:18px;color:var(--accent)">@_port</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">IP / Hostname</div>
+                <div class="stat-value mono" style="font-size:16px;color:@(string.IsNullOrWhiteSpace(_hostname) ? "var(--red)" : "var(--text)")">
+                    @(string.IsNullOrWhiteSpace(_hostname) ? "⚠ Sin configurar" : _hostname)
+                </div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">IP detectada</div>
+                <div class="stat-value mono" style="font-size:16px;color:var(--green)">@_detectedIp</div>
+                <div class="stat-sub">dirección del proceso</div>
+            </div>
+        </div>
+        @if (string.IsNullOrWhiteSpace(_hostname))
+        {
+            <div class="alert-error" style="margin-top:12px">
+                ⚠ El hostname no está configurado. Ve a <a href="/localconfig" style="color:var(--accent)">Config. local SCU</a>
+                y establece la IP visible desde el PACS origen (probablemente <strong>@_detectedIp</strong>).
+            </div>
+        }
+    </div>
+</div>
+
+@* ══════════════════════════════════════════════════════════
+   GENERADOR DE CONFIGURACIÓN
+   ══════════════════════════════════════════════════════════ *@
+<div class="card mb2">
+    <div class="card-header">
+        <span class="card-title">⚙ Generador de configuración para el PACS origen</span>
+    </div>
+    <div class="card-body">
+        <div class="form-group" style="max-width:200px;margin-bottom:16px">
+            <label class="form-label">Tipo de PACS origen</label>
+            <select class="form-input" @bind="_pacsType">
+                <option value="orthanc">Orthanc</option>
+                <option value="dcm4chee">DCM4CHEE 5</option>
+                <option value="generic">PACS genérico</option>
+            </select>
+        </div>
+
+        @if (_pacsType == "orthanc")
+        {
+            <div style="font-size:12px;color:var(--text-dim);margin-bottom:10px;line-height:1.8">
+                Añade este bloque en <code class="tag mono">orthanc.json</code> dentro de la sección
+                <code class="tag mono">DicomModalities</code> y reinicia Orthanc:
+            </div>
+            <div style="position:relative">
+                <div id="orthanc-config" style="background:var(--bg);border:1px solid var(--border);border-radius:8px;
+                     padding:16px;font-family:var(--font-mono);font-size:12px;color:var(--text-dim);
+                     line-height:2;overflow-x:auto;white-space:pre">
+<span style="color:#94a3b8">"DicomModalities"</span> : {
+  <span style="color:var(--accent)">"@_aet"</span> : [ <span style="color:var(--yellow)">"@_aet"</span>, <span style="color:var(--yellow)">"@EffectiveHost"</span>, <span style="color:var(--green)">@_port</span> ]
+}
+                </div>
+                <button class="btn btn-ghost btn-sm" @onclick="CopyOrthancConfig"
+                        style="position:absolute;top:8px;right:8px;font-size:10px">
+                    @(_copied ? "✓ Copiado" : "📋 Copiar")
+                </button>
+            </div>
+            <div style="margin-top:10px;font-size:12px;color:var(--text-dim);line-height:1.8">
+                <strong style="color:var(--text)">Reinicio Orthanc:</strong><br/>
+                Linux: <code class="tag mono">sudo systemctl restart orthanc</code><br/>
+                Windows: Reiniciar el servicio "Orthanc" en services.msc<br/>
+                Docker: <code class="tag mono">docker restart &lt;nombre-contenedor&gt;</code>
+            </div>
+            <div style="margin-top:10px;font-size:12px;color:var(--text-dim);line-height:1.8">
+                <strong style="color:var(--text)">Verificar en Orthanc:</strong>
+                Abre <code class="tag mono">http://&lt;ip-orthanc&gt;:8042/modalities</code> en el navegador.
+                Debe aparecer <code class="tag mono">@_aet</code> en la lista.
+            </div>
+        }
+
+        @if (_pacsType == "dcm4chee")
+        {
+            <div style="font-size:12px;color:var(--text-dim);margin-bottom:12px;line-height:1.8">
+                Accede a la consola DCM4CHEE (<code class="tag mono">http://&lt;ip&gt;:9990</code>) →
+                <em>Configuration → Devices → dcm4chee-arc → Connections → New AE</em>:
+            </div>
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Campo</th><th>Valor a introducir</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var r in new[]{
+                        ("AE Title",  _aet),
+                        ("Hostname",  EffectiveHost),
+                        ("Port",      _port.ToString()),
+                        ("Role",      "SCU + Storage SCP"),
+                    })
+                    {
+                        <tr>
+                            <td class="text-dim">@r.Item1</td>
+                            <td class="mono" style="color:var(--accent)">@r.Item2</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        }
+
+        @if (_pacsType == "generic")
+        {
+            <div style="font-size:12px;color:var(--text-dim);margin-bottom:12px;line-height:1.8">
+                En la tabla de Application Entities (AE) del PACS añade:
+            </div>
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Campo</th><th>Valor</th><th>Descripción</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var r in new[]{
+                        ("AE Title",  _aet,               "Exactamente como está configurado en este servidor"),
+                        ("Hostname",  EffectiveHost,      "IP visible desde el PACS origen en la red"),
+                        ("Port",      _port.ToString(),   "Puerto del SCP Storage"),
+                        ("Type/Role", "SCU / Storage SCP","El migrador recibe C-STORE"),
+                    })
+                    {
+                        <tr>
+                            <td class="text-dim">@r.Item1</td>
+                            <td class="mono" style="color:var(--accent)">@r.Item2</td>
+                            <td class="small text-dim">@r.Item3</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+            <div style="margin-top:12px;padding:10px 14px;background:rgba(245,158,11,0.06);
+                        border:1px solid rgba(245,158,11,0.2);border-radius:7px;font-size:11px;color:var(--text-dim)">
+                <strong style="color:var(--yellow)">Firewall:</strong>
+                El puerto <code class="tag mono">@_port/TCP</code> debe estar abierto en este servidor
+                y accesible desde la IP del PACS origen.
+                Verifica con: <code class="tag mono">telnet @EffectiveHost @_port</code>
+            </div>
+        }
+    </div>
+</div>
+
+@* ══════════════════════════════════════════════════════════
+   CHECKS POR NODO
+   ══════════════════════════════════════════════════════════ *@
+<div class="card mb2">
+    <div class="card-header">
+        <span class="card-title">Tests de conectividad por nodo</span>
+        <span class="card-sub" style="margin-left:8px">C-ECHO bidireccional</span>
+    </div>
+    @if (_nodes.Count == 0)
+    {
+        <div class="empty-state" style="padding:30px">
+            <div class="empty-icon">⊞</div>
+            <div class="empty-title">Sin nodos registrados</div>
+            <div class="empty-sub"><a href="/nodos" style="color:var(--accent)">Añadir nodo</a></div>
+        </div>
+    }
+    else
+    {
+        <div style="overflow-x:auto">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>Nodo</th>
+                        <th>Tipo</th>
+                        <th>Endpoint</th>
+                        <th>C-ECHO</th>
+                        <th>AET registrado en PACS</th>
+                        <th>Acción</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var n in _nodes)
+                    {
+                        var check = _checks.GetValueOrDefault(n.Id);
+                        <tr>
+                            <td style="font-weight:600">@n.Alias</td>
+                            <td>
+                                <NodeTypeBadge Type="@n.NodeType" />
+                            </td>
+                            <td class="mono small text-dim">@n.RemoteAet @("@") @n.RemoteHost:@n.RemotePort</td>
+                            <td>
+                                @if (check is null)
+                                {
+                                    <span class="text-dim small">—</span>
+                                }
+                                else if (check.EchoRunning)
+                                {
+                                    <span class="echo-spin">⟳</span>
+                                }
+                                else if (check.EchoOk)
+                                {
+                                    <span class="echo-ok">✓ @(check.EchoMs)ms</span>
+                                }
+                                else
+                                {
+                                    <span class="echo-fail">✕ @check.EchoError</span>
+                                }
+                            </td>
+                            <td>
+                                @if (check is null)
+                                {
+                                    <span class="text-dim small">—</span>
+                                }
+                                else if (check.EchoRunning)
+                                {
+                                    <span class="echo-spin">⟳</span>
+                                }
+                                else if (!check.EchoOk)
+                                {
+                                    <span class="text-dim small">No verificable (C-ECHO falló)</span>
+                                }
+                                else if (check.AetKnown == true)
+                                {
+                                    <span class="echo-ok">✓ <code class="mono" style="font-size:10px">@_aet</code> conocido</span>
+                                }
+                                else if (check.AetKnown == false)
+                                {
+                                    <div>
+                                        <span class="echo-fail">✕ @_aet no registrado</span>
+                                        <div style="font-size:10px;color:var(--text-muted);margin-top:3px">
+                                            Añade el AET en la configuración del PACS
+                                        </div>
+                                    </div>
+                                }
+                                else
+                                {
+                                    <span class="text-dim small">—</span>
+                                }
+                            </td>
+                            <td>
+                                <button class="btn btn-ghost btn-sm"
+                                        @onclick="@(() => RunNodeCheckAsync(n))"
+                                        disabled="@(check?.EchoRunning == true)">
+                                    📡 Test
+                                </button>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+</div>
+
+@* ══════════════════════════════════════════════════════════
+   CHECKLIST DE PREREQUISITOS
+   ══════════════════════════════════════════════════════════ *@
+<div class="card">
+    <div class="card-header"><span class="card-title">Checklist de prerequisitos</span></div>
+    <div style="padding:8px 0">
+        @foreach (var item in _checklist)
+        {
+            var icon = item.Status switch
+            {
+                CheckStatus.Ok      => "✓",
+                CheckStatus.Warn    => "⚠",
+                CheckStatus.Error   => "✕",
+                CheckStatus.Unknown => "○",
+                _                   => "○"
+            };
+            var color = item.Status switch
+            {
+                CheckStatus.Ok      => "var(--green)",
+                CheckStatus.Warn    => "var(--yellow)",
+                CheckStatus.Error   => "var(--red)",
+                _                   => "var(--text-muted)"
+            };
+            <div style="display:flex;align-items:flex-start;gap:12px;padding:10px 18px;
+                        border-bottom:1px solid var(--border)">
+                <span style="color:@color;font-size:16px;flex-shrink:0;margin-top:1px;
+                             font-family:var(--font-mono);font-weight:700">@icon</span>
+                <div style="flex:1">
+                    <div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:3px">
+                        @item.Title
+                    </div>
+                    <div style="font-size:11px;color:var(--text-dim);line-height:1.7">@item.Detail</div>
+                </div>
+                <span style="font-size:10px;color:@color;font-family:var(--font-mono);
+                             flex-shrink:0;margin-top:3px">@item.Status</span>
+            </div>
+        }
+    </div>
+</div>
+
+@code {
+    private string _aet      = "MIGRATOR_SCU";
+    private int    _port     = 11113;
+    private string _hostname = "";
+    private string _detectedIp = "—";
+    private string _pacsType   = "orthanc";
+    private bool   _running    = false;
+    private bool   _copied     = false;
+
+    private string EffectiveHost => string.IsNullOrWhiteSpace(_hostname) ? _detectedIp : _hostname;
+
+    private List<DicomNode> _nodes = [];
+
+    private class NodeCheck
+    {
+        public bool    EchoRunning { get; set; }
+        public bool    EchoOk     { get; set; }
+        public long    EchoMs     { get; set; }
+        public string? EchoError  { get; set; }
+        public bool?   AetKnown   { get; set; }
+    }
+
+    private Dictionary<int, NodeCheck> _checks = [];
+
+    // ── Checklist ────────────────────────────────────────────────────────────
+    private enum CheckStatus { Unknown, Ok, Warn, Error }
+    private record CheckItem(string Title, string Detail, CheckStatus Status);
+    private List<CheckItem> _checklist = [];
+
+    protected override async Task OnInitializedAsync()
+    {
+        var cfg    = await ConfigRepo.GetAsync();
+        _aet       = cfg.LocalAet;
+        _port      = cfg.LocalPort;
+        _hostname  = cfg.LocalHostname ?? "";
+        _nodes     = await NodeRepo.GetAllAsync();
+        _detectedIp = DetectLocalIp();
+        BuildChecklist();
+    }
+
+    void BuildChecklist()
+    {
+        _checklist =
+        [
+            new("AE Title local configurado",
+                $"AET: {_aet}",
+                string.IsNullOrWhiteSpace(_aet) ? CheckStatus.Error : CheckStatus.Ok),
+
+            new("Puerto SCP configurado",
+                $"Puerto: {_port}. El PACS origen enviará las instancias a este puerto.",
+                _port is > 0 and < 65536 ? CheckStatus.Ok : CheckStatus.Error),
+
+            new("Hostname / IP configurada",
+                string.IsNullOrWhiteSpace(_hostname)
+                    ? $"⚠ Sin configurar. IP detectada: {_detectedIp}. Ve a Config. local SCU y añade la IP visible desde el PACS origen."
+                    : $"IP configurada: {_hostname}",
+                string.IsNullOrWhiteSpace(_hostname) ? CheckStatus.Warn : CheckStatus.Ok),
+
+            new("AET registrado en el PACS origen",
+                $"El PACS origen debe tener registrado '{_aet}' apuntando a {EffectiveHost}:{_port}. " +
+                "Usa el generador de arriba para obtener la configuración exacta. " +
+                "Sin esto el C-MOVE devolverá 0xA801.",
+                CheckStatus.Unknown),
+
+            new("Firewall — puerto de entrada abierto",
+                $"El puerto {_port}/TCP debe estar abierto en este servidor. " +
+                $"Verifica con: telnet {EffectiveHost} {_port}",
+                CheckStatus.Unknown),
+
+            new("Nodos DICOM registrados",
+                $"{_nodes.Count} nodo(s) registrado(s). " +
+                (_nodes.Count == 0 ? "Añade al menos un nodo origen." : "Lanza los tests de C-ECHO para verificar conectividad."),
+                _nodes.Count > 0 ? CheckStatus.Ok : CheckStatus.Error),
+        ];
+    }
+
+    async Task RunAllChecksAsync()
+    {
+        _running = true;
+        StateHasChanged();
+        foreach (var n in _nodes)
+            await RunNodeCheckAsync(n);
+        _running = false;
+        StateHasChanged();
+    }
+
+    async Task RunNodeCheckAsync(DicomNode n)
+    {
+        _checks[n.Id] = new NodeCheck { EchoRunning = true };
+        StateHasChanged();
+
+        var echoResult = await DimseService.EchoAsync(n);
+
+        var check = new NodeCheck
+        {
+            EchoRunning = false,
+            EchoOk      = echoResult.Success,
+            EchoMs      = echoResult.DurationMs,
+            EchoError   = echoResult.ErrorMessage?.Split('\n', '\r')[0],
+        };
+
+        // If C-ECHO succeeded, try to detect if our AET is known by the PACS
+        // We do this with a C-FIND targeting our own AET as destination — if it
+        // rejects with 0xA801 we know it's not registered; if it responds we know it is.
+        // For simplicity, we infer from a C-FIND response (any response = association accepted = AET likely OK)
+        if (echoResult.Success && n.NodeType != "destination")
+        {
+            check.AetKnown = await CheckAetKnownAsync(n);
+        }
+
+        _checks[n.Id] = check;
+
+        // Update checklist
+        BuildChecklist();
+        UpdateAetChecklistItem();
+        StateHasChanged();
+    }
+
+    async Task<bool?> CheckAetKnownAsync(DicomNode n)
+    {
+        // Issue a minimal C-FIND to the node with our local AET as the calling AET.
+        // If the response comes back (even empty), the PACS accepted the association —
+        // but 0xA801 only comes from C-MOVE, not C-FIND.
+        // So we send a C-FIND for a non-existent study to detect if the node is reachable.
+        // The real check is done during C-MOVE; here we can only warn.
+        // Return null = unknown (can only be confirmed by attempting C-MOVE).
+        await Task.CompletedTask;
+        return null; // Cannot determine from C-ECHO alone; requires C-MOVE attempt
+    }
+
+    void UpdateAetChecklistItem()
+    {
+        var anySuccess = _checks.Values.Any(c => c.EchoOk);
+        var idx = _checklist.FindIndex(c => c.Title.Contains("AET registrado"));
+        if (idx < 0) return;
+
+        var item = _checklist[idx];
+        _checklist[idx] = item with
+        {
+            Detail = item.Detail + (anySuccess ? " (C-ECHO OK — confirma intentando una migración)" : ""),
+        };
+    }
+
+    async Task CopyOrthancConfig()
+    {
+        var text = $"\"DicomModalities\" : {{\n  \"{_aet}\" : [ \"{_aet}\", \"{EffectiveHost}\", {_port} ]\n}}";
+        try { await JS.InvokeVoidAsync("navigator.clipboard.writeText", text); }
+        catch { /* clipboard may not be available in all contexts */ }
+        _copied = true;
+        StateHasChanged();
+        await Task.Delay(2000);
+        _copied = false;
+        StateHasChanged();
+    }
+
+    private static string DetectLocalIp()
+    {
+        try
+        {
+            var host = System.Net.Dns.GetHostEntry(System.Net.Dns.GetHostName());
+            var ip   = host.AddressList
+                .FirstOrDefault(a => a.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork
+                                  && !System.Net.IPAddress.IsLoopback(a));
+            return ip?.ToString() ?? "127.0.0.1";
+        }
+        catch { return "127.0.0.1"; }
+    }
+}
