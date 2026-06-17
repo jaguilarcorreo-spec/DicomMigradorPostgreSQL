@@ -7,7 +7,7 @@
 <div class="page-header">
     <div>
         <h1 class="page-title">Ayuda — DICOM Migrador</h1>
-        <p class="page-sub">fo-dicom 5.2 · .NET 9 · Blazor Server · SQLite · Serilog</p>
+        <p class="page-sub">fo-dicom 5.2 · .NET 9 · Blazor Server · PostgreSQL · Serilog</p>
     </div>
 </div>
 
@@ -191,7 +191,7 @@
     <HelpSection Title="Multihilo y bloqueo atómico" Color="var(--purple)">
         <p style="margin:0 0 10px 0;color:var(--text-dim);font-size:13px;line-height:1.6">
             Cada migración se procesa con <code>N workers</code> en paralelo (configurable). El reparto de estudios usa un
-            <strong>lock atómico en SQLite</strong>: el primer worker que ejecuta el <code>UPDATE ... WHERE Status='Pending' AND LockedByWorker IS NULL</code> se lleva el estudio.
+            <strong>lock atómico en PostgreSQL</strong>: el primer worker que ejecuta el <code>UPDATE ... WHERE Status='Pending' AND LockedByWorker IS NULL</code> se lleva el estudio.
             Imposible que dos workers procesen el mismo estudio.
         </p>
         <p style="margin:0;color:var(--text-dim);font-size:13px;line-height:1.6">
@@ -430,7 +430,7 @@
                 <div style="font-weight:600;font-size:13px;color:var(--green);margin-bottom:6px">🖥 Interfaz / base de datos</div>
                 <div style="font-size:11.5px;color:var(--text-dim);line-height:1.5">
                     Nodos DICOM, SCU local y los parámetros de cada migración o job de descubrimiento. Se guardan en la
-                    base de datos SQLite y se aplican <strong>en caliente</strong>, sin reiniciar.
+                    base de datos PostgreSQL y se aplican <strong>en caliente</strong>, sin reiniciar.
                 </div>
             </div>
             <div style="padding:12px;background:var(--bg);border:1px solid var(--border);border-radius:8px">
@@ -451,7 +451,6 @@
 ├── DicomMigrator.Web.exe
 ├── <strong style="color:var(--accent)">appsettings.json</strong>          ← edita este
 ├── appsettings.Development.json   (solo en entorno de desarrollo)
-├── dicommigrator.db               (base de datos SQLite)
 └── 📁 logs/
     └── dicommigrator-AAAAMMDD.log</pre>
         <p style="margin:10px 0 0 0;color:var(--text-muted);font-size:11px">
@@ -510,7 +509,7 @@
         <table class="data-table" style="width:100%;font-size:12px">
             <thead><tr><th>Clave</th><th>Descripción</th><th>Por defecto</th></tr></thead>
             <tbody>
-                <tr><td class="mono">ConnectionStrings:Default</td><td>Cadena de conexión a la base de datos SQLite. Cambia la ruta para mover o renombrar la BD.</td><td class="mono">Data Source=dicommigrator.db</td></tr>
+                <tr><td class="mono">ConnectionStrings:Default</td><td>Cadena de conexión a PostgreSQL (host, puerto, base, usuario y contraseña). La contraseña no se versiona: usa appsettings.Development.json o variables de entorno.</td><td class="mono">Host=localhost;Port=5432;Database=dicommigrator;Username=postgres</td></tr>
                 <tr><td class="mono">Kestrel:Endpoints:Http:Url</td><td>Dirección y puerto en los que escucha la interfaz web.</td><td class="mono" style="color:var(--accent)">http://localhost:5200</td></tr>
                 <tr><td class="mono">AllowedHosts</td><td>Hosts permitidos para servir la aplicación.</td><td class="mono">*</td></tr>
             </tbody>

@@ -4,6 +4,7 @@
 @inject INodeRepository NodeRepo
 @inject IMigrationRepository MigrationRepo
 @inject IStudyRepository StudyRepo
+@inject IConfiguration Configuration
 
 <PageTitle>Acerca de — DICOM Migrador</PageTitle>
 
@@ -69,7 +70,7 @@
                 </div>
                 <div class="config-row">
                     <span class="config-key">Base de datos</span>
-                    <span class="config-val mono">SQLite · EF Core 9</span>
+                    <span class="config-val mono">PostgreSQL · EF Core 9</span>
                 </div>
                 <div class="config-row">
                     <span class="config-key">Logging</span>
@@ -120,12 +121,12 @@
         {
             <div class="config-preview">
                 <div class="config-row">
-                    <span class="config-key">Fichero SQLite</span>
-                    <span class="config-val mono" style="font-size:10px;word-break:break-all">@_dbPath</span>
+                    <span class="config-key">Servidor</span>
+                    <span class="config-val mono" style="font-size:10px;word-break:break-all">@_dbServer</span>
                 </div>
                 <div class="config-row">
-                    <span class="config-key">Tamaño</span>
-                    <span class="config-val mono">@_dbSize</span>
+                    <span class="config-key">Base de datos</span>
+                    <span class="config-val mono">@_dbName</span>
                 </div>
                 <div class="config-row">
                     <span class="config-key">Nodos registrados</span>
@@ -176,8 +177,8 @@
 
     private bool   _dbOk     = false;
     private string _dbError  = "";
-    private string _dbPath   = "—";
-    private string _dbSize   = "—";
+    private string _dbServer = "—";
+    private string _dbName   = "—";
     private int    _nodeCount, _migrationCount;
     private long   _studyCount;
     private string _localAet  = "—";
@@ -213,27 +214,19 @@
         // ── DB info ──────────────────────────────────────────────────────────
         try
         {
-            // Localizar el fichero SQLite
-            var candidates = new[]
+            // Extraer servidor y base de la cadena de conexión PostgreSQL, sin
+            // exponer la contraseña. Usamos el parser de Npgsql para no hacerlo a mano.
+            var connStr = Configuration.GetConnectionString("Default") ?? "";
+            try
             {
-                System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "dicommigrator.db"),
-                System.IO.Path.Combine(AppContext.BaseDirectory, "dicommigrator.db"),
-            };
-            _dbPath = candidates.FirstOrDefault(System.IO.File.Exists) ?? candidates[0];
-
-            if (System.IO.File.Exists(_dbPath))
-            {
-                var bytes = new System.IO.FileInfo(_dbPath).Length;
-                _dbSize = bytes switch
-                {
-                    < 1024        => $"{bytes} B",
-                    < 1024 * 1024 => $"{bytes / 1024.0:F1} KB",
-                    _             => $"{bytes / 1024.0 / 1024.0:F2} MB",
-                };
+                var b = new Npgsql.NpgsqlConnectionStringBuilder(connStr);
+                _dbServer = $"{b.Host}:{b.Port}";
+                _dbName   = string.IsNullOrEmpty(b.Database) ? "—" : b.Database;
             }
-            else
+            catch
             {
-                _dbSize = "0 B (sin datos aún)";
+                _dbServer = "—";
+                _dbName   = "—";
             }
 
             // Consultar contadores reales
