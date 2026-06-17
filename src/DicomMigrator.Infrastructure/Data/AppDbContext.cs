@@ -83,6 +83,25 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
 
             // Index on status for efficient worker queries
             e.HasIndex(x => new { x.MigrationId, x.MigrationStatus });
+
+            // Índices de rendimiento (antes creados por SQL en EnsureIndexesAsync;
+            // ahora en el modelo para que entren en las migraciones EF y los cree
+            // el dueño del esquema con los permisos correctos).
+            //
+            // Índice PARCIAL para AcquireNextPending: solo cubre estudios accionables,
+            // así se mantiene pequeño aunque la tabla tenga millones de filas.
+            e.HasIndex(x => new { x.MigrationId, x.StudyDate })
+             .HasDatabaseName("IX_MigStudies_active")
+             .HasFilter("\"MigrationStatus\" IN ('Pending','RetryPending')");
+
+            e.HasIndex(x => new { x.MigrationId, x.DiscoveryDate })
+             .HasDatabaseName("IX_MigStudies_Mig_DiscDate");
+
+            e.HasIndex(x => new { x.MigrationId, x.PatientId })
+             .HasDatabaseName("IX_MigStudies_Mig_Patient");
+
+            e.HasIndex(x => new { x.MigrationId, x.AccessionNumber })
+             .HasDatabaseName("IX_MigStudies_Mig_Accession");
         });
 
         // ── MigrationAuditLog ────────────────────────────────────────────────

@@ -138,14 +138,10 @@ try
             // PostgreSQL: aplicar las migraciones EF pendientes. Migrate() crea el
             // esquema en una base vacía y lo evoluciona en bases existentes, todo a
             // partir de las migraciones versionadas en Infrastructure/Migrations.
+            // Los índices de rendimiento están en el modelo, así que las migraciones
+            // los crean (con el dueño del esquema, sin problemas de permisos).
             await db.Database.MigrateAsync();
             logger.LogInformation("Base de datos PostgreSQL migrada al último esquema.");
-
-            // Índices de rendimiento adicionales (idempotente). Cubre los índices
-            // creados por SQL que aún no se han trasladado al modelo/migraciones.
-            var maintenance = scope.ServiceProvider
-                .GetRequiredService<DicomMigrator.Infrastructure.Data.DatabaseMaintenance>();
-            await maintenance.EnsureIndexesAsync();
         }
         catch (Exception ex)
         {

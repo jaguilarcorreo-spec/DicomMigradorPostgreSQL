@@ -408,6 +408,27 @@ namespace DicomMigrator.Infrastructure.Migrations
                 table: "MigrationStudies",
                 columns: new[] { "MigrationId", "StudyInstanceUid" },
                 unique: true);
+
+            migrationBuilder.CreateIndex(
+                name: "IX_MigStudies_active",
+                table: "MigrationStudies",
+                columns: new[] { "MigrationId", "StudyDate" },
+                filter: "\"MigrationStatus\" IN ('Pending','RetryPending')");
+
+            migrationBuilder.CreateIndex(
+                name: "IX_MigStudies_Mig_Accession",
+                table: "MigrationStudies",
+                columns: new[] { "MigrationId", "AccessionNumber" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_MigStudies_Mig_DiscDate",
+                table: "MigrationStudies",
+                columns: new[] { "MigrationId", "DiscoveryDate" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_MigStudies_Mig_Patient",
+                table: "MigrationStudies",
+                columns: new[] { "MigrationId", "PatientId" });
         }
 
         /// <inheritdoc />

@@ -12,7 +12,7 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace DicomMigrator.Infrastructure.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    [Migration("20260617060940_InitialCreate")]
+    [Migration("20260617071438_InitialCreate")]
     partial class InitialCreate
     {
         /// <inheritdoc />
@@ -719,7 +719,20 @@ namespace DicomMigrator.Infrastructure.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("MigrationId", "AccessionNumber")
+                        .HasDatabaseName("IX_MigStudies_Mig_Accession");
+
+                    b.HasIndex("MigrationId", "DiscoveryDate")
+                        .HasDatabaseName("IX_MigStudies_Mig_DiscDate");
+
                     b.HasIndex("MigrationId", "MigrationStatus");
+
+                    b.HasIndex("MigrationId", "PatientId")
+                        .HasDatabaseName("IX_MigStudies_Mig_Patient");
+
+                    b.HasIndex("MigrationId", "StudyDate")
+                        .HasDatabaseName("IX_MigStudies_active")
+                        .HasFilter("\"MigrationStatus\" IN ('Pending','RetryPending')");
 
                     b.HasIndex("MigrationId", "StudyInstanceUid")
                         .IsUnique();

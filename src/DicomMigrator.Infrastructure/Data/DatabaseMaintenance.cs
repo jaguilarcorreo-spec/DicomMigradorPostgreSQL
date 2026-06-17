@@ -18,50 +18,13 @@ public sealed class DatabaseMaintenance(
     ILogger<DatabaseMaintenance> logger)
 {
     /// <summary>
-    /// Create the performance indexes identified by the schema review.
-    /// Idempotent — safe on every startup. Partial index on active studies keeps
-    /// AcquireNextPending fast while staying tiny (only Pending/RetryPending rows).
-    /// Identifiers are quoted because EF Core creates them PascalCased in PostgreSQL.
+    /// Los índices de rendimiento ahora se definen en el modelo EF (OnModelCreating)
+    /// y se crean mediante las migraciones, aplicadas por el dueño del esquema. Este
+    /// método se conserva por compatibilidad de llamadas pero ya no hace nada: crear
+    /// índices por SQL requería ser dueño de las tablas (error 42501 con un usuario de
+    /// app que no lo es), y duplicaría lo que las migraciones ya crean.
     /// </summary>
-    public async Task EnsureIndexesAsync(CancellationToken ct = default)
-    {
-        const string sql = """
-            CREATE INDEX IF NOT EXISTS "IX_MigStudies_active"
-              ON "MigrationStudies" ("MigrationId", "StudyDate")
-              WHERE "MigrationStatus" IN ('Pending','RetryPending');
-
-            CREATE INDEX IF NOT EXISTS "IX_AuditLogs_Mig_Timestamp"
-              ON "AuditLogs" ("MigrationId", "Timestamp");
-
-            CREATE INDEX IF NOT EXISTS "IX_AuditLogs_Timestamp"
-              ON "AuditLogs" ("Timestamp");
-
-            CREATE INDEX IF NOT EXISTS "IX_DiscStudies_JobId"
-              ON "DiscoveredStudies" ("DiscoveryJobId");
-
-            CREATE INDEX IF NOT EXISTS "IX_DiscPartitions_Job_Status"
-              ON "DiscoveryPartitions" ("DiscoveryJobId", "Status");
-
-            CREATE INDEX IF NOT EXISTS "IX_MigStudies_Mig_DiscDate"
-              ON "MigrationStudies" ("MigrationId", "DiscoveryDate");
-
-            CREATE INDEX IF NOT EXISTS "IX_MigStudies_Mig_Patient"
-              ON "MigrationStudies" ("MigrationId", "PatientId");
-
-            CREATE INDEX IF NOT EXISTS "IX_MigStudies_Mig_Accession"
-              ON "MigrationStudies" ("MigrationId", "AccessionNumber");
-            """;
-        try
-        {
-            await using var db = await factory.CreateDbContextAsync(ct);
-            await db.Database.ExecuteSqlRawAsync(sql, ct);
-            logger.LogInformation("Índices de rendimiento verificados/creados.");
-        }
-        catch (Exception ex)
-        {
-            logger.LogError(ex, "Error al crear los índices de rendimiento.");
-        }
-    }
+    public Task EnsureIndexesAsync(CancellationToken ct = default) => Task.CompletedTask;
 
     /// <summary>
     /// VACUUM reclaims space. In PostgreSQL autovacuum handles this in the
