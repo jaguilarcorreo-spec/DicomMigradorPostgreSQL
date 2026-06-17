@@ -108,7 +108,20 @@ dotnet publish src/DicomMigrator.Web -c Release -r win-x64 --self-contained true
 La interfaz queda en la URL configurada en `Kestrel` dentro de `appsettings.json`
 (por defecto `http://localhost:5200`).
 
-## 5. Generar nuevas migraciones (al evolucionar el modelo)
+## 5. Configuración inicial en la aplicación
+
+Con la base recién creada (vacía), entra en la interfaz web y configura el entorno.
+Estos ajustes se guardan en PostgreSQL:
+
+- **SCU local**: AET y puerto de recepción del Storage SCP local (necesario para
+  recibir las instancias del C-MOVE).
+- **Nodos DICOM**: dar de alta el PACS de origen y el de destino (AET, host, puerto),
+  y comprobarlos con un C-ECHO.
+- **Ventanas de ejecución**: si la migración debe limitarse a ciertas franjas horarias.
+
+A partir de ahí ya se pueden lanzar descubrimientos (Discovery) y migraciones.
+
+## 6. Generar nuevas migraciones (al evolucionar el modelo)
 
 Cuando cambie el modelo de datos, genera una migración (con la variable de diseño
 apuntando a `dicom_app_migrator`, igual que en 3b):
@@ -118,6 +131,16 @@ dotnet ef migrations add NombreDescriptivo --project src/DicomMigrator.Infrastru
 ```
 
 La migración se aplica luego con la opción 3a (al arrancar) o 3b (explícita).
+
+## Alcance: una sola instancia
+
+La versión actual está pensada para ejecutarse como **una única instancia**. Los
+servicios en segundo plano (planificador de ventanas, auto-reanudación, mantenimiento,
+flush de auditoría) y el control de migración asumen un solo proceso. Ejecutar varias
+instancias contra la misma base **no está soportado todavía**: requeriría coordinar
+esos servicios entre procesos (elección de líder), mover el control de migración a la
+base en lugar de a memoria, y resolver el SCP de recepción y las sesiones de Blazor
+por instancia. Es trabajo de una fase de escalado horizontal pendiente.
 
 ## Mantenimiento
 
