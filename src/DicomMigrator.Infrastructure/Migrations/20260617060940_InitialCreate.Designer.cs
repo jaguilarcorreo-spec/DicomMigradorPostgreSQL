@@ -12,7 +12,7 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace DicomMigrator.Infrastructure.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    [Migration("20260616213200_InitialCreate")]
+    [Migration("20260617060940_InitialCreate")]
     partial class InitialCreate
     {
         /// <inheritdoc />
@@ -230,8 +230,8 @@ namespace DicomMigrator.Infrastructure.Migrations
                         .HasMaxLength(20)
                         .HasColumnType("character varying(20)");
 
-                    b.Property<string>("EndDate")
-                        .HasColumnType("text");
+                    b.Property<DateOnly?>("EndDate")
+                        .HasColumnType("date");
 
                     b.Property<DateTime?>("FinishedDate")
                         .HasColumnType("timestamp with time zone");
@@ -255,8 +255,8 @@ namespace DicomMigrator.Infrastructure.Migrations
                     b.Property<int>("SourcePacsId")
                         .HasColumnType("integer");
 
-                    b.Property<string>("StartDate")
-                        .HasColumnType("text");
+                    b.Property<DateOnly?>("StartDate")
+                        .HasColumnType("date");
 
                     b.Property<DateTime?>("StartedDate")
                         .HasColumnType("timestamp with time zone");
@@ -293,8 +293,8 @@ namespace DicomMigrator.Infrastructure.Migrations
                     b.Property<double?>("DurationMs")
                         .HasColumnType("double precision");
 
-                    b.Property<string>("EndDate")
-                        .HasColumnType("text");
+                    b.Property<DateOnly?>("EndDate")
+                        .HasColumnType("date");
 
                     b.Property<DateTime?>("FinishedAt")
                         .HasColumnType("timestamp with time zone");
@@ -317,8 +317,8 @@ namespace DicomMigrator.Infrastructure.Migrations
                         .HasMaxLength(20)
                         .HasColumnType("character varying(20)");
 
-                    b.Property<string>("StartDate")
-                        .HasColumnType("text");
+                    b.Property<DateOnly?>("StartDate")
+                        .HasColumnType("date");
 
                     b.Property<DateTime?>("StartedAt")
                         .HasColumnType("timestamp with time zone");
@@ -414,16 +414,14 @@ namespace DicomMigrator.Infrastructure.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
-                    b.Property<string>("EndTime")
-                        .IsRequired()
-                        .HasColumnType("text");
+                    b.Property<TimeOnly>("EndTime")
+                        .HasColumnType("time without time zone");
 
                     b.Property<int>("MigrationId")
                         .HasColumnType("integer");
 
-                    b.Property<string>("StartTime")
-                        .IsRequired()
-                        .HasColumnType("text");
+                    b.Property<TimeOnly>("StartTime")
+                        .HasColumnType("time without time zone");
 
                     b.Property<string>("TimeZoneId")
                         .IsRequired()

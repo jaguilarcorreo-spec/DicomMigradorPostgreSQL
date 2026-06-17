@@ -67,11 +67,8 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
         {
             e.HasKey(x => x.Id);
             e.Property(x => x.TimeZoneId).HasMaxLength(50);
-            // SQLite doesn't have TimeOnly natively — store as string HH:mm
-            e.Property(x => x.StartTime)
-             .HasConversion(t => t.ToString("HH:mm"), s => TimeOnly.Parse(s));
-            e.Property(x => x.EndTime)
-             .HasConversion(t => t.ToString("HH:mm"), s => TimeOnly.Parse(s));
+            // PostgreSQL tiene 'time' nativo: Npgsql mapea TimeOnly directamente,
+            // sin conversión a string. (Antes se guardaba como "HH:mm" por SQLite.)
         });
 
         // ── MigrationStudy ───────────────────────────────────────────────────
@@ -122,13 +119,8 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
              .HasForeignKey(x => x.DiscoveryJobId)
              .OnDelete(DeleteBehavior.Cascade);
 
-            // SQLite stores DateOnly as TEXT
-            e.Property(x => x.StartDate).HasConversion(
-                d => d.HasValue ? d.Value.ToString("yyyy-MM-dd") : null,
-                s => string.IsNullOrEmpty(s) ? null : DateOnly.Parse(s));
-            e.Property(x => x.EndDate).HasConversion(
-                d => d.HasValue ? d.Value.ToString("yyyy-MM-dd") : null,
-                s => string.IsNullOrEmpty(s) ? null : DateOnly.Parse(s));
+            // PostgreSQL tiene 'date' nativo: Npgsql mapea DateOnly? directamente.
+            // (Antes se guardaba como TEXT "yyyy-MM-dd" por SQLite.)
         });
 
         mb.Entity<DiscoveryPartition>(e =>
@@ -138,13 +130,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             e.Property(x => x.Status).HasMaxLength(20);
             e.Property(x => x.Modality).HasMaxLength(16);
             e.HasIndex(x => new { x.DiscoveryJobId, x.Status });
-
-            e.Property(x => x.StartDate).HasConversion(
-                d => d.HasValue ? d.Value.ToString("yyyy-MM-dd") : null,
-                s => string.IsNullOrEmpty(s) ? null : DateOnly.Parse(s));
-            e.Property(x => x.EndDate).HasConversion(
-                d => d.HasValue ? d.Value.ToString("yyyy-MM-dd") : null,
-                s => string.IsNullOrEmpty(s) ? null : DateOnly.Parse(s));
+            // PostgreSQL 'date' nativo: Npgsql mapea DateOnly? directamente.
         });
 
         mb.Entity<DiscoveredStudy>(e =>
