@@ -22,6 +22,12 @@ try
 
     var builder = WebApplication.CreateBuilder(args);
 
+    // Permite ejecutar la app como Servicio de Windows (modo desatendido), integrándose
+    // con el Service Control Manager (start/stop/reinicio). No tiene efecto cuando se
+    // arranca a mano con 'dotnet run' o como consola, así que no afecta al desarrollo.
+    // Para registrarla como servicio, ver DEPLOYMENT.md.
+    builder.Host.UseWindowsService(o => o.ServiceName = "DicomMigrador");
+
     // ── Serilog (mismo patrón que el Tester) ─────────────────────────────────
     var logPath = Path.Combine(AppContext.BaseDirectory, "logs", "dicommigrator-.log");
 

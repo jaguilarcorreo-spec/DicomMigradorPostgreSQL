@@ -121,6 +121,65 @@ Estos ajustes se guardan en PostgreSQL:
 
 A partir de ahí ya se pueden lanzar descubrimientos (Discovery) y migraciones.
 
+## Ejecutar como Servicio de Windows (modo desatendido)
+
+Para que la aplicación arranque sola con el sistema, sobreviva a reinicios y no dependa
+de una consola abierta, se registra como Servicio de Windows. La app ya incluye el
+soporte (`UseWindowsService`); solo hay que publicarla y registrar el servicio.
+
+### 1. Publicar el ejecutable autónomo
+
+```bash
+dotnet publish src/DicomMigrator.Web -c Release -r win-x64 --self-contained true -o C:\DicomMigrador
+```
+
+Esto deja el `.exe` y sus dependencias en `C:\DicomMigrador` (elige la ruta que prefieras).
+
+### 2. Configurar la conexión para el servicio
+
+Un servicio no hereda las variables de entorno de tu sesión. Define la cadena de
+conexión de forma persistente y accesible para el servicio. Opción recomendada: variable
+de entorno **de máquina** (no de usuario), como administrador:
+
+```bash
+setx /M ConnectionStrings__Default "Host=SERVIDOR;Port=5432;Database=dicommigrator;Username=dicom_app_migrator;Password=CONTRASEÑA_FUERTE"
+```
+
+(El `appsettings.Development.json` NO se usa aquí: el servicio corre en entorno
+Production, así que la cadena debe venir de la variable de entorno de máquina o de un
+`appsettings.json` desplegado junto al .exe.)
+
+### 3. Crear el servicio
+
+Como administrador (los espacios tras `binPath=` y `start=` son obligatorios en `sc`):
+
+```bash
+sc create DicomMigrador binPath= "C:\DicomMigrador\DicomMigrator.Web.exe" start= auto DisplayName= "DICOM Migrador"
+sc description DicomMigrador "Migración de estudios DICOM entre sistemas PACS."
+```
+
+### 4. Arrancar y verificar
+
+```bash
+sc start DicomMigrador
+sc query DicomMigrador
+```
+
+Debe aparecer `STATE: 4 RUNNING`. La interfaz queda en la URL de Kestrel
+(por defecto `http://localhost:5200`). Los logs van a `C:\DicomMigrador\logs\`.
+
+### Gestión del servicio
+
+```bash
+sc stop DicomMigrador      # detener
+sc start DicomMigrador     # arrancar
+sc delete DicomMigrador    # eliminar el servicio (tras detenerlo)
+```
+
+> Recuperación automática: para que Windows reinicie el servicio si falla, en
+> services.msc → DICOM Migrador → Propiedades → pestaña "Recuperación", configura
+> "Reiniciar el servicio" en los primeros/segundos fallos.
+
 ## 6. Generar nuevas migraciones (al evolucionar el modelo)
 
 Cuando cambie el modelo de datos, genera una migración (con la variable de diseño
