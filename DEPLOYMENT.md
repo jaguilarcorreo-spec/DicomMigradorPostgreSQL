@@ -127,6 +127,14 @@ Para que la aplicación arranque sola con el sistema, sobreviva a reinicios y no
 de una consola abierta, se registra como Servicio de Windows. La app ya incluye el
 soporte (`UseWindowsService`); solo hay que publicarla y registrar el servicio.
 
+**Antes de empezar:**
+
+- Detén cualquier instancia de la app que esté corriendo a mano (Ctrl+C), porque el
+  servicio usará el mismo puerto (5200 por defecto).
+- Los pasos 2, 3 y 4 requieren una consola **abierta como administrador**.
+- PostgreSQL debe estar accesible con el usuario `dicom_app_migrator` (ver pasos 1 y 2
+  de la sección de despliegue).
+
 ### 1. Publicar el ejecutable autónomo
 
 ```bash
@@ -179,6 +187,26 @@ sc delete DicomMigrador    # eliminar el servicio (tras detenerlo)
 > Recuperación automática: para que Windows reinicie el servicio si falla, en
 > services.msc → DICOM Migrador → Propiedades → pestaña "Recuperación", configura
 > "Reiniciar el servicio" en los primeros/segundos fallos.
+
+### Si el servicio no arranca
+
+Si `sc query DicomMigrador` muestra que el servicio se detuvo o no llega a `RUNNING`,
+revisa los logs de la aplicación, que se escriben junto al ejecutable:
+
+```bash
+type C:\DicomMigrador\logs\dicommigrator-*.log
+```
+
+Causas más frecuentes:
+
+- **Autenticación fallida (`28P01`)**: la variable `ConnectionStrings__Default` no se
+  definió como variable de máquina (`setx /M`), o tiene una contraseña incorrecta.
+  Recuerda que `setx` solo afecta a procesos creados *después*; si cambiaste la variable,
+  recrea el servicio (`sc delete` + `sc create`) o reinicia para que la recoja.
+- **PostgreSQL inaccesible**: el servidor no está arrancado o el host/puerto no son
+  correctos en la cadena de conexión.
+- **Puerto 5200 ocupado**: hay otra instancia de la app corriendo (a mano o como otro
+  servicio) usando el mismo puerto.
 
 ## 6. Generar nuevas migraciones (al evolucionar el modelo)
 
