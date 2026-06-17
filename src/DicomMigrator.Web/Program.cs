@@ -70,7 +70,7 @@ try
     }
 
     builder.Services.AddDbContextFactory<AppDbContext>(opt => opt
-        .UseNpgsql(connStr)
+        .UseNpgsql(connStr, o => o.SetPostgresVersion(18, 0))
         .ConfigureWarnings(w => w.Ignore(
             Microsoft.EntityFrameworkCore.Diagnostics.CoreEventId.FirstWithoutOrderByAndFilterWarning)),
         ServiceLifetime.Scoped);
@@ -195,7 +195,17 @@ try
         app.UseHsts();
     }
 
-    app.UseHttpsRedirection();
+    // Solo redirigir a HTTPS si hay un endpoint HTTPS configurado. En un despliegue
+    // HTTP (p. ej. tras un proxy inverso que termina TLS, o en desarrollo local en el
+    // puerto 5200), activar la redirección sin puerto HTTPS provoca el aviso
+    // "Failed to determine the https port for redirect" y no redirige a nada útil.
+    var hasHttps =
+        !string.IsNullOrEmpty(builder.Configuration["Kestrel:Endpoints:Https:Url"])
+        || !string.IsNullOrEmpty(builder.Configuration["ASPNETCORE_HTTPS_PORT"])
+        || !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("ASPNETCORE_HTTPS_PORT"));
+    if (hasHttps)
+        app.UseHttpsRedirection();
+
     app.UseStaticFiles();
     app.UseSerilogRequestLogging();
     app.UseAntiforgery();

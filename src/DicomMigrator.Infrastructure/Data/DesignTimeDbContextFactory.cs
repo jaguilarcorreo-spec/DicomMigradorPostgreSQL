@@ -23,7 +23,7 @@ public sealed class DesignTimeDbContextFactory : IDesignTimeDbContextFactory<App
             ?? "Host=localhost;Port=5432;Database=dicommigrator;Username=postgres;Password=postgres";
 
         var options = new DbContextOptionsBuilder<AppDbContext>()
-            .UseNpgsql(connStr)
+            .UseNpgsql(connStr, o => o.SetPostgresVersion(18, 0))
             .Options;
 
         return new AppDbContext(options);
