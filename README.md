@@ -1,4 +1,4 @@
-# DICOM Migrador
+# DICOM Migrator
 
 Aplicación **Blazor Server (.NET 9)** para migrar estudios DICOM entre sistemas PACS,
 con descubrimiento de inventario, migración multihilo gobernada (C-MOVE), verificación
@@ -16,7 +16,7 @@ Tres capas:
 
 > Nota: los nombres de ensamblado y los espacios de nombres mantienen el prefijo
 > `DicomMigrator.*` por estabilidad de compilación; el nombre de producto es
-> *DICOM Migrador*.
+> *DICOM Migrator*.
 
 ## Requisitos
 

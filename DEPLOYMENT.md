@@ -63,7 +63,7 @@ Para desarrollo local, crea `src/DicomMigrator.Web/appsettings.Development.json`
 Para producción tienes dos alternativas equivalentes; elige una.
 
 **Opción A — fichero `appsettings.Production.json` (recomendada para servicio).** Crea este
-fichero DIRECTAMENTE en la carpeta de despliegue (p. ej. `C:\DicomMigrador`), no en el
+fichero DIRECTAMENTE en la carpeta de despliegue (p. ej. `C:\DicomMigrator`), no en el
 proyecto. El servicio corre en entorno Production, así que lo lee automáticamente y su
 cadena gana sobre el placeholder. Está excluido de la publicación, de modo que NO se
 sobrescribe al republicar:
@@ -157,10 +157,10 @@ soporte (`UseWindowsService`); solo hay que publicarla y registrar el servicio.
 ### 1. Publicar el ejecutable autónomo
 
 ```bash
-dotnet publish src/DicomMigrator.Web -c Release -r win-x64 --self-contained true -o C:\DicomMigrador
+dotnet publish src/DicomMigrator.Web -c Release -r win-x64 --self-contained true -o C:\DicomMigrator
 ```
 
-Esto deja el `.exe` y sus dependencias en `C:\DicomMigrador` (elige la ruta que prefieras).
+Esto deja el `.exe` y sus dependencias en `C:\DicomMigrator` (elige la ruta que prefieras).
 
 ### 2. Configurar la conexión para el servicio
 
@@ -181,7 +181,7 @@ Production, así que la cadena debe venir de la variable de entorno de máquina 
 Como administrador (los espacios tras `binPath=` y `start=` son obligatorios en `sc`):
 
 ```bash
-sc create DicomMigrator binPath= "C:\DicomMigrador\DicomMigrator.Web.exe" start= auto DisplayName= "DICOM Migrator"
+sc create DicomMigrator binPath= "C:\DicomMigrator\DicomMigrator.Web.exe" start= auto DisplayName= "DICOM Migrator"
 sc description DicomMigrator "Migración de estudios DICOM entre sistemas PACS."
 ```
 
@@ -193,7 +193,7 @@ sc query DicomMigrator
 ```
 
 Debe aparecer `STATE: 4 RUNNING`. La interfaz queda en la URL de Kestrel
-(por defecto `http://localhost:5200`). Los logs van a `C:\DicomMigrador\logs\`.
+(por defecto `http://localhost:5200`). Los logs van a `C:\DicomMigrator\logs\`.
 
 ### Gestión del servicio
 
@@ -213,7 +213,7 @@ Si `sc query DicomMigrator` muestra que el servicio se detuvo o no llega a `RUNN
 revisa los logs de la aplicación, que se escriben junto al ejecutable:
 
 ```bash
-type C:\DicomMigrador\logs\dicommigrator-*.log
+type C:\DicomMigrator\logs\dicommigrator-*.log
 ```
 
 Causas más frecuentes:
@@ -261,7 +261,7 @@ dotnet run --project src/DicomMigrator.Web -- --maintenance
 ## Ficheros de log
 
 Los logs se escriben en la carpeta `logs/` junto al ejecutable (p. ej.
-`C:\DicomMigrador\logs\dicommigrator-AAAAMMDD.log`). Su crecimiento está acotado por tres
+`C:\DicomMigrator\logs\dicommigrator-AAAAMMDD.log`). Su crecimiento está acotado por tres
 mecanismos de Serilog, por lo que no pueden llenar el disco:
 
 - **Rotación diaria**: un fichero nuevo por día (`dicommigrator-AAAAMMDD.log`).
