@@ -258,6 +258,63 @@ sin levantar el servidor web:
 dotnet run --project src/DicomMigrator.Web -- --maintenance
 ```
 
+## Ficheros de log
+
+Los logs se escriben en la carpeta `logs/` junto al ejecutable (p. ej.
+`C:\DicomMigrador\logs\dicommigrator-AAAAMMDD.log`). Su crecimiento está acotado por tres
+mecanismos de Serilog, por lo que no pueden llenar el disco:
+
+- **Rotación diaria**: un fichero nuevo por día (`dicommigrator-AAAAMMDD.log`).
+- **Tope de tamaño por fichero**: 50 MB; si se supera en un mismo día, el log continúa en
+  otro fichero en lugar de crecer sin límite.
+- **Retención de 30 ficheros**: solo se conservan los 30 más recientes; los antiguos se
+  borran automáticamente.
+
+El techo de espacio es, por tanto, del orden de 30 × 50 MB ≈ 1,5 GB en el peor caso; en
+uso normal, mucho menos. Como el límite es por número de ficheros (no de días) y un día de
+migración masiva puede generar varios ficheros al partirse por tamaño, en ese escenario el
+histórico cubrirá algo menos de 30 días.
+
+Ajustes (en `src/DicomMigrator.Web/Program.cs`, sink `WriteTo.File`):
+
+- `retainedFileCountLimit`: subir (p. ej. 60 ó 90) para conservar más histórico.
+- `fileSizeLimitBytes`: tamaño máximo por fichero.
+- Verbosidad: las migraciones registran cada C-MOVE y verificación a nivel `INFO`, lo que
+  en migraciones de cientos de miles de estudios genera muchas líneas. Como ese detalle ya
+  queda en la auditoría (en la BD), puede reducirse el tamaño de los logs subiendo el nivel
+  mínimo del fichero o bajando esos mensajes a `Debug`.
+
+## Auditoría (tabla AuditLogs)
+
+La auditoría de migraciones se guarda en la base de datos, en la tabla `AuditLogs` (una
+entrada por estudio procesado). Es la tabla que más rápido crece, por lo que tiene una
+purga automática que evita el crecimiento sin límite:
+
+- **Retención de 90 días** (configurable). El servicio de mantenimiento en segundo plano
+  borra periódicamente las entradas antiguas. La cadencia se registra al arrancar
+  (p. ej. `retención=90d · intervalo=24h`: limpia al iniciar y luego cada 24 h).
+- **Solo se purgan las entradas `INFO`**, que son el grueso del volumen (un "Verificado
+  OK" por estudio) y pierden valor con el tiempo. Las entradas **`WARN` y `ERROR` se
+  conservan** para poder diagnosticar incidencias históricas.
+
+Ajustar la retención (sin tocar código) en `appsettings.json` / `appsettings.Production.json`:
+
+```json
+{
+  "Maintenance": {
+    "AuditLogRetentionDays": 90
+  }
+}
+```
+
+Notas:
+
+- El `DELETE` de la purga libera las filas; el espacio en disco lo recupera el
+  *autovacuum* de PostgreSQL (o el `VACUUM` del modo `--maintenance`), de forma automática.
+- Las entradas `WARN`/`ERROR` no se purgan nunca. En un sistema sano son muy pocas, así que
+  no suponen un problema de volumen; si se acumularan muchas, sería señal de fallos
+  recurrentes que conviene investigar.
+
 ## Resolución de problemas
 
 - **`28P01: la autentificación password falló`** — usuario o contraseña incorrectos en
