@@ -496,7 +496,7 @@
         <table class="data-table" style="width:100%;font-size:12px">
             <thead><tr><th>Clave</th><th>Descripción</th><th>Por defecto</th></tr></thead>
             <tbody>
-                <tr><td class="mono">Serilog:MinimumLevel:Default</td><td>Nivel mínimo registrado (Verbose, Debug, Information, Warning, Error, Fatal).</td><td class="mono" style="color:var(--accent)">Information</td></tr>
+                <tr><td class="mono">Serilog:MinimumLevel:Default</td><td>Nivel mínimo registrado (Verbose, Debug, Information, Warning, Error, Fatal). Se aplica al arrancar; puede cambiarse en caliente desde Logs y auditoría.</td><td class="mono" style="color:var(--accent)">Warning</td></tr>
                 <tr><td class="mono">Serilog:WriteTo[File]:path</td><td>Ruta y patrón del fichero de log. El sufijo de fecha lo añade la rotación.</td><td class="mono">logs/dicommigrator-.log</td></tr>
                 <tr><td class="mono">…rollingInterval</td><td>Frecuencia de rotación del fichero.</td><td class="mono" style="color:var(--accent)">Day</td></tr>
                 <tr><td class="mono">…retainedFileCountLimit</td><td>Número de ficheros de log que se conservan antes de borrar los más antiguos.</td><td class="mono" style="color:var(--accent)">30</td></tr>
