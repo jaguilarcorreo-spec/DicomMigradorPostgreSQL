@@ -1,4 +1,4 @@
-# Despliegue de DICOM Migrador (PostgreSQL)
+# Despliegue de DICOM Migrator (PostgreSQL)
 
 Procedimiento reproducible para desplegar la aplicación contra una base PostgreSQL
 limpia, siguiendo el **Modelo A**: el usuario de aplicación es dueño del esquema y
@@ -47,7 +47,8 @@ La cadena de conexión NO se versiona con contraseña. Orden de prioridad (gana 
 
 1. `appsettings.json` — placeholder sin contraseña (se sube al repositorio).
 2. `appsettings.Development.json` — cadena real para desarrollo local (en `.gitignore`).
-3. Variable de entorno `ConnectionStrings__Default` — para producción.
+3. `appsettings.Production.json` — cadena real para el despliegue (en `.gitignore`).
+4. Variable de entorno `ConnectionStrings__Default` — máxima prioridad.
 
 Para desarrollo local, crea `src/DicomMigrator.Web/appsettings.Development.json`:
 
@@ -59,12 +60,30 @@ Para desarrollo local, crea `src/DicomMigrator.Web/appsettings.Development.json`
 }
 ```
 
-Para producción, en lugar del fichero anterior, define la variable de entorno
-(el doble guion bajo `__` separa secciones):
+Para producción tienes dos alternativas equivalentes; elige una.
+
+**Opción A — fichero `appsettings.Production.json` (recomendada para servicio).** Crea este
+fichero DIRECTAMENTE en la carpeta de despliegue (p. ej. `C:\DicomMigrador`), no en el
+proyecto. El servicio corre en entorno Production, así que lo lee automáticamente y su
+cadena gana sobre el placeholder. Está excluido de la publicación, de modo que NO se
+sobrescribe al republicar:
+
+```json
+{
+  "ConnectionStrings": {
+    "Default": "Host=localhost;Port=5432;Database=dicommigrator;Username=dicom_app_migrator;Password=CONTRASEÑA_FUERTE"
+  }
+}
+```
+
+**Opción B — variable de entorno de máquina** (el doble guion bajo `__` separa secciones):
 
 ```bash
-set ConnectionStrings__Default=Host=SERVIDOR;Port=5432;Database=dicommigrator;Username=dicom_app_migrator;Password=CONTRASEÑA_FUERTE
+setx /M ConnectionStrings__Default "Host=SERVIDOR;Port=5432;Database=dicommigrator;Username=dicom_app_migrator;Password=CONTRASEÑA_FUERTE"
 ```
+
+> Si defines ambas, la variable de entorno gana sobre el fichero. Usa solo una para
+> evitar confusión sobre qué cadena está activa.
 
 ## 3. Aplicar el esquema
 
@@ -162,15 +181,15 @@ Production, así que la cadena debe venir de la variable de entorno de máquina 
 Como administrador (los espacios tras `binPath=` y `start=` son obligatorios en `sc`):
 
 ```bash
-sc create DicomMigrador binPath= "C:\DicomMigrador\DicomMigrator.Web.exe" start= auto DisplayName= "DICOM Migrador"
-sc description DicomMigrador "Migración de estudios DICOM entre sistemas PACS."
+sc create DicomMigrator binPath= "C:\DicomMigrador\DicomMigrator.Web.exe" start= auto DisplayName= "DICOM Migrator"
+sc description DicomMigrator "Migración de estudios DICOM entre sistemas PACS."
 ```
 
 ### 4. Arrancar y verificar
 
 ```bash
-sc start DicomMigrador
-sc query DicomMigrador
+sc start DicomMigrator
+sc query DicomMigrator
 ```
 
 Debe aparecer `STATE: 4 RUNNING`. La interfaz queda en la URL de Kestrel
@@ -179,18 +198,18 @@ Debe aparecer `STATE: 4 RUNNING`. La interfaz queda en la URL de Kestrel
 ### Gestión del servicio
 
 ```bash
-sc stop DicomMigrador      # detener
-sc start DicomMigrador     # arrancar
-sc delete DicomMigrador    # eliminar el servicio (tras detenerlo)
+sc stop DicomMigrator      # detener
+sc start DicomMigrator     # arrancar
+sc delete DicomMigrator    # eliminar el servicio (tras detenerlo)
 ```
 
 > Recuperación automática: para que Windows reinicie el servicio si falla, en
-> services.msc → DICOM Migrador → Propiedades → pestaña "Recuperación", configura
+> services.msc → DICOM Migrator → Propiedades → pestaña "Recuperación", configura
 > "Reiniciar el servicio" en los primeros/segundos fallos.
 
 ### Si el servicio no arranca
 
-Si `sc query DicomMigrador` muestra que el servicio se detuvo o no llega a `RUNNING`,
+Si `sc query DicomMigrator` muestra que el servicio se detuvo o no llega a `RUNNING`,
 revisa los logs de la aplicación, que se escriben junto al ejecutable:
 
 ```bash

@@ -30,3 +30,6 @@ secrets.json
 # ── Sistema operativo ───────────────────────────────────────────────────────
 Thumbs.db
 .DS_Store
+
+# Configuración de producción con secretos (se crea solo en el despliegue)
+appsettings.Production.json

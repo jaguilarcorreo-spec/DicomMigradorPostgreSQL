@@ -23,4 +23,26 @@
     <ProjectReference Include="..\DicomMigrator.Core\DicomMigrator.Core.csproj" />
     <ProjectReference Include="..\DicomMigrator.Infrastructure\DicomMigrator.Infrastructure.csproj" />
   </ItemGroup>
+
+  <!-- appsettings.Development.json es solo para desarrollo local y contiene la
+       contraseña real de la BD. Se copia al ejecutar localmente (CopyToOutputDirectory)
+       pero NO debe incluirse al publicar: el servicio corre en entorno Production y usa
+       la variable de entorno ConnectionStrings__Default. ExcludeFromSingleFile +
+       CopyToPublishDirectory=Never lo dejan fuera de la carpeta de publicación. -->
+  <ItemGroup>
+    <Content Update="appsettings.Development.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>Never</CopyToPublishDirectory>
+    </Content>
+    <!-- appsettings.Production.json NO forma parte del proyecto: se crea a mano
+         directamente en la carpeta de despliegue (C:\DicomMigrador) con la cadena de
+         conexión real. Esta regla garantiza que, si existiera una copia local, tampoco
+         se sobrescribiría ni publicaría. El servicio (entorno Production) lo lee y su
+         cadena gana sobre el placeholder de appsettings.json. Condition evita error si
+         el fichero no está presente en el proyecto. -->
+    <Content Update="appsettings.Production.json" Condition="Exists('appsettings.Production.json')">
+      <CopyToOutputDirectory>Never</CopyToOutputDirectory>
+      <CopyToPublishDirectory>Never</CopyToPublishDirectory>
+    </Content>
+  </ItemGroup>
 </Project>

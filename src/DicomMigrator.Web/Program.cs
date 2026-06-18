@@ -26,7 +26,7 @@ try
     // con el Service Control Manager (start/stop/reinicio). No tiene efecto cuando se
     // arranca a mano con 'dotnet run' o como consola, así que no afecta al desarrollo.
     // Para registrarla como servicio, ver DEPLOYMENT.md.
-    builder.Host.UseWindowsService(o => o.ServiceName = "DicomMigrador");
+    builder.Host.UseWindowsService(o => o.ServiceName = "DicomMigrator");
 
     // ── Serilog (mismo patrón que el Tester) ─────────────────────────────────
     var logPath = Path.Combine(AppContext.BaseDirectory, "logs", "dicommigrator-.log");
@@ -75,11 +75,15 @@ try
             "ConnectionStrings__Default (producción).");
     }
 
+    // IDbContextFactory en lifetime Singleton (el valor por defecto y el recomendado
+    // para Blazor Server): los contextos que crea NO dependen del scope del circuito,
+    // así que una operación async que termina justo cuando el circuito se desconecta
+    // ya no provoca ObjectDisposedException sobre el IServiceProvider del scope.
+    // Cada repositorio sigue creando y disponiendo su propio contexto por operación.
     builder.Services.AddDbContextFactory<AppDbContext>(opt => opt
         .UseNpgsql(connStr, o => o.SetPostgresVersion(18, 0))
         .ConfigureWarnings(w => w.Ignore(
-            Microsoft.EntityFrameworkCore.Diagnostics.CoreEventId.FirstWithoutOrderByAndFilterWarning)),
-        ServiceLifetime.Scoped);
+            Microsoft.EntityFrameworkCore.Diagnostics.CoreEventId.FirstWithoutOrderByAndFilterWarning)));
 
     // ── Repositorios ─────────────────────────────────────────────────────────
     builder.Services.AddScoped<DicomMigrator.Infrastructure.Data.DatabaseMaintenance>();
@@ -148,6 +152,48 @@ try
             // los crean (con el dueño del esquema, sin problemas de permisos).
             await db.Database.MigrateAsync();
             logger.LogInformation("Base de datos PostgreSQL migrada al último esquema.");
+
+            // ── Reanudación de migraciones/verificaciones huérfanas ──────────────
+            // El control de los workers vive en memoria del proceso. Si el proceso se
+            // detuvo (parada del servicio, caída) con una migración en curso, ésta
+            // queda con Status="Running" en la BD pero sin workers reales. En un
+            // despliegue de INSTANCIA ÚNICA, cualquier cosa "Running" recién arrancada
+            // es necesariamente huérfana (no hay otra instancia ejecutándola), así que
+            // la relanzamos. El lock atómico de adquisición evita reprocesar estudios
+            // ya migrados (los workers solo toman los que siguen "Pending").
+            try
+            {
+                var migRepo = scope.ServiceProvider.GetRequiredService<IMigrationRepository>();
+                var studyRepo = scope.ServiceProvider.GetRequiredService<IStudyRepository>();
+                var worker  = scope.ServiceProvider.GetRequiredService<IMigrationWorker>();
+                var verSvc  = scope.ServiceProvider.GetRequiredService<IVerificationService>();
+
+                var all = await migRepo.GetAllAsync();
+                foreach (var m in all)
+                {
+                    if (m.Status == "Running")
+                    {
+                        // Liberar locks huérfanos (estudios 'Queued' o con lock de
+                        // verificación) que quedaron de la ejecución anterior, para que
+                        // los workers los vuelvan a tomar de inmediato sin esperar el
+                        // timeout de 10 min.
+                        await studyRepo.ReleaseOrphanLocksAsync(m.Id);
+                        logger.LogInformation("Reanudando migración huérfana {Id} ('{Name}') tras reinicio.", m.Id, m.Name);
+                        await worker.StartAsync(m.Id);
+                    }
+                    if (m.VerificationStatus == "Running")
+                    {
+                        if (m.Status != "Running")  // evitar liberar dos veces si ya se hizo arriba
+                            await studyRepo.ReleaseOrphanLocksAsync(m.Id);
+                        logger.LogInformation("Reanudando verificación huérfana {Id} ('{Name}') tras reinicio.", m.Id, m.Name);
+                        await verSvc.StartVerificationAsync(m.Id);
+                    }
+                }
+            }
+            catch (Exception exResume)
+            {
+                logger.LogWarning(exResume, "No se pudieron reanudar migraciones en curso al arrancar (no crítico).");
+            }
         }
         catch (Exception ex)
         {

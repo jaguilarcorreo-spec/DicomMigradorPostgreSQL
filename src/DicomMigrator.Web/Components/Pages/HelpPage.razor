@@ -2,11 +2,11 @@
 @rendermode InteractiveServer
 @inject ILocalConfigRepository ConfigRepo
 
-<PageTitle>Ayuda — DICOM Migrador</PageTitle>
+<PageTitle>Ayuda — DICOM Migrator</PageTitle>
 
 <div class="page-header">
     <div>
-        <h1 class="page-title">Ayuda — DICOM Migrador</h1>
+        <h1 class="page-title">Ayuda — DICOM Migrator</h1>
         <p class="page-sub">fo-dicom 5.2 · .NET 9 · Blazor Server · PostgreSQL · Serilog</p>
     </div>
 </div>
@@ -28,7 +28,7 @@
 {
     <HelpSection Title="Flujo general de trabajo" Color="var(--accent)">
         <p style="margin:0 0 14px 0;color:var(--text-dim);font-size:13px;line-height:1.6">
-            DICOM Migrador combina dos motores complementarios: el <strong>Discovery Engine</strong> descubre y cataloga el inventario del PACS origen,
+            DICOM Migrator combina dos motores complementarios: el <strong>Discovery Engine</strong> descubre y cataloga el inventario del PACS origen,
             y el motor de <strong>Migración</strong> transfiere los estudios al destino con verificación y reintentos automáticos.
         </p>
         @foreach (var (step, i) in _overviewSteps.Select((s,i) => (s,i)))

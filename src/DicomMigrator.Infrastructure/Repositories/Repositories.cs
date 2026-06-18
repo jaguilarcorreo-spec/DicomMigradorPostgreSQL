@@ -567,6 +567,28 @@ public class StudyRepository(IDbContextFactory<AppDbContext> factory) : IStudyRe
             .ToListAsync(ct);
     }
 
+    public async Task ReleaseOrphanLocksAsync(int migrationId)
+    {
+        await using var db = factory.CreateDbContext();
+
+        // Migración: estudios atrapados en 'Queued' (lock de migración) → 'Pending'.
+        await db.MigrationStudies
+            .Where(s => s.MigrationId == migrationId && s.MigrationStatus == "Queued")
+            .ExecuteUpdateAsync(u => u
+                .SetProperty(s => s.MigrationStatus, "Pending")
+                .SetProperty(s => s.LockedByWorker, (string?)null)
+                .SetProperty(s => s.LockDate, (DateTime?)null)
+                .SetProperty(s => s.MigrationStartDate, (DateTime?)null));
+
+        // Verificación: estudios con lock de verificación colgado → liberar el lock,
+        // dejándolos de nuevo verificables (su MigrationStatus 'Migrated' no cambia).
+        await db.MigrationStudies
+            .Where(s => s.MigrationId == migrationId && s.VerifyLockedByWorker != null)
+            .ExecuteUpdateAsync(u => u
+                .SetProperty(s => s.VerifyLockedByWorker, (string?)null)
+                .SetProperty(s => s.VerifyLockDate, (DateTime?)null));
+    }
+
     public async Task ReleaseLocksAsync(string workerId)
     {
         await using var db = factory.CreateDbContext();

@@ -92,6 +92,12 @@ public interface IStudyRepository
     /// <summary>Mark study as VerificationPending without setting VerificationStartDate — timer starts when worker picks it up.</summary>
     Task EnqueueForVerificationAsync(long id);
     Task ReleaseLocksAsync(string workerId);
+    /// <summary>Libera TODOS los locks huérfanos de una migración (de cualquier worker),
+    /// devolviendo a 'Pending'/'Migrated' los estudios que quedaron en estado intermedio
+    /// ('Queued' o en verificación) tras una caída del proceso. Pensado para el arranque
+    /// en instancia única, donde un proceso recién iniciado no tiene workers vivos, por lo
+    /// que cualquier lock existente es necesariamente huérfano. No espera el timeout de 10 min.</summary>
+    Task ReleaseOrphanLocksAsync(int migrationId);
     /// <summary>Return a single study to 'Pending' and clear its migration lock without
     /// consuming a retry — used on a SOURCE connection error (transient).</summary>
     Task ReleaseMigrationLockAsync(long id);
