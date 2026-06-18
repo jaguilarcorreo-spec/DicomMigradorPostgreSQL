@@ -29,6 +29,10 @@ try
     builder.Host.UseWindowsService(o => o.ServiceName = "DicomMigrator");
 
     // ── Serilog (mismo patrón que el Tester) ─────────────────────────────────
+    // Nivel inicial tomado de configuración (Serilog:MinimumLevel:Default); el switch
+    // permite además cambiarlo en caliente desde la UI (Logs y auditoría).
+    LogLevelService.InitializeFromConfig(builder.Configuration["Serilog:MinimumLevel:Default"]);
+
     var logPath = Path.Combine(AppContext.BaseDirectory, "logs", "dicommigrator-.log");
 
     builder.Host.UseSerilog((ctx, services, cfg) =>

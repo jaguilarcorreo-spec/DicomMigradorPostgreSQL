@@ -54,6 +54,25 @@ public class LogLevelService
     }
     public event Action? OnChange;
     public void NotifyChange() => OnChange?.Invoke();
+
+    /// <summary>Fija el nivel inicial del switch a partir de un texto de configuración
+    /// (p. ej. Serilog:MinimumLevel:Default de appsettings). Si el valor es nulo o no
+    /// reconocido, se mantiene el nivel por defecto (Information). El cambio en caliente
+    /// desde la UI sigue funcionando y prevalece sobre este valor inicial.</summary>
+    public static void InitializeFromConfig(string? level)
+    {
+        if (string.IsNullOrWhiteSpace(level)) return;
+        Switch.MinimumLevel = level switch
+        {
+            "Verbose"     => LogEventLevel.Verbose,
+            "Debug"       => LogEventLevel.Debug,
+            "Information" => LogEventLevel.Information,
+            "Warning"     => LogEventLevel.Warning,
+            "Error"       => LogEventLevel.Error,
+            "Fatal"       => LogEventLevel.Fatal,
+            _             => Switch.MinimumLevel,
+        };
+    }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
