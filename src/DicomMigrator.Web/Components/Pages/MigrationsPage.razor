@@ -785,7 +785,13 @@ else
             <h1 class="page-title">Migraciones</h1>
             <p class="page-sub">@_migrations.Count migración(es) registrada(s)</p>
         </div>
-        <button class="btn btn-ghost btn-sm" @onclick="OnInitializedAsync" title="Actualizar">↺ Actualizar</button>
+        <div style="display:flex;gap:8px;align-items:center">
+            @if (_migrations.Count > 0)
+            {
+                <button class="btn btn-ghost btn-sm" @onclick="ExportSummaryExcel" title="Descargar resumen en Excel">⬇ Excel</button>
+            }
+            <button class="btn btn-ghost btn-sm" @onclick="OnInitializedAsync" title="Actualizar">↺ Actualizar</button>
+        </div>
     </div>
 
     @if (_migrations.Count == 0)
@@ -1099,6 +1105,12 @@ else
     {
         await StudyRepo.CancelStudyAsync(s.Id);
         await SearchStudiesAsync();
+    }
+
+    void ExportSummaryExcel()
+    {
+        // Resumen de TODAS las migraciones (una fila por migración, con tiempos).
+        Nav.NavigateTo("/migrations/export.xlsx", forceLoad: true);
     }
 
     void ExportCsvAsync()

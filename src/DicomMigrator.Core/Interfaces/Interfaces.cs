@@ -234,6 +234,9 @@ public interface IDiscoveryService
 
 public interface IVerificationService
 {
+    /// <summary>Cancela todas las verificaciones activas al apagar el proceso (sin tocar BD).</summary>
+    void CancelAllForShutdown();
+
     /// <summary>Verify a single migrated study against the destination node.</summary>
     Task<VerificationResult> VerifyStudyAsync(DicomNode destNode, MigrationStudy study,
                                                CancellationToken ct = default);
@@ -258,6 +261,9 @@ public interface IMigrationWorker
 {
     /// <summary>Start worker threads for a migration.</summary>
     Task StartAsync(int migrationId, CancellationToken ct = default);
+
+    /// <summary>Cancela todos los workers activos al apagar el proceso (sin tocar BD).</summary>
+    void CancelAllForShutdown();
 
     /// <summary>Pause all workers for a migration gracefully.</summary>
     Task PauseAsync(int migrationId);

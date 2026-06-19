@@ -28,6 +28,13 @@ try
     // Para registrarla como servicio, ver DEPLOYMENT.md.
     builder.Host.UseWindowsService(o => o.ServiceName = "DicomMigrator");
 
+    // Margen de apagado del host. Debe quedar POR DEBAJO del plazo que el Service Control
+    // Manager de Windows concede al servicio; si se supera, Windows corta el proceso y se
+    // produce OperationCanceledException. 15 s es holgado para el cierre ordenado (flush de
+    // auditoría + cancelación de workers) sin acercarse al límite de Windows.
+    builder.Services.Configure<HostOptions>(o =>
+        o.ShutdownTimeout = TimeSpan.FromSeconds(15));
+
     // ── Serilog (mismo patrón que el Tester) ─────────────────────────────────
     // Nivel inicial tomado de configuración (Serilog:MinimumLevel:Default); el switch
     // permite además cambiarlo en caliente desde la UI (Logs y auditoría).
@@ -345,6 +352,155 @@ try
         }
     });
 
+    // Exportar RESUMEN de todas las migraciones a Excel (.xlsx), una fila por migración,
+    // con contadores y métricas de tiempo. Genera el fichero con ClosedXML.
+    app.MapGet("/migrations/export.xlsx",
+        async (IMigrationRepository migrationRepo,
+               IStudyRepository studyRepo,
+               INodeRepository nodeRepo,
+               HttpContext ctx,
+               CancellationToken ct) =>
+    {
+        var migrations = await migrationRepo.GetAllAsync();
+        var nodes = await nodeRepo.GetAllAsync();
+        string NodeName(int id) => nodes.FirstOrDefault(n => n.Id == id)?.Alias ?? id.ToString();
+
+        static string Fmt(double seconds)
+        {
+            if (seconds <= 0) return "";
+            var t = TimeSpan.FromSeconds(seconds);
+            return t.TotalHours >= 1
+                ? $"{(int)t.TotalHours}h {t.Minutes}m {t.Seconds}s"
+                : t.TotalMinutes >= 1 ? $"{t.Minutes}m {t.Seconds}s" : $"{t.Seconds}s";
+        }
+
+        using var wb = new ClosedXML.Excel.XLWorkbook();
+        var ws = wb.Worksheets.Add("Resumen migraciones");
+
+        var headers = new[]
+        {
+            "Migración", "Origen", "Destino", "Estado", "Verificación",
+            "Total", "Pendientes", "En curso", "Migrados", "Fallos mig.",
+            "Verificados", "Fallos verif.", "Reintentos",
+            "Inst. origen", "Inst. destino",
+            "T. migración (reloj)", "T. verificación (reloj)",
+            "T. migración (acum.)", "T. verificación (acum.)",
+            "Creada", "Migración iniciada", "Migración finalizada",
+            "Verificación iniciada", "Verificación finalizada",
+        };
+        for (int c = 0; c < headers.Length; c++)
+            ws.Cell(1, c + 1).Value = headers[c];
+
+        var headerRange = ws.Range(1, 1, 1, headers.Length);
+        headerRange.Style.Font.Bold = true;
+        headerRange.Style.Fill.BackgroundColor = ClosedXML.Excel.XLColor.FromArgb(0x1F, 0x4E, 0x78);
+        headerRange.Style.Font.FontColor = ClosedXML.Excel.XLColor.White;
+        headerRange.Style.Alignment.Horizontal = ClosedXML.Excel.XLAlignmentHorizontalValues.Center;
+        headerRange.Style.Alignment.Vertical = ClosedXML.Excel.XLAlignmentVerticalValues.Center;
+        headerRange.Style.Alignment.WrapText = true;
+
+        int row = 2;
+        long tTotal = 0, tMig = 0, tVer = 0, tFail = 0, tVerFail = 0, tSrcInst = 0, tTgtInst = 0;
+        foreach (var m in migrations)
+        {
+            var st = await studyRepo.GetStatsAsync(m.Id);
+            long srcInst = 0, tgtInst = 0;
+            DateTime? migStart = null, migEnd = null, verStart = null, verEnd = null;
+            await foreach (var s in studyRepo.StreamForExportAsync(m.Id, new StudyFilter(), ct))
+            {
+                srcInst += s.SourceInstanceCount ?? 0;
+                tgtInst += s.TargetInstanceCount ?? 0;
+
+                if (s.MigrationStartDate is { } msd && (migStart is null || msd < migStart)) migStart = msd;
+                if (s.MigrationDate is { } med && (migEnd is null || med > migEnd)) migEnd = med;
+                if (s.VerificationStartDate is { } vsd && (verStart is null || vsd < verStart)) verStart = vsd;
+                if (s.VerificationDate is { } ved && (verEnd is null || ved > verEnd)) verEnd = ved;
+            }
+
+            static string D(DateTime? d) => d?.ToLocalTime().ToString("yyyy-MM-dd HH:mm") ?? "";
+
+            int col = 1;
+            ws.Cell(row, col++).Value = m.Name;
+            ws.Cell(row, col++).Value = NodeName(m.OriginNodeId);
+            ws.Cell(row, col++).Value = NodeName(m.DestNodeId);
+            ws.Cell(row, col++).Value = m.Status;
+            ws.Cell(row, col++).Value = m.VerificationStatus;
+            ws.Cell(row, col++).Value = st.Total;
+            ws.Cell(row, col++).Value = st.Pending + st.RetryPending;
+            ws.Cell(row, col++).Value = st.Queued + st.Migrating;
+            ws.Cell(row, col++).Value = st.Migrated + st.Verified + st.VerificationPending;
+            ws.Cell(row, col++).Value = st.Failed;
+            ws.Cell(row, col++).Value = st.Verified;
+            ws.Cell(row, col++).Value = st.VerifyFailed;
+            ws.Cell(row, col++).Value = st.RetryPending + st.VerifyRetryPending;
+            ws.Cell(row, col++).Value = srcInst;
+            ws.Cell(row, col++).Value = tgtInst;
+            ws.Cell(row, col++).Value = Fmt(st.WallMigrationSeconds);
+            ws.Cell(row, col++).Value = Fmt(st.WallVerificationSeconds);
+            ws.Cell(row, col++).Value = Fmt(st.TotalMigrationSeconds);
+            ws.Cell(row, col++).Value = Fmt(st.TotalVerificationSeconds);
+            ws.Cell(row, col++).Value = m.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm");
+            ws.Cell(row, col++).Value = D(migStart);
+            ws.Cell(row, col++).Value = D(migEnd);
+            ws.Cell(row, col++).Value = D(verStart);
+            ws.Cell(row, col++).Value = D(verEnd);
+
+            tTotal += st.Total; tMig += st.Migrated + st.Verified + st.VerificationPending;
+            tVer += st.Verified; tFail += st.Failed; tVerFail += st.VerifyFailed;
+            tSrcInst += srcInst; tTgtInst += tgtInst;
+            row++;
+        }
+
+        // Fila de totales (suma de Total, Migrados, Fallos mig., Verificados,
+        // Fallos verif., Inst. origen e Inst. destino — igual que el maquetado)
+        if (migrations.Count > 0)
+        {
+            ws.Cell(row, 1).Value = "TOTAL";
+            ws.Cell(row, 6).Value = tTotal;
+            ws.Cell(row, 9).Value = tMig;
+            ws.Cell(row, 10).Value = tFail;
+            ws.Cell(row, 11).Value = tVer;
+            ws.Cell(row, 12).Value = tVerFail;
+            ws.Cell(row, 14).Value = tSrcInst;
+            ws.Cell(row, 15).Value = tTgtInst;
+
+            var totalRange = ws.Range(row, 1, row, headers.Length);
+            totalRange.Style.Font.Bold = true;
+            totalRange.Style.Fill.BackgroundColor = ClosedXML.Excel.XLColor.FromArgb(0xD9, 0xEA, 0xD3);
+        }
+
+        int lastRow = migrations.Count > 0 ? row : 1;
+
+        // Formato numérico (#,##0) en contadores e instancias (cols F..O)
+        if (lastRow >= 2)
+            ws.Range(2, 6, lastRow, 15).Style.NumberFormat.Format = "#,##0";
+
+        // Bordes finos y centrado vertical en toda la tabla
+        var table = ws.Range(1, 1, lastRow, headers.Length);
+        table.Style.Border.InsideBorder = ClosedXML.Excel.XLBorderStyleValues.Thin;
+        table.Style.Border.OutsideBorder = ClosedXML.Excel.XLBorderStyleValues.Thin;
+        table.Style.Alignment.Vertical = ClosedXML.Excel.XLAlignmentVerticalValues.Center;
+
+        // Anchos de columna del maquetado (0 = ancho por defecto; I y K quedan a defecto)
+        double[] widths = { 26, 17, 16, 12, 15, 8, 13, 11, 0, 14, 0, 16, 13, 15, 16,
+                            23, 26, 23, 26, 19, 21, 23, 24, 26 };
+        for (int c = 0; c < widths.Length; c++)
+            if (widths[c] > 0) ws.Column(c + 1).Width = widths[c];
+
+        ws.SheetView.FreezeRows(1);
+
+        var filename = $"resumen_migraciones_{DateTime.Now:yyyyMMdd_HHmmss}.xlsx";
+        ctx.Response.Headers.ContentDisposition = $"attachment; filename=\"{filename}\"";
+        ctx.Response.ContentType =
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+
+        using var ms = new MemoryStream();
+        wb.SaveAs(ms);
+        ms.Position = 0;
+        await ms.CopyToAsync(ctx.Response.Body, ct);
+        return Results.Empty;
+    });
+
     app.MapGet("/discovery/{jobId:int}/export.csv",
         async (int jobId,
                IDiscoveryJobRepository jobRepo,
@@ -405,9 +561,26 @@ try
         }
     });
 
-    // Al cerrar la aplicación: refrescar estadísticas del planificador (Fase B).
+    // Al cerrar la aplicación: primero cancelar los workers en curso para que el proceso
+    // pueda terminar con agilidad (los estudios a medias se reanudan al reiniciar), y
+    // luego refrescar estadísticas del planificador.
     app.Lifetime.ApplicationStopping.Register(() =>
     {
+        // 1) Cancelar workers de migración y verificación de inmediato. Esto evita que el
+        //    apagado se alargue esperando operaciones C-MOVE/QIDO en vuelo y supere el
+        //    plazo que Windows concede al servicio (que provocaba OperationCanceledException).
+        try { app.Services.GetRequiredService<IMigrationWorker>().CancelAllForShutdown(); }
+        catch { /* el cierre nunca debe fallar aquí */ }
+        try
+        {
+            // IVerificationService es Scoped (su estado de cancelación es static y
+            // compartido), así que se resuelve dentro de un scope.
+            using var vscope = app.Services.CreateScope();
+            vscope.ServiceProvider.GetRequiredService<IVerificationService>().CancelAllForShutdown();
+        }
+        catch { /* idem */ }
+
+        // 2) Mantenimiento ligero (no debe bloquear el cierre; si falla, se ignora).
         try
         {
             using var scope = app.Services.CreateScope();

@@ -305,6 +305,16 @@ public class VerificationService(
     IWindowScheduler windowScheduler,
     ILogger<VerificationService> logger) : IVerificationService
 {
+    /// <summary>Cancela TODAS las verificaciones activas de inmediato, sin tocar el estado
+    /// en BD. Para el apagado del proceso: se reanudan solas al reiniciar.</summary>
+    public void CancelAllForShutdown()
+    {
+        foreach (var kv in _verifyCts)
+        {
+            try { kv.Value.Cancel(); } catch { /* ignorar */ }
+        }
+    }
+
     public async Task<VerificationResult> VerifyStudyAsync(
         DicomNode destNode, MigrationStudy study, CancellationToken ct = default)
     {
@@ -664,6 +674,19 @@ public class MigrationWorker(
 {
     // Track active CancellationTokenSources per migration (Singleton state — OK)
     private readonly System.Collections.Concurrent.ConcurrentDictionary<int, CancellationTokenSource> _cts = new();
+
+    /// <summary>Cancela TODOS los workers activos de forma inmediata, sin tocar el estado
+    /// en BD. Pensado para el apagado del proceso: los estudios en curso quedan como
+    /// huérfanos y se recuperan al reiniciar (ReleaseOrphanLocksAsync + auto-reanudación).
+    /// No marca pausa de usuario; la migración sigue figurando como 'Running' para que se
+    /// reanude sola al volver a arrancar.</summary>
+    public void CancelAllForShutdown()
+    {
+        foreach (var kv in _cts)
+        {
+            try { kv.Value.Cancel(); } catch { /* ignorar */ }
+        }
+    }
 
     // ── Helpers: resolve Scoped services safely from Singleton ────────────────
 

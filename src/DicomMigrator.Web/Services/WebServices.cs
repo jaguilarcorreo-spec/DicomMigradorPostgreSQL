@@ -281,7 +281,13 @@ public sealed class AuditLogFlushService(
     public override async Task StopAsync(CancellationToken cancellationToken)
     {
         // Flush final: persistir lo que quede en cola antes de cerrar.
-        try { await buffer.FlushAsync(cancellationToken); }
+        // IMPORTANTE: durante el apagado, 'cancellationToken' suele llegar ya cancelado
+        // (o se cancela de inmediato), lo que hacía fallar este flush con
+        // TaskCanceledException y perder las últimas entradas de auditoría. Por eso
+        // usamos un token PROPIO con un timeout corto, independiente del de apagado,
+        // para darle al flush final una ventana real de ejecución.
+        using var flushCts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        try { await buffer.FlushAsync(flushCts.Token); }
         catch (Exception ex) { logger.LogWarning(ex, "Flush final de auditoría falló."); }
         await base.StopAsync(cancellationToken);
     }

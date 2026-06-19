@@ -17,6 +17,7 @@
     <PackageReference Include="Serilog.Sinks.Console"           Version="6.0.0" />
     <PackageReference Include="Serilog.Settings.Configuration"  Version="8.0.4" />
     <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="9.0.0" />
+    <PackageReference Include="ClosedXML" Version="0.104.2" />
   </ItemGroup>
 
   <ItemGroup>
