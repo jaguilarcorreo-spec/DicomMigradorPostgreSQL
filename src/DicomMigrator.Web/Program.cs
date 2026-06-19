@@ -400,7 +400,8 @@ try
         headerRange.Style.Alignment.WrapText = true;
 
         int row = 2;
-        long tTotal = 0, tMig = 0, tVer = 0, tFail = 0, tVerFail = 0, tSrcInst = 0, tTgtInst = 0;
+        long tTotal = 0, tPendientes = 0, tEnCurso = 0, tMig = 0, tFail = 0, tVer = 0, tVerFail = 0,
+             tReintentos = 0, tSrcInst = 0, tTgtInst = 0;
         foreach (var m in migrations)
         {
             var st = await studyRepo.GetStatsAsync(m.Id);
@@ -446,21 +447,27 @@ try
             ws.Cell(row, col++).Value = D(verEnd);
 
             tTotal += st.Total; tMig += st.Migrated + st.Verified + st.VerificationPending;
+            tPendientes += st.Pending + st.RetryPending;
+            tEnCurso += st.Queued + st.Migrating;
             tVer += st.Verified; tFail += st.Failed; tVerFail += st.VerifyFailed;
+            tReintentos += st.RetryPending + st.VerifyRetryPending;
             tSrcInst += srcInst; tTgtInst += tgtInst;
             row++;
         }
 
-        // Fila de totales (suma de Total, Migrados, Fallos mig., Verificados,
-        // Fallos verif., Inst. origen e Inst. destino — igual que el maquetado)
+        // Fila de totales (suma de Total, Pendientes, En curso, Migrados, Fallos mig.,
+        // Verificados, Fallos verif., Reintentos, Inst. origen e Inst. destino)
         if (migrations.Count > 0)
         {
             ws.Cell(row, 1).Value = "TOTAL";
             ws.Cell(row, 6).Value = tTotal;
+            ws.Cell(row, 7).Value = tPendientes;
+            ws.Cell(row, 8).Value = tEnCurso;
             ws.Cell(row, 9).Value = tMig;
             ws.Cell(row, 10).Value = tFail;
             ws.Cell(row, 11).Value = tVer;
             ws.Cell(row, 12).Value = tVerFail;
+            ws.Cell(row, 13).Value = tReintentos;
             ws.Cell(row, 14).Value = tSrcInst;
             ws.Cell(row, 15).Value = tTgtInst;
 
