@@ -3,6 +3,7 @@ using System;
 using DicomMigrator.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace DicomMigrator.Infrastructure.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260707181105_Level2CaptureTiming")]
+    partial class Level2CaptureTiming
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -191,9 +194,6 @@ namespace DicomMigrator.Infrastructure.Migrations
                     b.Property<int?>("NumberOfStudyRelatedSeries")
                         .HasColumnType("integer");
 
-                    b.Property<int?>("PartitionId")
-                        .HasColumnType("integer");
-
                     b.Property<string>("PatientBirthDate")
                         .HasColumnType("text");
 
@@ -229,8 +229,6 @@ namespace DicomMigrator.Infrastructure.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("ModalitiesInStudy");
-
-                    b.HasIndex("PartitionId");
 
                     b.HasIndex("StudyInstanceUid")
                         .IsUnique();

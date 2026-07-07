@@ -10,6 +10,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<Migration>         Migrations       => Set<Migration>();
     public DbSet<ExecutionWindow>   ExecutionWindows => Set<ExecutionWindow>();
     public DbSet<MigrationStudy>    MigrationStudies => Set<MigrationStudy>();
+    public DbSet<MigrationInstance> MigrationInstances => Set<MigrationInstance>();
     public DbSet<MigrationAuditLog> AuditLogs        => Set<MigrationAuditLog>();
     public DbSet<LocalConfiguration> LocalConfigurations => Set<LocalConfiguration>();
 
@@ -17,6 +18,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<DiscoveryJob>       DiscoveryJobs       => Set<DiscoveryJob>();
     public DbSet<DiscoveryPartition> DiscoveryPartitions => Set<DiscoveryPartition>();
     public DbSet<DiscoveredStudy>    DiscoveredStudies   => Set<DiscoveredStudy>();
+    public DbSet<DiscoveredInstance> DiscoveredInstances => Set<DiscoveredInstance>();
     public DbSet<DiscoveryRequest>   DiscoveryRequests   => Set<DiscoveryRequest>();
 
     protected override void OnModelCreating(ModelBuilder mb)
@@ -104,6 +106,26 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
              .HasDatabaseName("IX_MigStudies_Mig_Accession");
         });
 
+        // Nivel 2 de verificación: conjunto de UIDs de ORIGEN por estudio.
+        mb.Entity<MigrationInstance>(e =>
+        {
+            e.HasKey(x => x.Id);
+            e.Property(x => x.SeriesInstanceUid).IsRequired().HasMaxLength(64);
+            e.Property(x => x.SopInstanceUid).IsRequired().HasMaxLength(64);
+
+            // Un SOPInstanceUID no puede repetirse dentro del mismo estudio.
+            e.HasIndex(x => new { x.MigrationStudyId, x.SopInstanceUid })
+             .IsUnique()
+             .HasDatabaseName("IX_MigInstances_Study_Sop");
+
+            // FK a MigrationStudy con borrado en cascada (limpia al borrar el
+            // estudio o la migración completa).
+            e.HasOne(x => x.Study)
+             .WithMany(s => s.Instances)
+             .HasForeignKey(x => x.MigrationStudyId)
+             .OnDelete(DeleteBehavior.Cascade);
+        });
+
         // ── MigrationAuditLog ────────────────────────────────────────────────
         mb.Entity<MigrationAuditLog>(e =>
         {
@@ -160,6 +182,24 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             e.HasIndex(x => x.StudyInstanceUid).IsUnique();
             e.HasIndex(x => new { x.SourcePacsId, x.StudyDate });
             e.HasIndex(x => x.ModalitiesInStudy);
+            e.HasIndex(x => x.PartitionId);
+        });
+
+        // Nivel 2: UIDs de origen por estudio descubierto. FK en CASCADE para que
+        // al borrar/resetear un job (que hace ExecuteDelete sobre DiscoveredStudies)
+        // la BD arrastre estas instancias vía ON DELETE CASCADE.
+        mb.Entity<DiscoveredInstance>(e =>
+        {
+            e.HasKey(x => x.Id);
+            e.Property(x => x.SeriesInstanceUid).IsRequired().HasMaxLength(64);
+            e.Property(x => x.SopInstanceUid).IsRequired().HasMaxLength(64);
+            e.HasIndex(x => new { x.DiscoveredStudyId, x.SopInstanceUid })
+             .IsUnique()
+             .HasDatabaseName("IX_DiscInstances_Study_Sop");
+            e.HasOne(x => x.Study)
+             .WithMany(s => s.Instances)
+             .HasForeignKey(x => x.DiscoveredStudyId)
+             .OnDelete(DeleteBehavior.Cascade);
         });
 
         mb.Entity<DiscoveryRequest>(e =>

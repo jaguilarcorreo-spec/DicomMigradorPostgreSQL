@@ -72,6 +72,24 @@ public class DimseService(ILogger<DimseService> logger) : IDimseService
         };
     }
 
+    public async Task<CFindInstancesResult> EnumerateInstancesAsync(DicomNode node, string studyInstanceUid, CancellationToken ct = default)
+    {
+        logger.LogInformation("C-FIND IMAGE (enumeración) StudyUID={Uid} → {Alias}", studyInstanceUid, node.Alias);
+        var r = await _inner.EnumerateInstancesAsync(ToTesterConfig(node), studyInstanceUid, ct);
+        return new CFindInstancesResult
+        {
+            Success      = r.Success,
+            DicomStatus  = r.DicomStatus,
+            DurationMs   = r.DurationMs,
+            ErrorMessage = r.ErrorMessage,
+            Instances    = r.Instances.Select(i => new DicomInstanceRef
+            {
+                SeriesInstanceUid = i.SeriesInstanceUid ?? string.Empty,
+                SopInstanceUid    = i.SopInstanceUid ?? string.Empty,
+            }).ToList(),
+        };
+    }
+
     public async Task<CMoveResult> MoveAsync(DicomNode node, CMoveRequest request, CancellationToken ct = default)
     {
         logger.LogInformation("C-MOVE {Level} StudyUID={Uid} → {DestAet}", request.Level, request.StudyInstanceUid, request.DestinationAet);

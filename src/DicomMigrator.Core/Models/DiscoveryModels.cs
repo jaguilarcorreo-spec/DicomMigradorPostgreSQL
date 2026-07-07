@@ -42,6 +42,13 @@ public class DiscoveryJob
     /// <summary>Draft | Running | Paused | Completed | Cancelled | Failed</summary>
     public string   Status        { get; set; } = "Draft";
 
+    /// <summary>Estado de la captura de UIDs de origen (verificación Nivel 2):
+    /// Idle | Running | Paused | Completed | Failed.</summary>
+    public string   CaptureStatus { get; set; } = "Idle";
+    /// <summary>Inicio/fin del proceso de enumeración (Nivel 2), para medir el tiempo transcurrido.</summary>
+    public DateTime? CaptureStartedDate  { get; set; }
+    public DateTime? CaptureFinishedDate { get; set; }
+
     public DateTime CreatedDate   { get; set; } = DateTime.UtcNow;
     public DateTime? StartedDate  { get; set; }
     public DateTime? FinishedDate { get; set; }
@@ -119,6 +126,28 @@ public class DiscoveredStudy
 
     /// <summary>Job de descubrimiento que lo encontró por primera vez.</summary>
     public int?     DiscoveryJobId   { get; set; }
+
+    /// <summary>Partición que descubrió el estudio (para agregados por partición).</summary>
+    public int?     PartitionId      { get; set; }
+
+    /// <summary>Instancias (UIDs) de origen capturadas para verificación Nivel 2.</summary>
+    public ICollection<DiscoveredInstance> Instances { get; set; } = [];
+}
+
+/// <summary>
+/// Una instancia (imagen) de un estudio descubierto en el ORIGEN, capturada por
+/// C-FIND IMAGE para la verificación Nivel 2. Al crear una migración desde el
+/// inventario, estos UIDs se copian a MigrationInstance.
+/// </summary>
+public class DiscoveredInstance
+{
+    public long     Id                { get; set; }
+    public long     DiscoveredStudyId { get; set; }
+
+    public string   SeriesInstanceUid { get; set; } = string.Empty;
+    public string   SopInstanceUid    { get; set; } = string.Empty;
+
+    public DiscoveredStudy? Study      { get; set; }
 }
 
 /// <summary>

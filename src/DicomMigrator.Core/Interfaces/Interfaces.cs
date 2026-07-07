@@ -34,6 +34,56 @@ public interface IMigrationRepository
     Task DeleteAsync(int id);
 }
 
+/// <summary>Servicio de captura de UIDs de ORIGEN (Nivel 2 de verificación).</summary>
+public interface IInstanceCaptureService
+{
+    /// <summary>Captura los UIDs de origen de todos los estudios de un job de
+    /// descubrimiento (salta los ya capturados salvo forceRecapture).</summary>
+    Task<InstanceCaptureResult> CaptureForJobAsync(int jobId, bool forceRecapture = false, CancellationToken ct = default);
+
+    /// <summary>Captura (enumera + persiste) los UIDs de origen de un estudio descubierto.</summary>
+    Task<int> CaptureForStudyAsync(DicomNode originNode, long discoveredStudyId, string studyInstanceUid, CancellationToken ct = default);
+
+    // ── Proceso gobernado (Start/Pause/Resume/Stop), por job ──────────────────
+    Task StartCaptureAsync(int jobId, CancellationToken ct = default);
+    Task PauseCaptureAsync(int jobId);
+    Task ResumeCaptureAsync(int jobId, CancellationToken ct = default);
+    Task StopCaptureAsync(int jobId);
+}
+
+/// <summary>Repositorio de instancias (UIDs) de ORIGEN capturadas en el descubrimiento (Nivel 2).</summary>
+public interface IDiscoveredInstanceRepository
+{
+    Task<int> AddRangeAsync(long discoveredStudyId,
+        IEnumerable<(string SeriesInstanceUid, string SopInstanceUid)> instances);
+    Task<int> CountForStudyAsync(long discoveredStudyId);
+    /// <summary>Nº de estudios de un job que ya tienen UIDs capturados (para la barra de progreso de enumeración).</summary>
+    Task<int> CountCapturedStudiesForJobAsync(int jobId);
+    /// <summary>Nº total de instancias (UIDs) capturadas de un job (acumulado).</summary>
+    Task<int> CountInstancesForJobAsync(int jobId);
+    Task DeleteForStudyAsync(long discoveredStudyId);
+}
+
+/// <summary>Repositorio de instancias (UIDs) de ORIGEN para verificación Nivel 2.</summary>
+public interface IInstanceRepository
+{
+    /// <summary>Inserta el conjunto de instancias (Series/SOP UID) de un estudio.</summary>
+    Task<int> AddRangeAsync(long migrationStudyId,
+        IEnumerable<(string SeriesInstanceUid, string SopInstanceUid)> instances);
+
+    /// <summary>Nº de instancias capturadas para un estudio.</summary>
+    Task<int> CountForStudyAsync(long migrationStudyId);
+
+    /// <summary>Nº total de UIDs (instancias) copiados a una migración (indica si es Nivel 2).</summary>
+    Task<int> CountForMigrationAsync(int migrationId);
+
+    /// <summary>Conjunto de SOPInstanceUID capturados de un estudio (para comparar en verificación).</summary>
+    Task<HashSet<string>> GetSopUidsForStudyAsync(long migrationStudyId);
+
+    /// <summary>Borra las instancias capturadas de un estudio (para re-captura).</summary>
+    Task DeleteForStudyAsync(long migrationStudyId);
+}
+
 public interface IStudyRepository
 {
     Task<List<MigrationStudy>> GetPagedAsync(int migrationId, StudyFilter filter);
@@ -135,6 +185,13 @@ public interface IDiscoveryJobRepository
     Task<DiscoveryJob> CreateAsync(DiscoveryJob job);
     Task<DiscoveryJob> UpdateAsync(DiscoveryJob job);
     Task<bool> UpdateStatusAsync(int id, string status);
+    /// <summary>Update CaptureStatus (Idle|Running|Paused|Completed|Failed) for Nivel 2 UID capture.</summary>
+    Task<bool> UpdateCaptureStatusAsync(int id, string captureStatus);
+    /// <summary>Marca la enumeración como Running. Si resetTimer, reinicia el cronómetro
+    /// (inicio=ahora, fin=null); si no (reanudación), conserva las marcas.</summary>
+    Task<bool> SetCaptureRunningAsync(int id, bool resetTimer);
+    /// <summary>Fija el estado final de la enumeración (Completed|Failed) y la marca de fin.</summary>
+    Task<bool> FinishCaptureAsync(int id, string captureStatus);
     /// <summary>Reset a job to as-if-never-started: partitions back to Pending, counters zeroed, discovered studies and request logs removed. Config preserved.</summary>
     Task ResetJobAsync(int id);
     /// <summary>Reset all Failed partitions back to Pending so workers pick them up on the next run. Returns number of partitions reset.</summary>
@@ -162,6 +219,8 @@ public interface IDiscoveryJobRepository
 public interface IDiscoveredStudyRepository
 {
     Task<List<DiscoveredStudy>> GetPagedAsync(DiscoveredStudyFilter filter);
+    /// <summary>Agregados por partición (columnas SERIE/INSTANCE UIDs): suma de series y nº de UIDs capturados, por PartitionId.</summary>
+    Task<Dictionary<int, (int Series, int Instances)>> GetPartitionUidStatsAsync(int jobId);
     Task<int> CountAsync(DiscoveredStudyFilter filter);
     /// <summary>Upsert by StudyInstanceUID. Returns (inserted, updated) counts.</summary>
     Task<(int inserted, int updated)> UpsertAsync(IEnumerable<DiscoveredStudy> studies);
@@ -186,6 +245,9 @@ public interface IDimseService
 {
     Task<EchoResult>  EchoAsync(DicomNode node, CancellationToken ct = default);
     Task<CFindResult> FindAsync(DicomNode node, CFindQuery query, CancellationToken ct = default);
+    /// <summary>Enumera las instancias (SOPInstanceUID + SeriesInstanceUID) de un
+    /// estudio vía C-FIND a nivel IMAGE. Base del Nivel 2 de verificación.</summary>
+    Task<CFindInstancesResult> EnumerateInstancesAsync(DicomNode node, string studyInstanceUid, CancellationToken ct = default);
     Task<CMoveResult> MoveAsync(DicomNode node, CMoveRequest request, CancellationToken ct = default);
 }
 

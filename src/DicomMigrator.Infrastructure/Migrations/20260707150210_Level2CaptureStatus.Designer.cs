@@ -3,6 +3,7 @@ using System;
 using DicomMigrator.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace DicomMigrator.Infrastructure.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260707150210_Level2CaptureStatus")]
+    partial class Level2CaptureStatus
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -126,36 +129,6 @@ namespace DicomMigrator.Infrastructure.Migrations
                     b.ToTable("DicomNodes");
                 });
 
-            modelBuilder.Entity("DicomMigrator.Core.Models.DiscoveredInstance", b =>
-                {
-                    b.Property<long>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("bigint");
-
-                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
-
-                    b.Property<long>("DiscoveredStudyId")
-                        .HasColumnType("bigint");
-
-                    b.Property<string>("SeriesInstanceUid")
-                        .IsRequired()
-                        .HasMaxLength(64)
-                        .HasColumnType("character varying(64)");
-
-                    b.Property<string>("SopInstanceUid")
-                        .IsRequired()
-                        .HasMaxLength(64)
-                        .HasColumnType("character varying(64)");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("DiscoveredStudyId", "SopInstanceUid")
-                        .IsUnique()
-                        .HasDatabaseName("IX_DiscInstances_Study_Sop");
-
-                    b.ToTable("DiscoveredInstances");
-                });
-
             modelBuilder.Entity("DicomMigrator.Core.Models.DiscoveredStudy", b =>
                 {
                     b.Property<long>("Id")
@@ -189,9 +162,6 @@ namespace DicomMigrator.Infrastructure.Migrations
                         .HasColumnType("integer");
 
                     b.Property<int?>("NumberOfStudyRelatedSeries")
-                        .HasColumnType("integer");
-
-                    b.Property<int?>("PartitionId")
                         .HasColumnType("integer");
 
                     b.Property<string>("PatientBirthDate")
@@ -230,8 +200,6 @@ namespace DicomMigrator.Infrastructure.Migrations
 
                     b.HasIndex("ModalitiesInStudy");
 
-                    b.HasIndex("PartitionId");
-
                     b.HasIndex("StudyInstanceUid")
                         .IsUnique();
 
@@ -247,16 +215,6 @@ namespace DicomMigrator.Infrastructure.Migrations
                         .HasColumnType("integer");
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
-
-                    b.Property<DateTime?>("CaptureFinishedDate")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<DateTime?>("CaptureStartedDate")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("CaptureStatus")
-                        .IsRequired()
-                        .HasColumnType("text");
 
                     b.Property<string>("CreatedBy")
                         .HasColumnType("text");
@@ -532,6 +490,10 @@ namespace DicomMigrator.Infrastructure.Migrations
                         .HasColumnType("integer");
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<string>("CaptureStatus")
+                        .IsRequired()
+                        .HasColumnType("text");
 
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
@@ -815,17 +777,6 @@ namespace DicomMigrator.Infrastructure.Migrations
                     b.ToTable("MigrationStudies");
                 });
 
-            modelBuilder.Entity("DicomMigrator.Core.Models.DiscoveredInstance", b =>
-                {
-                    b.HasOne("DicomMigrator.Core.Models.DiscoveredStudy", "Study")
-                        .WithMany("Instances")
-                        .HasForeignKey("DiscoveredStudyId")
-                        .OnDelete(DeleteBehavior.Cascade)
-                        .IsRequired();
-
-                    b.Navigation("Study");
-                });
-
             modelBuilder.Entity("DicomMigrator.Core.Models.DiscoveryJob", b =>
                 {
                     b.HasOne("DicomMigrator.Core.Models.DicomNode", "SourcePacs")
@@ -916,11 +867,6 @@ namespace DicomMigrator.Infrastructure.Migrations
                     b.Navigation("MigrationsAsDest");
 
                     b.Navigation("MigrationsAsOrigin");
-                });
-
-            modelBuilder.Entity("DicomMigrator.Core.Models.DiscoveredStudy", b =>
-                {
-                    b.Navigation("Instances");
                 });
 
             modelBuilder.Entity("DicomMigrator.Core.Models.DiscoveryJob", b =>

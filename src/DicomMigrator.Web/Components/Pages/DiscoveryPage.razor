@@ -8,6 +8,8 @@
 @inject IMigrationRepository MigrationRepo
 @inject IStudyRepository MigStudyRepo
 @inject IDiscoveryEngine Engine
+@inject IInstanceCaptureService CaptureSvc
+@inject IDiscoveredInstanceRepository DiscInstanceRepo
 @inject IJSRuntime JS
 @inject NavigationManager Nav
 @implements IDisposable
@@ -42,47 +44,94 @@
         <div class="alert-success">@_actionMsg</div>
     }
 
-    @* ── Panel de control ── *@
-    <div class="card mb2">
-        <div class="card-body" style="display:flex;align-items:center;gap:14px">
-            <span style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.08em">Control</span>
-            @if (_detail.DiscoveryType == "CSV")
+    @* ── DESCUBRIR ── *@
+    <div style="display:flex;align-items:center;gap:8px;padding:12px 16px;
+                background:var(--card);border:1px solid var(--border);border-radius:8px;
+                margin-bottom:14px;flex-wrap:wrap">
+        <span style="font-size:11px;color:var(--accent);margin-right:4px">DESCUBRIR</span>
+        @if (_detail.DiscoveryType == "CSV")
+        {
+            @* CSV jobs complete immediately on import — no workers to start *@
+            <span style="font-size:12px;color:var(--text-muted);font-style:italic">
+                Job CSV — inventario importado. Usa "Crear migración desde este inventario".
+            </span>
+        }
+        else if (_detail.Status is "Draft" or "Completed")
+        {
+            <button class="btn btn-primary btn-sm" @onclick="StartJobAsync" disabled="@_busy">▶ Iniciar</button>
+        }
+        else if (_detail.Status == "Running")
+        {
+            <button class="btn btn-sm" style="background:rgba(245,158,11,0.12);color:var(--yellow);border:1px solid rgba(245,158,11,0.3)"
+                    @onclick="PauseJobAsync" disabled="@_busy">⏸ Pausar</button>
+        }
+        else if (_detail.Status == "Paused")
+        {
+            <button class="btn btn-primary btn-sm" @onclick="ResumeJobAsync" disabled="@_busy">▶ Reanudar</button>
+        }
+        @if (_stats.FailedPartitions > 0 && _detail.Status is not "Running")
+        {
+            <button class="btn btn-sm" style="background:rgba(239,68,68,0.08);color:var(--red);border:1px solid rgba(239,68,68,0.25)"
+                    @onclick="RetryFailedAsync" disabled="@_busy"
+                    title="Resetea las particiones fallidas a Pendiente para que los workers las reprocesen">
+                ↺ Reintentar fallidas (@_stats.FailedPartitions)
+            </button>
+        }
+        @if (_detail.Status == "Running")
+        {
+            <div style="margin-left:auto;display:flex;align-items:center;gap:6px">
+                <span style="width:7px;height:7px;border-radius:50%;background:var(--green);display:inline-block"></span>
+                <span style="font-size:12px;color:var(--green)">En ejecución</span>
+            </div>
+        }
+        else
+        {
+            <span style="margin-left:auto;font-size:11px;color:var(--text-muted)">@_detail.Status</span>
+        }
+    </div>
+
+    @* ── ENUMERAR (captura de UIDs de origen, Verificación Nivel 2) ── *@
+    @if (_stats.StudiesDiscovered > 0)
+    {
+        <div style="display:flex;align-items:center;gap:8px;padding:12px 16px;
+                    background:var(--card);border:1px solid var(--border);border-radius:8px;
+                    margin-bottom:14px;flex-wrap:wrap">
+            <span style="font-size:11px;color:#a78bfa;margin-right:4px">ENUMERAR</span>
+
+            @if (_detail.CaptureStatus is not ("Running" or "Paused"))
             {
-                @* CSV jobs complete immediately on import — no workers to start *@
-                <span style="font-size:12px;color:var(--text-muted);font-style:italic">
-                    Job CSV — inventario importado. Usa "Crear migración desde este inventario".
-                </span>
+                <button class="btn btn-sm" style="background:rgba(167,139,250,0.12);color:#a78bfa;border:1px solid rgba(167,139,250,0.3)"
+                        @onclick="StartCaptureAsync" disabled="@_busy">▶ Iniciar</button>
             }
-            else if (_detail.Status is "Draft" or "Completed")
+            @if (_detail.CaptureStatus == "Paused")
             {
-                <button class="btn btn-primary btn-sm" @onclick="StartJobAsync" disabled="@_busy">▶ Iniciar</button>
+                <button class="btn btn-sm" style="background:rgba(167,139,250,0.12);color:#a78bfa;border:1px solid rgba(167,139,250,0.3)"
+                        @onclick="ResumeCaptureAsync" disabled="@_busy">▶ Reanudar</button>
             }
-            else if (_detail.Status == "Running")
+            @if (_detail.CaptureStatus == "Running")
             {
                 <button class="btn btn-sm" style="background:rgba(245,158,11,0.12);color:var(--yellow);border:1px solid rgba(245,158,11,0.3)"
-                        @onclick="PauseJobAsync" disabled="@_busy">⏸ Pausar</button>
+                        @onclick="PauseCaptureAsync" disabled="@_busy">⏸ Pausar</button>
             }
-            else if (_detail.Status == "Paused")
+            @if (_detail.CaptureStatus is "Running" or "Paused")
             {
-                <button class="btn btn-primary btn-sm" @onclick="ResumeJobAsync" disabled="@_busy">▶ Reanudar</button>
+                <button class="btn btn-sm" style="background:rgba(239,68,68,0.08);color:var(--red);border:1px solid rgba(239,68,68,0.2)"
+                        @onclick="StopCaptureAsync" disabled="@_busy">⏹ Parar</button>
             }
-            @if (_stats.FailedPartitions > 0 && _detail.Status is not "Running")
+
+            @if (_detail.CaptureStatus == "Running")
             {
-                <button class="btn btn-sm" style="background:rgba(239,68,68,0.08);color:var(--red);border:1px solid rgba(239,68,68,0.25)"
-                        @onclick="RetryFailedAsync" disabled="@_busy"
-                        title="Resetea las particiones fallidas a Pendiente para que los workers las reprocesen">
-                    ↺ Reintentar fallidas (@_stats.FailedPartitions)
-                </button>
+                <div style="margin-left:auto;display:flex;align-items:center;gap:6px">
+                    <span style="width:7px;height:7px;border-radius:50%;background:#a78bfa;display:inline-block"></span>
+                    <span style="font-size:12px;color:#a78bfa">Enumerando UIDs</span>
+                </div>
             }
-            <div style="margin-left:auto;display:flex;align-items:center;gap:8px">
-                @if (_detail.Status == "Running")
-                {
-                    <span style="width:7px;height:7px;border-radius:50%;background:var(--green);display:inline-block"></span>
-                    <span style="font-size:12px;color:var(--green)">En ejecución</span>
-                }
-            </div>
+            else
+            {
+                <span style="margin-left:auto;font-size:11px;color:var(--text-muted)">@_detail.CaptureStatus</span>
+            }
         </div>
-    </div>
+    }
 
     @* ── Configuración del job ── *@
     <div class="card mb2">
@@ -282,6 +331,34 @@
         </div>
     }
 
+    @* ── Barra de progreso de ENUMERACIÓN (Nivel 2) ── *@
+    @if (_stats.StudiesDiscovered > 0)
+    {
+        <div class="card mb2">
+            <div class="card-body" style="padding:14px 16px">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+                    <div style="display:flex;align-items:center;gap:10px">
+                        <span style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.08em">Enumeración</span>
+                        @if (CaptureElapsedSeconds() > 0)
+                        {
+                            <span style="font-size:10px;color:var(--text-dim)">⏱ @FormatElapsed(CaptureElapsedSeconds())</span>
+                        }
+                        <span style="font-size:10px;color:var(--text-muted)">· @_capturedInstances instancias</span>
+                    </div>
+                    <div style="display:flex;align-items:center;gap:8px">
+                        <span style="font-size:10px;color:var(--text-dim)">@_capturedStudies / @_stats.StudiesDiscovered</span>
+                        <span class="mono" style="color:var(--purple);font-size:14px;font-weight:700;min-width:48px;text-align:right">
+                            @EnumerationPercent().ToString("F1", System.Globalization.CultureInfo.InvariantCulture)%
+                        </span>
+                    </div>
+                </div>
+                <div class="progress-track" style="height:8px">
+                    <div class="progress-fill" style="width:@(EnumerationPercent().ToString("F1", System.Globalization.CultureInfo.InvariantCulture))%;background:var(--purple)"></div>
+                </div>
+            </div>
+        </div>
+    }
+
     @* ── Acciones sobre el inventario descubierto ── *@
     @if (_stats.StudiesDiscovered > 0 || _stats.StudiesNew > 0)
     {
@@ -321,6 +398,12 @@
                                 }
                             </select>
                         </div>
+                        @if (_capturedInstances > 0)
+                        {
+                            <div style="font-size:11px;color:#a78bfa">
+                                ✓ Verificación Nivel 2 automática: se copiarán @_capturedInstances UIDs de origen ya enumerados.
+                            </div>
+                        }
                         @if (!string.IsNullOrEmpty(_migError)) { <div style="color:var(--red);font-size:11px">@_migError</div> }
                         <div style="display:flex;gap:8px">
                             <button class="btn btn-ghost btn-sm" @onclick="@(() => _showCreateMigration = false)">Cancelar</button>
@@ -350,7 +433,7 @@
                 <thead style="position:sticky;top:0;z-index:1;background:var(--panel)">
                     <tr>
                         <th>Fecha</th><th>Tipo</th><th>Modalidad</th><th>Horario</th>
-                        <th>Estado</th><th>Encontrados</th><th>Nuevos</th><th>Intentos</th><th>Duración</th>
+                        <th>Estado</th><th>Encontrados</th><th>Nuevos</th><th>Intentos</th><th>Duración</th><th>Serie UIDs</th><th>Instance UIDs</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -366,6 +449,8 @@
                             <td class="mono small" style="color:var(--accent)">@p.StudiesInserted</td>
                             <td class="mono small text-dim">@p.AttemptCount</td>
                             <td class="mono small text-dim">@(p.DurationMs.HasValue ? $"{p.DurationMs.Value/1000:F1}s" : "—")</td>
+                            <td class="mono small" style="color:#a78bfa">@PartSeries(p.Id)</td>
+                            <td class="mono small" style="color:#a78bfa">@PartInstances(p.Id)</td>
                         </tr>
                     }
                 </tbody>
@@ -561,6 +646,22 @@ else
     private string? _invDateFrom, _invDateTo;
     private bool _showForm, _busy;
     private string _actionMsg = "", _error = "";
+    private int _capturedStudies;
+    private int _capturedInstances;
+    private Dictionary<int, (int Series, int Instances)> _partStats = new();
+
+    int PartSeries(int pid)    => _partStats.TryGetValue(pid, out var v) ? v.Series : 0;
+    int PartInstances(int pid) => _partStats.TryGetValue(pid, out var v) ? v.Instances : 0;
+
+    double EnumerationPercent()
+        => _stats.StudiesDiscovered > 0 ? _capturedStudies * 100.0 / _stats.StudiesDiscovered : 0;
+
+    double CaptureElapsedSeconds()
+    {
+        if (_detail?.CaptureStartedDate is not { } start) return 0;
+        var end = _detail.CaptureFinishedDate ?? DateTime.UtcNow;
+        return Math.Max(0, (end - start).TotalSeconds);
+    }
     private System.Threading.Timer? _timer;
 
     private bool _showCreateMigration;
@@ -677,7 +778,7 @@ else
         _deleteStep = 0; _deleteMsg = ""; _editing = false; _resetStep = 0;
         _detail = await JobRepo.GetByIdAsync(j.Id);
         await RefreshDetailAsync();
-        if (_detail?.Status == "Running") StartAutoRefresh();
+        if (_detail?.Status == "Running" || _detail?.CaptureStatus is "Running" or "Paused") StartAutoRefresh();
     }
 
     void BackToList()
@@ -692,12 +793,15 @@ else
         if (_detail is null) return;
         _detail     = await JobRepo.GetByIdAsync(_detail.Id);
         _stats      = await JobRepo.GetStatsAsync(_detail!.Id);
+        _capturedStudies = await DiscInstanceRepo.CountCapturedStudiesForJobAsync(_detail.Id);
+        _capturedInstances = await DiscInstanceRepo.CountInstancesForJobAsync(_detail.Id);
         var (items, total) = await JobRepo.GetPartitionsPagedAsync(_detail.Id, _partPage, PartPageSize);
         _partitions      = items;
+        _partStats       = await StudyRepo.GetPartitionUidStatsAsync(_detail.Id);
         _partTotal       = total;
         _partTotalPages  = total == 0 ? 1 : (int)Math.Ceiling(total / (double)PartPageSize);
         if (_partPage > _partTotalPages) { _partPage = _partTotalPages; }
-        if (_detail.Status is not ("Running")) StopAutoRefresh();
+        if (_detail.Status is not "Running" && _detail.CaptureStatus is not ("Running" or "Paused")) StopAutoRefresh();
         // For CSV jobs, compute date range from inventory (no StartDate/EndDate on the job itself)
         if (_detail.DiscoveryType == "CSV")
             (_invDateFrom, _invDateTo) = await StudyRepo.GetStudyDateRangeAsync(_detail.Id);
@@ -725,6 +829,42 @@ else
         if (_detail is null) return;
         _busy = true;
         try { await Engine.StartAsync(_detail.Id); _actionMsg = "Descubrimiento iniciado."; await RefreshDetailAsync(); StartAutoRefresh(); }
+        finally { _busy = false; }
+    }
+
+    async Task StartCaptureAsync()
+    {
+        if (_detail is null) return;
+        _busy = true;
+        try { await CaptureSvc.StartCaptureAsync(_detail.Id); _actionMsg = "Captura de UIDs iniciada."; await RefreshDetailAsync(); StartAutoRefresh(); }
+        catch (Exception ex) { _error = ex.Message; }
+        finally { _busy = false; }
+    }
+
+    async Task PauseCaptureAsync()
+    {
+        if (_detail is null) return;
+        _busy = true;
+        try { await CaptureSvc.PauseCaptureAsync(_detail.Id); _actionMsg = "Captura pausada."; await RefreshDetailAsync(); }
+        catch (Exception ex) { _error = ex.Message; }
+        finally { _busy = false; }
+    }
+
+    async Task ResumeCaptureAsync()
+    {
+        if (_detail is null) return;
+        _busy = true;
+        try { await CaptureSvc.ResumeCaptureAsync(_detail.Id); _actionMsg = "Captura reanudada."; await RefreshDetailAsync(); StartAutoRefresh(); }
+        catch (Exception ex) { _error = ex.Message; }
+        finally { _busy = false; }
+    }
+
+    async Task StopCaptureAsync()
+    {
+        if (_detail is null) return;
+        _busy = true;
+        try { await CaptureSvc.StopCaptureAsync(_detail.Id); _actionMsg = "Captura detenida."; await RefreshDetailAsync(); }
+        catch (Exception ex) { _error = ex.Message; }
         finally { _busy = false; }
     }
 
@@ -793,6 +933,7 @@ else
                 DestNodeId        = _migDestId,
                 DiscoveryMethod   = verifyMethod,
                 TransferMethod    = "C-MOVE",
+                VerificationLevel = _capturedInstances > 0 ? 2 : 1,
                 Status            = "Draft",
                 WorkerThreads     = 4,
                 MaxRetries        = 3,

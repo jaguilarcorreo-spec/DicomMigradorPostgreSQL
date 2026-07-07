@@ -1,11 +1,12 @@
 @page "/migraciones"
-@rendermode InteractiveServer
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
 @inject IMigrationRepository MigrationRepo
 @inject INodeRepository NodeRepo
 @inject IStudyRepository StudyRepo
 @inject IAuditLogRepository AuditRepo
 @inject IDiscoveryService DiscoverySvc
 @inject IVerificationService VerificationSvc
+@inject IInstanceRepository InstanceRepo
 @inject IConnectionHealthService HealthSvc
 @inject IServiceScopeFactory ScopeFactory
 @using Microsoft.Extensions.DependencyInjection
@@ -234,6 +235,13 @@
             <div>
                 <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.08em">Verificación</div>
                 <div class="mono" style="font-size:13px;color:var(--text);margin-top:3px">@_detail.DiscoveryMethod</div>
+            </div>
+            <div>
+                <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.08em">Migración N2</div>
+                <div class="mono" style="font-size:13px;color:var(--text);margin-top:3px"
+                     title="Determinado por el descubridor: 'Sí' si se enumeraron los UIDs de origen (no editable).">
+                    @(_migHasN2 ? "Sí" : "No")
+                </div>
             </div>
             <div>
                 <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.08em">Transferencia</div>
@@ -915,6 +923,7 @@ else
     private List<MigrationStats> _statsList  = [];
     private Migration?          _detail;
     private MigrationStats?     _stats;
+    private bool                _migHasN2;   // solo lectura: la migración incluye UIDs Nivel 2 (viene del descubridor)
     private string _actionMsg = "";
     private bool _actionOk, _actionBusy;
     private string _detailTab = "dashboard";
@@ -968,6 +977,7 @@ else
     {
         _detail    = await MigrationRepo.GetByIdAsync(m.Id);
         _stats     = await StudyRepo.GetStatsAsync(m.Id);
+        _migHasN2  = await InstanceRepo.CountForMigrationAsync(m.Id) > 0;
         _detailTab = "dashboard";
         _actionMsg = "";
 
@@ -1005,6 +1015,7 @@ else
         if (_detail is null) return;
         _detail = await MigrationRepo.GetByIdAsync(_detail.Id);
         _stats  = await StudyRepo.GetStatsAsync(_detail!.Id);
+        _migHasN2 = await InstanceRepo.CountForMigrationAsync(_detail.Id) > 0;
         // Update the stats for this migration in the list too
         var idx = _migrations.FindIndex(m => m.Id == _detail.Id);
         if (idx >= 0 && idx < _statsList.Count)

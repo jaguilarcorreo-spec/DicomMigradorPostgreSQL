@@ -307,7 +307,7 @@ public class DiscoveryEngine(
             // ── Persist studies to inventory ──
             var toInsert = studies
                 .Where(s => !string.IsNullOrEmpty(s.StudyInstanceUid))
-                .Select(s => MapToDiscovered(s, job))
+                .Select(s => { var d = MapToDiscovered(s, job); d.PartitionId = partition.Id; return d; })
                 .ToList();
 
             var (inserted, updated) = await studyRepo.UpsertAsync(toInsert);

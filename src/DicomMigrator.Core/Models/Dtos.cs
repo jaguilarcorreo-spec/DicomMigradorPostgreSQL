@@ -60,6 +60,35 @@ public class CFindResult
     public List<string> Logs    { get; set; } = [];
 }
 
+/// <summary>Referencia a una instancia DICOM (Nivel 2 de verificación).</summary>
+public class DicomInstanceRef
+{
+    public string SeriesInstanceUid { get; set; } = string.Empty;
+    public string SopInstanceUid    { get; set; } = string.Empty;
+}
+
+/// <summary>Resultado de enumerar las instancias (SOP UIDs) de un estudio
+/// mediante C-FIND a nivel IMAGE. Base del Nivel 2 de verificación.</summary>
+public class CFindInstancesResult
+{
+    public bool    Success      { get; set; }
+    public int?    DicomStatus  { get; set; }
+    public long    DurationMs   { get; set; }
+    public string? ErrorMessage { get; set; }
+    public List<DicomInstanceRef> Instances { get; set; } = [];
+}
+
+/// <summary>Resumen de una captura de UIDs de origen (Nivel 2, Fase 1b).</summary>
+public class InstanceCaptureResult
+{
+    public int StudiesCaptured   { get; set; }
+    public int StudiesSkipped    { get; set; }
+    public int StudiesFailed     { get; set; }
+    public int InstancesCaptured { get; set; }
+    public string? ErrorMessage  { get; set; }
+    public List<string> Failures { get; set; } = [];
+}
+
 /// <summary>DTO de estudio DICOM. Idéntico al del Tester.</summary>
 public class DicomStudyDto
 {

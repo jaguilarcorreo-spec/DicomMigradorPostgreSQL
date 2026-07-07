@@ -41,7 +41,7 @@
                 </div>
                 <div class="config-row">
                     <span class="config-key">Plataforma</span>
-                    <span class="config-val mono">@System.Runtime.InteropServices.RuntimeInformation.OSDescription</span>
+                    <span class="config-val mono">@System.Runtime.InteropServices.RuntimeInformation.OSDescription · @System.Runtime.InteropServices.RuntimeInformation.OSArchitecture</span>
                 </div>
                 <div class="config-row">
                     <span class="config-key">Directorio de trabajo</span>
@@ -75,6 +75,10 @@
                 <div class="config-row">
                     <span class="config-key">Logging</span>
                     <span class="config-val mono">Serilog · Rolling File</span>
+                </div>
+                <div class="config-row">
+                    <span class="config-key">Exportación Excel</span>
+                    <span class="config-val mono">ClosedXML 0.104.2</span>
                 </div>
                 <div class="config-row">
                     <span class="config-key">Arquitectura</span>
@@ -209,7 +213,7 @@
             ? System.IO.File.GetLastWriteTime(exePath).ToString("yyyy-MM-dd HH:mm")
             : "—";
         _environment = System.Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") ?? "Production";
-        _workDir     = System.IO.Directory.GetCurrentDirectory();
+        _workDir     = System.AppContext.BaseDirectory;
 
         // ── DB info ──────────────────────────────────────────────────────────
         try

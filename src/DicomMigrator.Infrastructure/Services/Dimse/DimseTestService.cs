@@ -96,6 +96,22 @@ public class TesterCMoveResult
 
 // ── DimseTestService (copiado del Tester) ────────────────────────────────────
 
+public class TesterInstanceDto
+{
+    public string? SeriesInstanceUid { get; set; }
+    public string? SopInstanceUid    { get; set; }
+}
+
+public class TesterCFindInstancesResult
+{
+    public bool    Success      { get; set; }
+    public int?    DicomStatus  { get; set; }
+    public long    DurationMs   { get; set; }
+    public string? ErrorMessage { get; set; }
+    public List<TesterInstanceDto> Instances { get; set; } = [];
+    public List<string> Logs    { get; set; } = [];
+}
+
 public class DimseTestService(ILogger<DimseTestService> logger)
 {
     // ── C-ECHO ────────────────────────────────────────────────────────────────
@@ -184,6 +200,63 @@ public class DimseTestService(ILogger<DimseTestService> logger)
         }
         catch (Exception ex)
         { sw.Stop(); result.DurationMs = sw.ElapsedMilliseconds; result.Success = false; result.ErrorMessage = ex.Message; result.Logs.Add($"[ERROR] {ex.Message}"); }
+        return result;
+    }
+
+    // ── C-FIND IMAGE: enumeración de instancias (Nivel 2 de verificación) ──────
+    public async Task<TesterCFindInstancesResult> EnumerateInstancesAsync(
+        TesterDimseConfiguration config, string studyInstanceUid, CancellationToken ct = default)
+    {
+        var result = new TesterCFindInstancesResult();
+        var sw = Stopwatch.StartNew();
+        try
+        {
+            logger.LogInformation("C-FIND IMAGE StudyUID={Uid} → {Aet}", studyInstanceUid, config.RemoteAet);
+            result.Logs.Add($"[INFO] C-FIND IMAGE StudyUID={studyInstanceUid} → {config.RemoteAet} @ {config.RemoteHost}:{config.RemotePort}");
+
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            cts.CancelAfter(TimeSpan.FromSeconds(config.AssociationTimeoutSeconds));
+
+            var client = DicomClientFactory.Create(config.RemoteHost, config.RemotePort, config.UseTls, config.LocalAet, config.RemoteAet);
+            client.ServiceOptions.RequestTimeout = TimeSpan.FromSeconds(config.ResponseTimeoutSeconds);
+
+            var request = new DicomCFindRequest(DicomQueryRetrieveLevel.Image);
+            var ds = request.Dataset;
+            ds.AddOrUpdate(DicomTag.StudyInstanceUID,  studyInstanceUid);
+            ds.AddOrUpdate(DicomTag.SeriesInstanceUID, string.Empty);   // clave de retorno
+            ds.AddOrUpdate(DicomTag.SOPInstanceUID,    string.Empty);   // clave de retorno
+
+            request.OnResponseReceived += (req, resp) =>
+            {
+                if (resp.Status == DicomStatus.Pending && resp.Dataset is not null)
+                {
+                    result.Instances.Add(new TesterInstanceDto
+                    {
+                        SeriesInstanceUid = resp.Dataset.GetSingleValueOrDefault(DicomTag.SeriesInstanceUID, string.Empty),
+                        SopInstanceUid    = resp.Dataset.GetSingleValueOrDefault(DicomTag.SOPInstanceUID,    string.Empty),
+                    });
+                }
+                else
+                {
+                    result.DicomStatus = resp.Status.Code;
+                    result.Success = resp.Status == DicomStatus.Success;
+                    result.Logs.Add($"[INFO] C-FIND IMAGE completado. Status: {resp.Status}. {result.Instances.Count} instancias.");
+                }
+            };
+
+            await client.AddRequestAsync(request);
+            await client.SendAsync(cts.Token);
+            sw.Stop();
+            result.DurationMs = sw.ElapsedMilliseconds;
+        }
+        catch (Exception ex)
+        {
+            sw.Stop();
+            result.DurationMs = sw.ElapsedMilliseconds;
+            result.Success = false;
+            result.ErrorMessage = ex.Message;
+            result.Logs.Add($"[ERROR] {ex.Message}");
+        }
         return result;
     }
 

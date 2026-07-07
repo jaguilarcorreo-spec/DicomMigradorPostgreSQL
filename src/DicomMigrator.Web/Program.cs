@@ -101,6 +101,8 @@ try
     builder.Services.AddScoped<INodeRepository,        NodeRepository>();
     builder.Services.AddScoped<IMigrationRepository,   MigrationRepository>();
     builder.Services.AddScoped<IStudyRepository,       StudyRepository>();
+    builder.Services.AddScoped<IInstanceRepository, InstanceRepository>();
+    builder.Services.AddScoped<IDiscoveredInstanceRepository, DiscoveredInstanceRepository>();
     builder.Services.AddScoped<IAuditLogRepository,    AuditLogRepository>();
     builder.Services.AddSingleton<DicomMigrator.Infrastructure.Data.AuditLogBuffer>();
     builder.Services.AddScoped<ILocalConfigRepository, LocalConfigRepository>();
@@ -126,6 +128,7 @@ try
     // ── Servicios de migración (nuevos) ──────────────────────────────────────
     builder.Services.AddScoped<IDiscoveryService,    DiscoveryService>();
     builder.Services.AddScoped<IVerificationService, VerificationService>();
+    builder.Services.AddScoped<IInstanceCaptureService, DicomMigrator.Infrastructure.Services.Migration.InstanceCaptureService>();
     builder.Services.AddScoped<IConnectionHealthService, DicomMigrator.Infrastructure.Services.Migration.ConnectionHealthService>();
     builder.Services.AddSingleton<IMigrationWorker,  MigrationWorker>();
     builder.Services.AddSingleton<IWindowScheduler,  WindowScheduler>();
@@ -178,6 +181,7 @@ try
                 var studyRepo = scope.ServiceProvider.GetRequiredService<IStudyRepository>();
                 var worker  = scope.ServiceProvider.GetRequiredService<IMigrationWorker>();
                 var verSvc  = scope.ServiceProvider.GetRequiredService<IVerificationService>();
+                var capSvc  = scope.ServiceProvider.GetRequiredService<IInstanceCaptureService>();
 
                 var all = await migRepo.GetAllAsync();
                 foreach (var m in all)
@@ -198,6 +202,18 @@ try
                             await studyRepo.ReleaseOrphanLocksAsync(m.Id);
                         logger.LogInformation("Reanudando verificación huérfana {Id} ('{Name}') tras reinicio.", m.Id, m.Name);
                         await verSvc.StartVerificationAsync(m.Id);
+                    }
+                }
+
+                // Reanudar capturas de UIDs (Nivel 2) huérfanas: viven en el job de
+                // descubrimiento, no en la migración.
+                var jobRepo = scope.ServiceProvider.GetRequiredService<IDiscoveryJobRepository>();
+                foreach (var j in await jobRepo.GetAllAsync())
+                {
+                    if (j.CaptureStatus == "Running")
+                    {
+                        logger.LogInformation("Reanudando captura Nivel 2 huérfana · job {Id} ('{Name}') tras reinicio.", j.Id, j.Name);
+                        await capSvc.StartCaptureAsync(j.Id);
                     }
                 }
             }

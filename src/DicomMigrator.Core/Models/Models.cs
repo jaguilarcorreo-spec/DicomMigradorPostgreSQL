@@ -71,6 +71,11 @@ public class Migration
     /// Idle | Running | Paused | Completed. Permite verificar y migrar a la vez.</summary>
     public string   VerificationStatus { get; set; } = "Idle";
 
+    /// <summary>Nivel de verificación de estudios: 1 = por conteos (series/instancias),
+    /// 2 = comparación de conjuntos de UIDs (requiere capturar los SOPInstanceUID de
+    /// ORIGEN en el descubrimiento). Se fija al crear la migración.</summary>
+    public int      VerificationLevel  { get; set; } = 1;
+
     /// <summary>CSV | C-FIND | QIDO-RS</summary>
     public string   DiscoveryMethod  { get; set; } = "C-FIND";
 
@@ -196,6 +201,31 @@ public class MigrationStudy
 
     // ── Navigation ───────────────────────────────────────────────────────────
     public Migration? Migration { get; set; }
+
+    /// <summary>Instancias (UIDs) de ORIGEN capturadas para verificación Nivel 2.</summary>
+    public ICollection<MigrationInstance> Instances { get; set; } = [];
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// INSTANCIA DE ESTUDIO  (Nivel 2 de verificación — conjunto de UIDs de ORIGEN)
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// <summary>
+/// Una instancia (imagen) del ORIGEN, capturada en el descubrimiento cuando la
+/// migración usa verificación Nivel 2. Permite comparar conjuntos de UIDs
+/// origen↔destino (no solo cardinales) al verificar, y saber exactamente qué
+/// SOPInstanceUID falta en destino.
+/// </summary>
+public class MigrationInstance
+{
+    public long     Id                { get; set; }
+    public long     MigrationStudyId  { get; set; }
+
+    public string   SeriesInstanceUid { get; set; } = string.Empty;
+    public string   SopInstanceUid    { get; set; } = string.Empty;
+
+    // ── Navigation ───────────────────────────────────────────────────────────
+    public MigrationStudy? Study      { get; set; }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════

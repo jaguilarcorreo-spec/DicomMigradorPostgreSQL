@@ -193,6 +193,121 @@ public class MigrationRepository(IDbContextFactory<AppDbContext> factory) : IMig
 // STUDY REPOSITORY
 // ══════════════════════════════════════════════════════════════════════════════
 
+// ══════════════════════════════════════════════════════════════════════════════
+// REPOSITORIO DE INSTANCIAS DESCUBIERTAS  (Nivel 2 — captura en descubrimiento)
+// ══════════════════════════════════════════════════════════════════════════════
+
+public class DiscoveredInstanceRepository(IDbContextFactory<AppDbContext> factory) : IDiscoveredInstanceRepository
+{
+    public async Task<int> AddRangeAsync(long discoveredStudyId,
+        IEnumerable<(string SeriesInstanceUid, string SopInstanceUid)> instances)
+    {
+        await using var db = factory.CreateDbContext();
+        var rows = instances
+            .Where(i => !string.IsNullOrEmpty(i.SopInstanceUid))
+            .Select(i => new DiscoveredInstance
+            {
+                DiscoveredStudyId = discoveredStudyId,
+                SeriesInstanceUid = i.SeriesInstanceUid ?? string.Empty,
+                SopInstanceUid    = i.SopInstanceUid,
+            })
+            .ToList();
+
+        if (rows.Count == 0) return 0;
+        db.DiscoveredInstances.AddRange(rows);
+        await db.SaveChangesAsync();
+        return rows.Count;
+    }
+
+    public async Task<int> CountForStudyAsync(long discoveredStudyId)
+    {
+        await using var db = factory.CreateDbContext();
+        return await db.DiscoveredInstances
+            .CountAsync(i => i.DiscoveredStudyId == discoveredStudyId);
+    }
+
+    public async Task<int> CountCapturedStudiesForJobAsync(int jobId)
+    {
+        await using var db = factory.CreateDbContext();
+        return await db.DiscoveredStudies
+            .CountAsync(s => s.DiscoveryJobId == jobId && s.Instances.Any());
+    }
+
+    public async Task<int> CountInstancesForJobAsync(int jobId)
+    {
+        await using var db = factory.CreateDbContext();
+        return await db.DiscoveredInstances
+            .CountAsync(i => i.Study != null && i.Study.DiscoveryJobId == jobId);
+    }
+
+    public async Task DeleteForStudyAsync(long discoveredStudyId)
+    {
+        await using var db = factory.CreateDbContext();
+        await db.DiscoveredInstances
+            .Where(i => i.DiscoveredStudyId == discoveredStudyId)
+            .ExecuteDeleteAsync();
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// REPOSITORIO DE INSTANCIAS  (Nivel 2 de verificación)
+// ══════════════════════════════════════════════════════════════════════════════
+
+public class InstanceRepository(IDbContextFactory<AppDbContext> factory) : IInstanceRepository
+{
+    public async Task<int> AddRangeAsync(long migrationStudyId,
+        IEnumerable<(string SeriesInstanceUid, string SopInstanceUid)> instances)
+    {
+        await using var db = factory.CreateDbContext();
+        var rows = instances
+            .Where(i => !string.IsNullOrEmpty(i.SopInstanceUid))
+            .Select(i => new MigrationInstance
+            {
+                MigrationStudyId  = migrationStudyId,
+                SeriesInstanceUid = i.SeriesInstanceUid ?? string.Empty,
+                SopInstanceUid    = i.SopInstanceUid,
+            })
+            .ToList();
+
+        if (rows.Count == 0) return 0;
+        db.MigrationInstances.AddRange(rows);
+        await db.SaveChangesAsync();
+        return rows.Count;
+    }
+
+    public async Task<int> CountForStudyAsync(long migrationStudyId)
+    {
+        await using var db = factory.CreateDbContext();
+        return await db.MigrationInstances
+            .CountAsync(i => i.MigrationStudyId == migrationStudyId);
+    }
+
+    public async Task<int> CountForMigrationAsync(int migrationId)
+    {
+        await using var db = factory.CreateDbContext();
+        return await db.MigrationInstances
+            .CountAsync(i => i.Study != null && i.Study.MigrationId == migrationId);
+    }
+
+    public async Task<HashSet<string>> GetSopUidsForStudyAsync(long migrationStudyId)
+    {
+        await using var db = factory.CreateDbContext();
+        var uids = await db.MigrationInstances
+            .Where(i => i.MigrationStudyId == migrationStudyId)
+            .Select(i => i.SopInstanceUid)
+            .ToListAsync();
+        return new HashSet<string>(uids);
+    }
+
+    public async Task DeleteForStudyAsync(long migrationStudyId)
+    {
+        await using var db = factory.CreateDbContext();
+        await db.MigrationInstances
+            .Where(i => i.MigrationStudyId == migrationStudyId)
+            .ExecuteDeleteAsync();
+    }
+}
+
 public class StudyRepository(IDbContextFactory<AppDbContext> factory) : IStudyRepository
 {
     public async Task<List<MigrationStudy>> GetPagedAsync(int migrationId, StudyFilter filter)
@@ -311,6 +426,21 @@ public class StudyRepository(IDbContextFactory<AppDbContext> factory) : IStudyRe
         if (toInsert.Count == 0) return 0;
         db.MigrationStudies.AddRange(toInsert);
         await db.SaveChangesAsync();
+
+        // Nivel 2 (Opción A): copiar los UIDs de origen ya capturados en el
+        // descubrimiento (DiscoveredInstance) a MigrationInstance, emparejando por
+        // StudyInstanceUid dentro de esta migración. Set-based (sin cargar filas).
+        // NOT EXISTS evita colisión con el índice único en reimportaciones.
+        await db.Database.ExecuteSqlInterpolatedAsync($@"
+INSERT INTO ""MigrationInstances"" (""MigrationStudyId"", ""SeriesInstanceUid"", ""SopInstanceUid"")
+SELECT ms.""Id"", di.""SeriesInstanceUid"", di.""SopInstanceUid""
+FROM ""DiscoveredInstances"" di
+JOIN ""DiscoveredStudies"" ds ON ds.""Id"" = di.""DiscoveredStudyId""
+JOIN ""MigrationStudies"" ms ON ms.""StudyInstanceUid"" = ds.""StudyInstanceUid""
+WHERE ms.""MigrationId"" = {migrationId}
+  AND NOT EXISTS (SELECT 1 FROM ""MigrationInstances"" mi
+                  WHERE mi.""MigrationStudyId"" = ms.""Id"" AND mi.""SopInstanceUid"" = di.""SopInstanceUid"")");
+
         return toInsert.Count;
     }
 

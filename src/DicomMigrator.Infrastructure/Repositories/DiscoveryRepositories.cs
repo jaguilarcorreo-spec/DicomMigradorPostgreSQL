@@ -65,6 +65,48 @@ public class DiscoveryJobRepository(IDbContextFactory<AppDbContext> factory) : I
         return rows > 0;
     }
 
+    public async Task<bool> UpdateCaptureStatusAsync(int id, string captureStatus)
+    {
+        await using var db = factory.CreateDbContext();
+        var rows = await db.DiscoveryJobs
+            .Where(j => j.Id == id)
+            .ExecuteUpdateAsync(u => u.SetProperty(j => j.CaptureStatus, captureStatus));
+        return rows > 0;
+    }
+
+    public async Task<bool> SetCaptureRunningAsync(int id, bool resetTimer)
+    {
+        await using var db = factory.CreateDbContext();
+        var q = db.DiscoveryJobs.Where(j => j.Id == id);
+        int rows;
+        if (resetTimer)
+        {
+            var now = DateTime.UtcNow;
+            rows = await q.ExecuteUpdateAsync(u => u
+                .SetProperty(j => j.CaptureStatus, "Running")
+                .SetProperty(j => j.CaptureStartedDate, now)
+                .SetProperty(j => j.CaptureFinishedDate, (DateTime?)null));
+        }
+        else
+        {
+            rows = await q.ExecuteUpdateAsync(u => u
+                .SetProperty(j => j.CaptureStatus, "Running"));
+        }
+        return rows > 0;
+    }
+
+    public async Task<bool> FinishCaptureAsync(int id, string captureStatus)
+    {
+        await using var db = factory.CreateDbContext();
+        var now = DateTime.UtcNow;
+        var rows = await db.DiscoveryJobs
+            .Where(j => j.Id == id)
+            .ExecuteUpdateAsync(u => u
+                .SetProperty(j => j.CaptureStatus, captureStatus)
+                .SetProperty(j => j.CaptureFinishedDate, now));
+        return rows > 0;
+    }
+
     public async Task<int> RetryFailedPartitionsAsync(int jobId)
     {
         await using var db = factory.CreateDbContext();
@@ -419,6 +461,34 @@ public class DiscoveryJobRepository(IDbContextFactory<AppDbContext> factory) : I
 
 public class DiscoveredStudyRepository(IDbContextFactory<AppDbContext> factory) : IDiscoveredStudyRepository
 {
+    public async Task<Dictionary<int, (int Series, int Instances)>> GetPartitionUidStatsAsync(int jobId)
+    {
+        await using var db = factory.CreateDbContext();
+
+        // Suma de series (conteo declarado en descubrimiento) por partición.
+        var series = await db.DiscoveredStudies
+            .Where(s => s.DiscoveryJobId == jobId && s.PartitionId != null)
+            .GroupBy(s => s.PartitionId!.Value)
+            .Select(g => new { Pid = g.Key, Series = g.Sum(x => x.NumberOfStudyRelatedSeries ?? 0) })
+            .ToListAsync();
+
+        // Nº de UIDs (SOPInstanceUID) capturados por partición (tras enumerar).
+        var instances = await db.DiscoveredInstances
+            .Where(i => i.Study != null && i.Study.DiscoveryJobId == jobId && i.Study.PartitionId != null)
+            .GroupBy(i => i.Study!.PartitionId!.Value)
+            .Select(g => new { Pid = g.Key, Count = g.Count() })
+            .ToListAsync();
+
+        var dict = new Dictionary<int, (int Series, int Instances)>();
+        foreach (var x in series) dict[x.Pid] = (x.Series, 0);
+        foreach (var x in instances)
+        {
+            var s = dict.TryGetValue(x.Pid, out var v) ? v.Series : 0;
+            dict[x.Pid] = (s, x.Count);
+        }
+        return dict;
+    }
+
     public async Task<List<DiscoveredStudy>> GetPagedAsync(DiscoveredStudyFilter f)
     {
         await using var db = factory.CreateDbContext();
@@ -526,6 +596,8 @@ public class DiscoveredStudyRepository(IDbContextFactory<AppDbContext> factory) 
                 existing.InstitutionName   ??= s.InstitutionName;
                 // Always update job reference so stats count correctly for the current job
                 existing.DiscoveryJobId  = s.DiscoveryJobId;
+                // Atribuir a la partición que lo (re)descubrió; rellena inventario antiguo.
+                existing.PartitionId     = s.PartitionId ?? existing.PartitionId;
                 existing.LastUpdatedDate = DateTime.UtcNow;
                 updated++;
             }
