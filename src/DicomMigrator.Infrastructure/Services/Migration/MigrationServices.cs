@@ -301,6 +301,7 @@ public class VerificationService(
     IMigrationRepository migrationRepo,
     IDimseService dimse,
     IDicomWebService dicomWeb,
+    IInstanceRepository instanceRepo,
     IServiceScopeFactory scopeFactory,
     IWindowScheduler windowScheduler,
     ILogger<VerificationService> logger) : IVerificationService
@@ -405,6 +406,61 @@ public class VerificationService(
             result.ErrorMessage = ex.Message;
             result.ConnectionError = true;  // excepción = fallo de operación, no del estudio
         }
+
+        // ── Nivel 2: comparación de conjuntos de UIDs ──────────────────────────
+        // Solo si el estudio tiene UIDs de origen capturados (MigrationInstances) y la
+        // consulta de conteos no falló por conexión. Enumera el destino por C-FIND
+        // IMAGE y compara conjuntos: aprobado ⇔ no faltan UIDs (los sobrantes solo avisan).
+        if (!result.ConnectionError)
+        {
+            try
+            {
+                var srcUids = await instanceRepo.GetSopUidsForStudyAsync(study.Id);
+                if (srcUids.Count > 0)
+                {
+                    var enumRes = await dimse.EnumerateInstancesAsync(destNode, study.StudyInstanceUid, ct);
+                    if (!enumRes.Success)
+                    {
+                        // No se pudo enumerar el destino → fallo de operación (reintentar), no del estudio.
+                        result.ConnectionError = true;
+                        result.ErrorMessage = enumRes.ErrorMessage ?? "No se pudo enumerar el destino (C-FIND IMAGE).";
+                    }
+                    else
+                    {
+                        var dstUids = enumRes.Instances
+                            .Select(i => i.SopInstanceUid)
+                            .Where(u => !string.IsNullOrEmpty(u))
+                            .ToHashSet();
+
+                        var missing = new HashSet<string>(srcUids);
+                        missing.ExceptWith(dstUids);
+                        var extra = new HashSet<string>(dstUids);
+                        extra.ExceptWith(srcUids);
+
+                        result.Level2Checked  = true;
+                        result.SourceUidCount = srcUids.Count;
+                        result.DestUidCount   = dstUids.Count;
+                        result.MissingCount   = missing.Count;
+                        result.ExtraCount     = extra.Count;
+                        result.MissingUids    = missing.Take(500).ToList();   // informe (capado)
+
+                        // Traza siempre visible: confirma que se comparó por conjuntos y con qué números.
+                        logger.LogInformation("Nivel 2 · estudio {Uid}: origen={Src} destino={Dst} faltan={Miss} sobran={Extra}",
+                            study.StudyInstanceUid, srcUids.Count, dstUids.Count, missing.Count, extra.Count);
+                        if (extra.Count > 0)
+                            logger.LogWarning("Nivel 2 · estudio {Uid}: {N} UIDs sobrantes en destino",
+                                study.StudyInstanceUid, extra.Count);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "Nivel 2 · error enumerando/comparando destino para {Uid}", study.StudyInstanceUid);
+                result.ErrorMessage = ex.Message;
+                result.ConnectionError = true;   // tratar como fallo de operación → reintento
+            }
+        }
+
         return result;
     }
 
@@ -628,11 +684,19 @@ public class VerificationService(
                     }
                     connErrors = 0;  // reset al verificar con éxito de operación
 
-                    var success = result.StudyFoundInDest && result.SeriesCountMatch && result.InstanceCountMatch;
+                    // Nivel 2 (si se comparó por conjuntos): aprobado ⇔ estudio presente y
+                    // sin UIDs faltantes (los sobrantes solo avisan). Si no, Nivel 1 por conteos.
+                    var success = result.Level2Checked
+                        ? (result.StudyFoundInDest && result.MissingCount == 0)
+                        : (result.StudyFoundInDest && result.SeriesCountMatch && result.InstanceCountMatch);
 
                     await studyR.CompleteVerificationAsync(study.Id, success, maxRetries,
                         result.DestSeriesCount, result.DestInstanceCount,
-                        success ? null : (result.ErrorMessage ?? "Conteos no coinciden"));
+                        success ? null : (result.ErrorMessage ?? (result.Level2Checked
+                            ? $"Faltan {result.MissingCount} UIDs en destino"
+                            : "Conteos no coinciden")),
+                        result.MissingCount, result.ExtraCount,
+                        result.MissingUids.Count > 0 ? string.Join("\n", result.MissingUids) : null);
 
                     await auditR.AddAsync(new MigrationAuditLog
                     {

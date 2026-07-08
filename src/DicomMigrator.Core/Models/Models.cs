@@ -192,6 +192,12 @@ public class MigrationStudy
     /// <summary>Verification retry counter, independent of migration RetryCount.</summary>
     public int      VerifyRetryCount     { get; set; } = 0;
 
+    /// <summary>Verificación Nivel 2: nº de UIDs faltantes y sobrantes en destino, y la
+    /// lista de SOPInstanceUID faltantes (informe; puede venir truncada si son muchos).</summary>
+    public int      VerifyMissingCount   { get; set; } = 0;
+    public int      VerifyExtraCount     { get; set; } = 0;
+    public string?  VerifyMissingUids    { get; set; }
+
     public DateTime  DiscoveryDate     { get; set; } = DateTime.UtcNow;
     public DateTime? MigrationDate       { get; set; }
     public DateTime? MigrationStartDate  { get; set; }  // cuando el worker adquirió el estudio

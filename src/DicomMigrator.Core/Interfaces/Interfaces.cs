@@ -118,7 +118,8 @@ public interface IStudyRepository
     /// <summary>Finalize a verification attempt with retry logic mirroring migration:
     /// Verified on success; VerifyRetryPending if retries remain; Failed if exhausted.</summary>
     Task CompleteVerificationAsync(long id, bool success, int maxRetries,
-        int? targetSeries, int? targetInstances, string? error = null);
+        int? targetSeries, int? targetInstances, string? error = null,
+        int missingCount = 0, int extraCount = 0, string? missingUids = null);
 
     /// <summary>Release the verification lock and return the study to 'Migrated'
     /// WITHOUT consuming a retry — used when the destination couldn't be reached

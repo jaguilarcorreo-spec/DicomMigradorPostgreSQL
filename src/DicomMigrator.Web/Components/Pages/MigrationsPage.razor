@@ -567,7 +567,7 @@
                                 <th>Estado</th>
                                 <th>Tiempo migración</th>
                                 <th>Tiempo verificación</th>
-                                <th>Reintentos</th>
+                                <th>Reintentos (M/V)</th>
                                 <th>Acciones</th>
                             </tr>
                         </thead>
@@ -588,7 +588,27 @@
                                     <td class="mono small" style="color:@(s.TargetInstanceCount == s.SourceInstanceCount ? "var(--green)" : "var(--yellow)")">
                                         @(s.TargetSeriesCount.HasValue ? $"{s.TargetSeriesCount}/{s.TargetInstanceCount}" : "—")
                                     </td>
-                                    <td><StatusBadge Status="@s.MigrationStatus" /></td>
+                                    <td>
+                                        <StatusBadge Status="@s.MigrationStatus" />
+                                        @if (s.VerifyMissingCount > 0)
+                                        {
+                                            <div style="margin-top:3px">
+                                                <button class="btn btn-ghost btn-sm" style="padding:1px 6px;font-size:10px;color:var(--red)"
+                                                        title="Ver los SOPInstanceUID que faltan en destino"
+                                                        @onclick="() => _missingReport = s">
+                                                    ⚠ Faltan @s.VerifyMissingCount
+                                                </button>
+                                                @if (s.VerifyExtraCount > 0)
+                                                {
+                                                    <span style="font-size:10px;color:var(--yellow);margin-left:4px">+@s.VerifyExtraCount sobran</span>
+                                                }
+                                            </div>
+                                        }
+                                        else if (s.VerifyExtraCount > 0)
+                                        {
+                                            <div style="margin-top:3px;font-size:10px;color:var(--yellow)">+@s.VerifyExtraCount sobran</div>
+                                        }
+                                    </td>
                                     <td class="mono small" style="color:var(--text-dim)">
                                         @if (s.MigrationDate.HasValue &&
                                              s.MigrationStatus is "Migrated" or "Verified" or "VerificationPending")
@@ -632,8 +652,9 @@
                                         }
                                         else { <span>—</span> }
                                     </td>
-                                    <td class="mono" style="color:@(s.RetryCount > 0 ? "var(--yellow)" : "var(--text-dim)")">
-                                        @s.RetryCount
+                                    <td class="mono small">
+                                        <span title="Reintentos de migración (C-MOVE)" style="color:@(s.RetryCount > 0 ? "var(--yellow)" : "var(--text-dim)")">M:@s.RetryCount</span>
+                                        <span title="Reintentos de verificación (comprobación de UIDs/conteos)" style="color:@(s.VerifyRetryCount > 0 ? "var(--purple)" : "var(--text-dim)");margin-left:6px">V:@s.VerifyRetryCount</span>
                                     </td>
                                     <td>
                                         <div style="display:flex;gap:4px;align-items:center">
@@ -904,6 +925,44 @@ else
     }
 }
 
+@* ── Informe de UIDs faltantes (Verificación Nivel 2) ── *@
+@if (_missingReport is not null)
+{
+    <div style="position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:50;display:flex;align-items:center;justify-content:center"
+         @onclick="() => _missingReport = null">
+        <div class="card" style="width:min(680px,92vw);max-height:82vh;display:flex;flex-direction:column" @onclick:stopPropagation="true">
+            <div class="card-body" style="display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border)">
+                <div>
+                    <div style="font-size:13px;color:var(--text)">UIDs faltantes en destino</div>
+                    <div class="mono small text-dim" style="margin-top:2px">@_missingReport.StudyInstanceUid</div>
+                </div>
+                <button class="btn btn-ghost btn-sm" @onclick="() => _missingReport = null">✕</button>
+            </div>
+            <div class="card-body" style="overflow:auto">
+                <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px">
+                    Faltan <strong style="color:var(--red)">@_missingReport.VerifyMissingCount</strong> SOPInstanceUID
+                    @if (_missingReport.VerifyExtraCount > 0)
+                    {
+                        <span>· sobran <strong style="color:var(--yellow)">@_missingReport.VerifyExtraCount</strong></span>
+                    }
+                    @if (_missingReport.VerifyMissingCount > 500)
+                    {
+                        <span class="text-dim"> (lista limitada a 500)</span>
+                    }
+                </div>
+                @if (!string.IsNullOrEmpty(_missingReport.VerifyMissingUids))
+                {
+                    <pre class="mono small" style="white-space:pre-wrap;word-break:break-all;margin:0;color:var(--text)">@_missingReport.VerifyMissingUids</pre>
+                }
+                else
+                {
+                    <div class="text-dim small">No hay lista de UIDs almacenada para este estudio.</div>
+                }
+            </div>
+        </div>
+    </div>
+}
+
 @code {
     // ── Confirm dialogs ───────────────────────────────────────────────────────
 
@@ -924,6 +983,7 @@ else
     private Migration?          _detail;
     private MigrationStats?     _stats;
     private bool                _migHasN2;   // solo lectura: la migración incluye UIDs Nivel 2 (viene del descubridor)
+    private MigrationStudy?     _missingReport;   // estudio cuyo informe de faltantes se muestra
     private string _actionMsg = "";
     private bool _actionOk, _actionBusy;
     private string _detailTab = "dashboard";

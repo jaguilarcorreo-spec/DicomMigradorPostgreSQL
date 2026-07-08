@@ -209,6 +209,13 @@ public class VerificationResult
     /// absent or mismatched. In this case the study should NOT be marked VerifyFailed;
     /// it stays verifiable and is retried (the destination couldn't be reached).</summary>
     public bool    ConnectionError       { get; set; }
+    // ── Nivel 2 (comparación de conjuntos de UIDs) ──
+    public bool    Level2Checked         { get; set; }
+    public int     SourceUidCount        { get; set; }
+    public int     DestUidCount          { get; set; }
+    public int     MissingCount          { get; set; }
+    public int     ExtraCount            { get; set; }
+    public List<string> MissingUids      { get; set; } = [];
     public List<string> Logs            { get; set; } = [];
 }
 

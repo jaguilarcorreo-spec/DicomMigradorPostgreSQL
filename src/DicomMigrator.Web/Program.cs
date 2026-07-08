@@ -337,7 +337,8 @@ try
 
         await writer.WriteLineAsync(
             "StudyInstanceUID,PatientID,AccessionNumber,StudyDate,Modality,Status," +
-            "SrcSeries,SrcInstances,TgtSeries,TgtInstances,Retries,LastError," +
+            "SrcSeries,SrcInstances,TgtSeries,TgtInstances,MigRetries,VerifyRetries," +
+            "VerifyMissing,VerifyExtra,LastError," +
             "DiscoveryDate,MigrationDate,VerificationDate");
 
         int flushEvery = 0;
@@ -349,7 +350,8 @@ try
                 CsvField(s.StudyDate), CsvField(s.ModalitiesInStudy), CsvField(s.MigrationStatus),
                 s.SourceSeriesCount?.ToString() ?? "", s.SourceInstanceCount?.ToString() ?? "",
                 s.TargetSeriesCount?.ToString() ?? "", s.TargetInstanceCount?.ToString() ?? "",
-                s.RetryCount.ToString(), CsvField(s.LastError),
+                s.RetryCount.ToString(), s.VerifyRetryCount.ToString(),
+                s.VerifyMissingCount.ToString(), s.VerifyExtraCount.ToString(), CsvField(s.LastError),
                 s.DiscoveryDate.ToString("yyyy-MM-dd HH:mm:ss"),
                 s.MigrationDate?.ToString("yyyy-MM-dd HH:mm:ss") ?? "",
                 s.VerificationDate?.ToString("yyyy-MM-dd HH:mm:ss") ?? "",
