@@ -418,7 +418,12 @@ public class VerificationService(
                 var srcUids = await instanceRepo.GetSopUidsForStudyAsync(study.Id);
                 if (srcUids.Count > 0)
                 {
-                    var enumRes = await dimse.EnumerateInstancesAsync(destNode, study.StudyInstanceUid, ct);
+                    // 4A: enumerar el destino por QIDO-instances si tiene DICOMweb; si no, C-FIND IMAGE.
+                    var useQido = destNode.HasDicomWeb &&
+                                  !string.IsNullOrWhiteSpace(destNode.WebBaseUrl ?? destNode.QidoBaseUrl);
+                    var enumRes = useQido
+                        ? await dicomWeb.EnumerateInstancesAsync(destNode, study.StudyInstanceUid, ct)
+                        : await dimse.EnumerateInstancesAsync(destNode, study.StudyInstanceUid, ct);
                     if (!enumRes.Success)
                     {
                         // No se pudo enumerar el destino → fallo de operación (reintentar), no del estudio.

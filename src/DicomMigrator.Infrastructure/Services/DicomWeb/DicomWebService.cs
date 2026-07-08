@@ -63,6 +63,30 @@ public class DicomWebService(ILogger<DicomWebService> logger, IHttpClientFactory
         };
     }
 
+    public async Task<CFindInstancesResult> EnumerateInstancesAsync(DicomNode node, string studyInstanceUid, CancellationToken ct = default)
+    {
+        var effectiveBase = !string.IsNullOrWhiteSpace(node.WebBaseUrl) ? node.WebBaseUrl : node.QidoBaseUrl;
+        if (!node.HasDicomWeb || string.IsNullOrWhiteSpace(effectiveBase))
+            return new CFindInstancesResult { Success = false, ErrorMessage = "El nodo no tiene DICOMweb / QIDO-RS configurado." };
+
+        var config = ToDicomWebConfig(node);
+        var r = await _inner.EnumerateInstancesWebAsync(config, studyInstanceUid, ct);
+        logger.LogInformation("QIDO-RS instances → {Alias} · HTTP {Status} · {Count} instancias",
+            node.Alias, r.HttpStatus, r.Instances.Count);
+        return new CFindInstancesResult
+        {
+            Success      = r.Success,
+            DicomStatus  = r.HttpStatus,
+            DurationMs   = r.DurationMs,
+            ErrorMessage = r.ErrorMessage,
+            Instances    = r.Instances.Select(i => new DicomInstanceRef
+            {
+                SeriesInstanceUid = i.SeriesInstanceUid ?? string.Empty,
+                SopInstanceUid    = i.SopInstanceUid ?? string.Empty,
+            }).ToList(),
+        };
+    }
+
     public async Task<WadoStowResult> WadoStowAsync(DicomNode origin, DicomNode dest,
                                                      string studyUid, CancellationToken ct = default)
     {

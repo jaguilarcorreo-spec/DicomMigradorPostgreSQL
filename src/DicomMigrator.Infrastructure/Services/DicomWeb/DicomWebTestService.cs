@@ -68,6 +68,21 @@ public class TesterStudyDtoWeb
 
 // ── DicomWebTestService (copiado del Tester) ─────────────────────────────────
 
+public class TesterWebInstance
+{
+    public string? SeriesInstanceUid { get; set; }
+    public string? SopInstanceUid    { get; set; }
+}
+
+public class TesterWebInstancesResult
+{
+    public bool    Success      { get; set; }
+    public int?    HttpStatus   { get; set; }
+    public long    DurationMs   { get; set; }
+    public string? ErrorMessage { get; set; }
+    public List<TesterWebInstance> Instances { get; set; } = [];
+}
+
 public class DicomWebTestService
 {
     private readonly ILogger<DicomWebTestService> logger;
@@ -142,6 +157,84 @@ public class DicomWebTestService
     }
 
     // ── Helpers (idénticos al Tester) ────────────────────────────────────────
+    // ── QIDO-RS: enumeración de instancias de un estudio (Nivel 2, vía 4A) ────
+    public async Task<TesterWebInstancesResult> EnumerateInstancesWebAsync(
+        TesterDicomWebConfig config, string studyInstanceUid, CancellationToken ct = default)
+    {
+        var result = new TesterWebInstancesResult();
+        var sw = Stopwatch.StartNew();
+        try
+        {
+            if (string.IsNullOrWhiteSpace(config.BaseUrl) || !Uri.TryCreate(config.BaseUrl, UriKind.Absolute, out _))
+            { result.ErrorMessage = $"BaseUrl inválida: '{config.BaseUrl}'"; return result; }
+
+            // {base}{qidoPath}/studies/{uid}/instances?includefield=SOP,Series&limit=…
+            var url = $"{config.BaseUrl.TrimEnd('/')}{config.QidoPath}/studies/{Uri.EscapeDataString(studyInstanceUid)}/instances" +
+                      $"?includefield={Uri.EscapeDataString("00080018,0020000E")}&limit=1000000&offset=0";
+            logger.LogInformation("QIDO-RS instances GET {Url}", url);
+
+            HttpClient client;
+            HttpClientHandler? ownedHandler = null;
+            if (_httpFactory is not null)
+            {
+                client = _httpFactory.CreateClient(config.ValidateTls ? "dicomweb-tls" : "dicomweb-relaxed");
+                client.Timeout = TimeSpan.FromSeconds(config.HttpTimeoutSeconds);
+            }
+            else
+            {
+                (client, ownedHandler) = BuildPooledHttpClientFallback(config);
+            }
+            try
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Get, url);
+                ApplyAuthHeader(request, config);
+                var response = await client.SendAsync(request, ct);
+                sw.Stop();
+                result.DurationMs = sw.ElapsedMilliseconds;
+                result.HttpStatus = (int)response.StatusCode;
+                if (response.IsSuccessStatusCode)
+                {
+                    var json = await response.Content.ReadAsStringAsync(ct);
+                    result.Instances = ParseInstancesWeb(json);
+                    result.Success = true;
+                }
+                else
+                {
+                    result.Success = false;
+                    result.ErrorMessage = $"HTTP {result.HttpStatus}: {response.ReasonPhrase}";
+                }
+            }
+            finally
+            {
+                if (ownedHandler is not null) { client.Dispose(); ownedHandler.Dispose(); }
+            }
+        }
+        catch (TaskCanceledException)
+        { sw.Stop(); result.DurationMs = sw.ElapsedMilliseconds; result.Success = false; result.ErrorMessage = $"Timeout tras {config.HttpTimeoutSeconds}s"; }
+        catch (Exception ex)
+        { sw.Stop(); result.DurationMs = sw.ElapsedMilliseconds; result.Success = false; result.ErrorMessage = ex.Message; }
+        return result;
+    }
+
+    private static List<TesterWebInstance> ParseInstancesWeb(string json)
+    {
+        var list = new List<TesterWebInstance>();
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            foreach (var item in doc.RootElement.EnumerateArray())
+            {
+                list.Add(new TesterWebInstance
+                {
+                    SopInstanceUid    = GetVal(item, "00080018"),
+                    SeriesInstanceUid = GetVal(item, "0020000E"),
+                });
+            }
+        }
+        catch { }
+        return list;
+    }
+
     private static (HttpClient client, HttpClientHandler handler) BuildPooledHttpClientFallback(TesterDicomWebConfig config)
     {
         var handler = new HttpClientHandler();

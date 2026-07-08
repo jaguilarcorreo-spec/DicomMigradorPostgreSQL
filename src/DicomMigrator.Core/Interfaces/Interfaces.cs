@@ -275,6 +275,8 @@ public interface IConnectionHealthService
 public interface IDicomWebService
 {
     Task<QidoResult>     QidoAsync(DicomNode node, QidoQuery query, CancellationToken ct = default);
+    /// <summary>Enumera las instancias (SOPInstanceUID + SeriesInstanceUID) de un estudio vía QIDO-RS.</summary>
+    Task<CFindInstancesResult> EnumerateInstancesAsync(DicomNode node, string studyInstanceUid, CancellationToken ct = default);
     Task<WadoStowResult> WadoStowAsync(DicomNode origin, DicomNode dest,
                                        string studyUid, CancellationToken ct = default);
 }
