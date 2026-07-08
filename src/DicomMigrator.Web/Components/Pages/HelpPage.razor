@@ -123,6 +123,26 @@
         </p>
     </HelpSection>
 
+    <HelpSection Title="Enumeración de UIDs para verificación Nivel 2" Color="#a78bfa">
+        <p style="margin:0 0 10px 0;color:var(--text-dim);font-size:13px;line-height:1.6">
+            Además de <strong>DESCUBRIR</strong> (catalogar los estudios), cada job ofrece un segundo proceso gobernado:
+            <strong style="color:#a78bfa">ENUMERAR</strong>. Enumera, estudio a estudio, los <code>SOPInstanceUID</code> de origen
+            (por <strong>QIDO-instances</strong> si el origen tiene DICOMweb, o <strong>C-FIND a nivel IMAGE</strong> en su defecto) y los
+            almacena en el inventario. Es opcional y más lento que descubrir; tiene sus mismos controles
+            (Iniciar/Pausar/Reanudar/Parar), su propia barra de progreso (con tiempo transcurrido e instancias acumuladas)
+            y usa los mismos <code>workers</code> del job.
+        </p>
+        <p style="margin:0 0 10px 0;color:var(--text-dim);font-size:13px;line-height:1.6">
+            En la tabla de particiones, las columnas <strong>Serie UIDs</strong> e <strong>Instance UIDs</strong> muestran, por partición,
+            el nº de series de sus estudios y el nº de UIDs capturados tras enumerar.
+        </p>
+        <p style="margin:0;color:var(--text-dim);font-size:13px;line-height:1.6">
+            Al <strong>crear una migración</strong> desde un inventario ya enumerado, esos UIDs se copian a la migración
+            automáticamente y ésta queda marcada como <strong>Nivel 2</strong> (su verificación comparará conjuntos, no conteos).
+            La enumeración es <strong>idempotente</strong>: reejecutarla solo procesa los estudios que aún no tienen UIDs.
+        </p>
+    </HelpSection>
+
     <HelpSection Title="Modo CSV — importación de fichero" Color="var(--green)">
         <p style="margin:0 0 12px 0;color:var(--text-dim);font-size:13px;line-height:1.6">
             Selecciona <strong>CSV (importar fichero)</strong> como método al crear un job. El motor no consulta al PACS — lee el fichero
@@ -207,13 +227,43 @@
         </p>
         <ul style="margin:0;padding-left:20px;color:var(--text-dim);font-size:13px;line-height:1.8">
             <li><span style="color:var(--accent);font-weight:600">Migración (cyan)</span> — porcentaje de estudios efectivamente transferidos al destino.</li>
-            <li><span style="color:var(--purple);font-weight:600">Verificación (púrpura)</span> — porcentaje de estudios cuya presencia en destino se ha confirmado mediante C-FIND/QIDO contra el destino.</li>
+            <li><span style="color:var(--purple);font-weight:600">Verificación (púrpura)</span> — porcentaje de estudios confirmados en destino. Puede ser <strong>Nivel 1</strong> (coincidencia de conteos de series/instancias vía C-FIND/QIDO) o <strong>Nivel 2</strong> (comparación de los conjuntos de <code>SOPInstanceUID</code>), según la migración tenga o no UIDs capturados. Ver la sección «Verificación Nivel 2» más abajo.</li>
         </ul>
         <p style="margin:10px 0 0 0;color:var(--text-dim);font-size:13px;line-height:1.6">
             La verificación puede correr a la vez que la migración o lanzarse después. Como vacía su cola de estudios
             <em>Migrados</em> de forma autónoma, puede marcarse <code>Completed</code> y volver a relanzarse sola cuando la
             migración produce nuevos migrados. Mientras eso ocurre, el panel muestra
             <strong>«⏳ En espera · pendiente de migración»</strong> en lugar de <code>Completed</code>, para no confundir.
+        </p>
+    </HelpSection>
+
+    <HelpSection Title="Verificación Nivel 2 — comparación de conjuntos de UIDs" Color="#a78bfa">
+        <p style="margin:0 0 10px 0;color:var(--text-dim);font-size:13px;line-height:1.6">
+            La verificación tiene <strong>dos niveles</strong>, y cada estudio usa el que corresponda automáticamente:
+        </p>
+        <ul style="margin:0 0 10px 0;padding-left:20px;color:var(--text-dim);font-size:13px;line-height:1.8">
+            <li><strong>Nivel 1 (conteos)</strong> — comprueba que el estudio está en destino y que el nº de series e instancias coincide con el origen. Es el comportamiento por defecto.</li>
+            <li><strong>Nivel 2 (conjuntos)</strong> — si la migración tiene UIDs de origen capturados (enumerados en el descubrimiento), compara el <strong>conjunto de <code>SOPInstanceUID</code></strong> origen ↔ destino. Detecta no solo <em>cuántas</em> instancias faltan, sino <em>cuáles</em>.</li>
+        </ul>
+        <p style="margin:0 0 10px 0;color:var(--text-dim);font-size:13px;line-height:1.6">
+            <strong>Criterio de aprobado en Nivel 2:</strong> el estudio se verifica si <strong>no falta ningún UID</strong> en destino.
+            Los <strong>sobrantes</strong> (UIDs en destino que no están en origen) solo generan un aviso, no hacen fallar.
+            La enumeración del destino usa <strong>QIDO-instances</strong> si el destino tiene DICOMweb, o <strong>C-FIND IMAGE</strong> en su defecto.
+        </p>
+        <p style="margin:0 0 10px 0;color:var(--text-dim);font-size:13px;line-height:1.6">
+            En el panel de propiedades de la migración, el campo <strong>MIGRACIÓN N2</strong> indica <code>Sí</code>/<code>No</code>
+            según haya UIDs capturados; es de solo lectura (lo determina el descubridor).
+        </p>
+        <p style="margin:0 0 10px 0;color:var(--text-dim);font-size:13px;line-height:1.6">
+            Cuando un estudio falla por faltantes, en la pestaña <strong>Estudios</strong> aparece
+            <strong style="color:var(--red)">⚠ Faltan N</strong> junto a su estado; al pulsarlo se abre el
+            <strong>informe con los <code>SOPInstanceUID</code> que faltan</strong> en destino.
+        </p>
+        <p style="margin:0;color:var(--text-dim);font-size:13px;line-height:1.6">
+            <strong>Reintentos:</strong> migración y verificación llevan contadores independientes, mostrados como
+            <code>M:x · V:y</code> en la tabla (y como columnas separadas en el CSV). Reintentar la verificación
+            <em>vuelve a comprobar</em> el destino (útil si aún estaba indexando), pero <strong>no re-migra</strong>:
+            si de verdad faltan instancias, hay que reintentar la <em>migración</em> de ese estudio.
         </p>
     </HelpSection>
 
