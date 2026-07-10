@@ -12,6 +12,68 @@
     <h1 class="page-title">Acerca de</h1>
 </div>
 
+@* ── Marca + estado de la base de datos, en una fila ── *@
+<div class="grid-2 mb2">
+
+    <div class="card">
+        <div class="card-body" style="display:flex;align-items:center;justify-content:center;
+                                      padding:28px 16px;height:100%">
+            <MoveLogo Variant="stacked" Size="42" Color="var(--text)" TaglineColor="#9fcfe6" />
+        </div>
+    </div>
+
+    @* ── Estado de la base de datos ── *@
+    <div class="card">
+        <div class="card-header">
+            <span class="card-title">Base de datos</span>
+            @if (_dbOk)
+            {
+                <span style="margin-left:8px;font-size:11px;color:var(--green)">● Operativa</span>
+            }
+            else
+            {
+                <span style="margin-left:8px;font-size:11px;color:var(--red)">● Error</span>
+            }
+        </div>
+        <div class="card-body">
+            @if (!string.IsNullOrEmpty(_dbError))
+            {
+                <div class="alert-error">@_dbError</div>
+            }
+            else
+            {
+                <div class="config-preview">
+                    <div class="config-row">
+                        <span class="config-key">Servidor</span>
+                        <span class="config-val mono" style="font-size:10px;word-break:break-all">@_dbServer</span>
+                    </div>
+                    <div class="config-row">
+                        <span class="config-key">Base de datos</span>
+                        <span class="config-val mono">@_dbName</span>
+                    </div>
+                    <div class="config-row">
+                        <span class="config-key">Nodos registrados</span>
+                        <span class="config-val mono" style="color:var(--accent)">@_nodeCount</span>
+                    </div>
+                    <div class="config-row">
+                        <span class="config-key">Migraciones</span>
+                        <span class="config-val mono" style="color:var(--accent)">@_migrationCount</span>
+                    </div>
+                    <div class="config-row">
+                        <span class="config-key">Estudios totales</span>
+                        <span class="config-val mono" style="color:var(--accent)">@_studyCount</span>
+                    </div>
+                    <div class="config-row">
+                        <span class="config-key">Config. SCU local</span>
+                        <span class="config-val mono">@_localAet · :@_localPort</span>
+                    </div>
+                </div>
+            }
+        </div>
+    </div>
+
+</div>
+
 <div class="grid-2">
 
     @* ── Información de la aplicación ── *@
@@ -100,56 +162,6 @@
                 </div>
             </div>
         </div>
-    </div>
-</div>
-
-@* ── Estado de la base de datos ── *@
-<div class="card" style="margin-top:16px">
-    <div class="card-header">
-        <span class="card-title">Base de datos</span>
-        @if (_dbOk)
-        {
-            <span style="margin-left:8px;font-size:11px;color:var(--green)">● Operativa</span>
-        }
-        else
-        {
-            <span style="margin-left:8px;font-size:11px;color:var(--red)">● Error</span>
-        }
-    </div>
-    <div class="card-body">
-        @if (!string.IsNullOrEmpty(_dbError))
-        {
-            <div class="alert-error">@_dbError</div>
-        }
-        else
-        {
-            <div class="config-preview">
-                <div class="config-row">
-                    <span class="config-key">Servidor</span>
-                    <span class="config-val mono" style="font-size:10px;word-break:break-all">@_dbServer</span>
-                </div>
-                <div class="config-row">
-                    <span class="config-key">Base de datos</span>
-                    <span class="config-val mono">@_dbName</span>
-                </div>
-                <div class="config-row">
-                    <span class="config-key">Nodos registrados</span>
-                    <span class="config-val mono" style="color:var(--accent)">@_nodeCount</span>
-                </div>
-                <div class="config-row">
-                    <span class="config-key">Migraciones</span>
-                    <span class="config-val mono" style="color:var(--accent)">@_migrationCount</span>
-                </div>
-                <div class="config-row">
-                    <span class="config-key">Estudios totales</span>
-                    <span class="config-val mono" style="color:var(--accent)">@_studyCount</span>
-                </div>
-                <div class="config-row">
-                    <span class="config-key">Config. SCU local</span>
-                    <span class="config-val mono">@_localAet · :@_localPort</span>
-                </div>
-            </div>
-        }
     </div>
 </div>
 

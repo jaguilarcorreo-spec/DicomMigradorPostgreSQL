@@ -1,0 +1,98 @@
+@* ════════════════════════════════════════════════════════════════════════════
+   MoveLogo.razor — marca MOVE · DICOM data migrator
+   Port a Blazor de MoveLogo.jsx (React). Mismo trazado SVG y misma paleta.
+
+   Uso:
+     <MoveLogo Variant="horizontal" Size="20" Color="#fff" TaglineColor="#5a7394" />
+     <MoveLogo Variant="stacked"    Size="52" Color="#fff" TaglineColor="#9fcfe6" />
+     <MoveLogo Variant="mark"       Size="32" />
+
+   El conector de la nube es un recorte transparente (máscara SVG), así el icono
+   funciona igual sobre fondo claro u oscuro. La máscara lleva un id único por
+   instancia: dos logos en la misma página no se pisan.
+   ════════════════════════════════════════════════════════════════════════════ *@
+
+<style>
+    .move-logo      { display: inline-flex; align-items: center; }
+    .move-stacked   { flex-direction: column; }
+    .move-words     { display: inline-flex; flex-direction: column; line-height: 1;
+                      font-family: 'Space Grotesk', 'IBM Plex Sans', system-ui, sans-serif; }
+    .move-word      { display: flex; align-items: center; font-weight: 700; letter-spacing: .06em; }
+    .move-tagline   { font-family: 'Space Mono', 'IBM Plex Mono', ui-monospace, monospace;
+                      letter-spacing: .04em; white-space: nowrap; }
+    /* La "E" de MOVE: tres barras, sin asta vertical (sensación de movimiento). */
+    .move-e         { display: inline-flex; flex-direction: column; justify-content: space-between;
+                      width: .6em; height: .7em; margin-left: .04em; }
+    .move-e i       { height: .15em; border-radius: 1px; background: currentColor; display: block; }
+    .move-e i.mid   { width: 82%; }
+
+    /* Variante apilada: centrar el texto respecto al icono.
+       El bloque de texto toma el ancho del tagline (más largo que "MOVE"), así que
+       hay que centrar explícitamente cada línea. Además, letter-spacing añade un
+       hueco fantasma tras el último carácter: se compensa con un margen negativo
+       para que el centrado sea ÓPTICO y no solo matemático. */
+    .move-stacked .move-words   { align-items: center; }
+    .move-stacked .move-word    { justify-content: center; margin-right: -.06em; }
+    .move-stacked .move-tagline { margin-right: -.04em; }
+</style>
+
+@if (Variant == "mark")
+{
+    @Mark(Size)
+}
+else if (Variant == "stacked")
+{
+    <span class="move-logo move-stacked" style="gap:@(Px(Size * 0.28))">
+        @Mark(Size * 2.3)
+        @Words()
+    </span>
+}
+else
+{
+    <span class="move-logo" style="gap:@(Px(Size * 0.34))">
+        @Mark(Size * 1.9)
+        @Words()
+    </span>
+}
+
+@code {
+    [Parameter] public string  Variant      { get; set; } = "horizontal";
+    [Parameter] public double  Size         { get; set; } = 40;
+    [Parameter] public string  Cloud        { get; set; } = "#3f9bc7";
+    [Parameter] public string  Color        { get; set; } = "currentColor";
+    [Parameter] public bool    Tagline      { get; set; } = true;
+    [Parameter] public string? TaglineColor { get; set; }
+
+    // Id único de la máscara: evita colisiones si hay varios logos en la página.
+    private readonly string _id = "move-cut-" + Guid.NewGuid().ToString("N")[..8];
+
+    private const string CloudD =
+        "M30 90 A12 12 0 0 1 20 70 A18 18 0 0 1 40 48 A26 26 0 0 1 82 44 A16 16 0 0 1 100 66 A12 12 0 0 1 90 90 Z";
+    private const string CutD = "M62 14 L50 58 L70 66 L60 106";
+
+    private static string Px(double v) => $"{v.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)}px";
+
+    private RenderFragment Mark(double size) =>@<svg viewBox="0 0 120 120" width="@Px(size)" height="@Px(size)"
+                                                    role="img" aria-label="MOVE" style="flex-shrink:0">
+        <mask id="@_id">
+            <rect width="120" height="120" fill="#fff" />
+            <path d="@CutD" fill="none" stroke="#000" stroke-width="7" stroke-linecap="round" stroke-linejoin="round" />
+            <circle cx="50" cy="58" r="8" fill="#000" />
+            <circle cx="70" cy="66" r="8" fill="#000" />
+        </mask>
+        <path d="@CloudD" fill="@Cloud" mask="url(#@_id)" />
+    </svg>;
+
+    private RenderFragment Words() =>@<span class="move-words" style="gap:@(Px(Size * 0.08))">
+        <span class="move-word" style="font-size:@Px(Size);color:@Color" aria-label="MOVE">
+            MOV<span class="move-e" aria-hidden="true"><i></i><i class="mid"></i><i></i></span>
+        </span>
+        @if (Tagline)
+        {
+            <span class="move-tagline"
+                  style="font-size:@Px(Math.Max(9, Size * 0.30));color:@(TaglineColor ?? Color);opacity:@(TaglineColor is null ? "0.7" : "1")">
+                DICOM data migrator
+            </span>
+        }
+    </span>;
+}
