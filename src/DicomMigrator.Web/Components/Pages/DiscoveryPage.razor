@@ -227,7 +227,7 @@
     @* ── Formulario de edición de propiedades ── *@
     @if (_editing)
     {
-        <div class="card mb2" style="border-color:rgba(0,180,216,0.3)">
+        <div class="card mb2" style="border-color:rgba(0,180,216,0.3);overflow:visible">
             <div class="card-header"><span class="card-title">Editar propiedades del job</span></div>
             <div class="card-body" style="display:flex;flex-direction:column;gap:12px;max-width:760px">
                 @if (!string.IsNullOrEmpty(_editError)) { <div class="alert-error">⚠ @_editError</div> }
@@ -239,28 +239,32 @@
                     <label class="form-label">Descripción</label>
                     <input class="form-input" @bind="_eDesc" />
                 </div>
+                @* Rango de fechas y consulta al PACS solo aplican a jobs Temporal.
+                   Un job CSV importa su inventario de fichero: no tiene rango ni método. *@
+                @if (_detail.DiscoveryType != "CSV")
+                {
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label class="form-label">Rango de fechas</label>
+                            <DateRangePicker @bind-Start="_eStart" @bind-End="_eEnd" />
+                        </div>
+                    </div>
+                }
                 <div class="form-row">
-                    <div class="form-group">
-                        <label class="form-label">Fecha desde</label>
-                        <input class="form-input mono" type="date" @bind="_eStart" />
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Fecha hasta</label>
-                        <input class="form-input mono" type="date" @bind="_eEnd" />
-                    </div>
-                </div>
-                <div class="form-row">
-                    <div class="form-group">
-                        <label class="form-label">Método de consulta</label>
-                        <select class="form-input" @bind="_eMethod">
-                            <option value="CFIND">C-FIND (DIMSE)</option>
-                            <option value="QIDO">QIDO-RS (DICOMweb)</option>
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Límite resultados del PACS</label>
-                        <input class="form-input mono" type="number" @bind="_eLimit" />
-                    </div>
+                    @if (_detail.DiscoveryType != "CSV")
+                    {
+                        <div class="form-group">
+                            <label class="form-label">Método de consulta</label>
+                            <select class="form-input" @bind="_eMethod">
+                                <option value="CFIND">C-FIND (DIMSE)</option>
+                                <option value="QIDO">QIDO-RS (DICOMweb)</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Límite resultados del PACS</label>
+                            <input class="form-input mono" type="number" @bind="_eLimit" />
+                        </div>
+                    }
                     <div class="form-group">
                         <label class="form-label">Workers concurrentes</label>
                         <input class="form-input mono" type="number" @bind="_eThreads" />
@@ -488,8 +492,9 @@ else if (_showForm)
 
     @if (!string.IsNullOrEmpty(_error)) { <div class="alert-error">⚠ @_error</div> }
 
-    <div class="card">
-        <div class="card-body" style="display:flex;flex-direction:column;gap:14px;max-width:760px">
+    @* overflow:visible → el popup del selector de fechas no queda recortado por la tarjeta *@
+    <div class="card" style="overflow:visible">
+        <div class="card-body" style="display:flex;flex-direction:column;gap:14px;max-width:760px;overflow:visible">
             <div class="form-group">
                 <label class="form-label">Nombre *</label>
                 <input class="form-input" @bind="_fName" placeholder="Descubrimiento histórico 2024" />
@@ -524,12 +529,8 @@ else if (_showForm)
             {
                 <div class="form-row">
                     <div class="form-group">
-                        <label class="form-label">Fecha desde *</label>
-                        <input class="form-input mono" type="date" @bind="_fStart" />
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Fecha hasta *</label>
-                        <input class="form-input mono" type="date" @bind="_fEnd" />
+                        <label class="form-label">Rango de fechas *</label>
+                        <DateRangePicker @bind-Start="_fStart" @bind-End="_fEnd" />
                     </div>
                 </div>
                 <div class="form-row">
@@ -1046,6 +1047,9 @@ else
     bool DatesChanged()
     {
         if (_detail is null) return false;
+        // Los jobs CSV no tienen rango de fechas propio (el que se muestra en la
+        // cabecera se calcula del inventario), así que nunca "cambia".
+        if (_detail.DiscoveryType == "CSV") return false;
         return _eStart != (_detail.StartDate ?? default) || _eEnd != (_detail.EndDate ?? default);
     }
 
@@ -1062,11 +1066,18 @@ else
 
             _detail.Name            = _eName.Trim();
             _detail.Description     = string.IsNullOrWhiteSpace(_eDesc) ? string.Empty : _eDesc.Trim();
-            _detail.QueryMethod     = _eMethod;
-            _detail.PacsResultLimit = _eLimit;
             _detail.WorkerThreads   = _eThreads;
-            _detail.StartDate       = _eStart;
-            _detail.EndDate         = _eEnd;
+
+            // Método, límite y rango solo tienen sentido en jobs Temporal. En un job
+            // CSV no se editan, y escribirlos contaminaría el job (StartDate/EndDate
+            // son null por diseño; QueryMethod es "CSV").
+            if (_detail.DiscoveryType != "CSV")
+            {
+                _detail.QueryMethod     = _eMethod;
+                _detail.PacsResultLimit = _eLimit;
+                _detail.StartDate       = _eStart;
+                _detail.EndDate         = _eEnd;
+            }
             await JobRepo.UpdateAsync(_detail);
 
             // Si cambió el rango de fechas, las particiones anteriores quedan
