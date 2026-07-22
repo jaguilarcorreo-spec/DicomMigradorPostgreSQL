@@ -594,6 +594,12 @@ public class DiscoveredStudyRepository(IDbContextFactory<AppDbContext> factory) 
                 existing.NumberOfStudyRelatedSeries    ??= s.NumberOfStudyRelatedSeries;
                 existing.NumberOfStudyRelatedInstances ??= s.NumberOfStudyRelatedInstances;
                 existing.InstitutionName   ??= s.InstitutionName;
+                // v207: faltaban en el refresco, así que el inventario ya existente
+                // nunca se rellenaba aunque el PACS empezara a devolverlas.
+                existing.RetrieveAETitle   ??= s.RetrieveAETitle;
+                existing.PatientBirthDate  ??= s.PatientBirthDate;
+                existing.PatientSex        ??= s.PatientSex;
+                existing.IssuerOfPatientId ??= s.IssuerOfPatientId;
                 // Always update job reference so stats count correctly for the current job
                 existing.DiscoveryJobId  = s.DiscoveryJobId;
                 // Atribuir a la partición que lo (re)descubrió; rellena inventario antiguo.

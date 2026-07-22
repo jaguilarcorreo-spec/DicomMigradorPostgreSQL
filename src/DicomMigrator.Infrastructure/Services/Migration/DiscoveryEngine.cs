@@ -230,9 +230,10 @@ public class DiscoveryEngine(
             {
                 var qido = await dicomWeb.QidoAsync(job.SourcePacs, new QidoQuery
                 {
-                    StudyDate = BuildDateForQuery(partition),
-                    Modality  = partition.Modality,
-                    Limit     = job.PacsResultLimit + 1,  // +1 to detect truncation
+                    StudyDate    = BuildDateForQuery(partition),
+                    Modality     = partition.Modality,
+                    Limit        = job.PacsResultLimit + 1,  // +1 to detect truncation
+                    IncludeField = DiscoveryIncludeFields,
                 }, ct);
                 studies = qido.Studies;
                 if (!qido.Success) result = "ERROR";
@@ -403,6 +404,13 @@ public class DiscoveryEngine(
         return $"{start}-{p.EndDate.Value:yyyyMMdd}";
     }
 
+    /// <summary>Claves de retorno pedidas al PACS por QIDO-RS en el descubrimiento (v207).
+    /// Antes no se enviaba includefield y se dependía del conjunto por defecto del servidor,
+    /// que varía entre implementaciones. Ahora es explícito y determinista.</summary>
+    private const string DiscoveryIncludeFields =
+        "0020000D,00080020,00080030,00080050,00080054,00080061,00080080,00081030," +
+        "00100010,00100020,00100021,00100030,00100040,00201206,00201208";
+
     private static DiscoveredStudy MapToDiscovered(DicomStudyDto s, DiscoveryJob job) => new()
     {
         StudyInstanceUid              = s.StudyInstanceUid!,
@@ -414,8 +422,20 @@ public class DiscoveryEngine(
         ModalitiesInStudy             = s.ModalitiesInStudy,
         NumberOfStudyRelatedSeries    = s.NumberOfSeries,
         NumberOfStudyRelatedInstances = s.NumberOfInstances,
+        // Claves de retorno adicionales (v207). Se normaliza "" → null para que el
+        // upsert (que usa ??=) pueda rellenarlas más adelante si otro PACS sí las da.
+        StudyTime                     = NullIfEmpty(s.StudyTime),
+        InstitutionName               = NullIfEmpty(s.InstitutionName),
+        RetrieveAETitle               = NullIfEmpty(s.RetrieveAETitle),
+        PatientBirthDate              = NullIfEmpty(s.PatientBirthDate),
+        PatientSex                    = NullIfEmpty(s.PatientSex),
+        IssuerOfPatientId             = NullIfEmpty(s.IssuerOfPatientId),
         DiscoveryDate                 = DateTime.UtcNow,
         SourcePacsId                  = job.SourcePacsId,
         DiscoveryJobId                = job.Id,
     };
+
+    /// <summary>Cadena vacía → null. Los atributos opcionales que el PACS no soporta
+    /// llegan como "" y guardarlos así impediría rellenarlos después (el upsert usa ??=).</summary>
+    private static string? NullIfEmpty(string? v) => string.IsNullOrWhiteSpace(v) ? null : v.Trim();
 }

@@ -104,6 +104,15 @@ public class DicomStudyDto
     public string? SopInstanceUid    { get; set; }
     public int?    NumberOfInstances { get; set; }
     public int?    NumberOfSeries    { get; set; }
+
+    // ── Claves de retorno adicionales (v207) ──────────────────────────────────
+    // Atributos opcionales (Tipo 3): el PACS puede devolverlos vacíos.
+    public string? StudyTime         { get; set; }   // (0008,0030)
+    public string? InstitutionName   { get; set; }   // (0008,0080)
+    public string? RetrieveAETitle   { get; set; }   // (0008,0054)
+    public string? PatientBirthDate  { get; set; }   // (0010,0030)
+    public string? PatientSex        { get; set; }   // (0010,0040)
+    public string? IssuerOfPatientId { get; set; }   // (0010,0021)
 }
 
 /// <summary>Parámetros de QIDO-RS. Idéntico al del Tester con Offset añadido.</summary>

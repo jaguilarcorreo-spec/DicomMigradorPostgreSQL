@@ -554,8 +554,9 @@ try
         };
 
         await writer.WriteLineAsync(
-            "StudyInstanceUID,PatientID,PatientName,AccessionNumber,StudyDate,StudyTime," +
-            "Modalities,Series,Instances,StudyDescription,InstitutionName,DiscoveryDate");
+            "StudyInstanceUID,PatientID,IssuerOfPatientID,PatientName,PatientBirthDate,PatientSex," +
+            "AccessionNumber,StudyDate,StudyTime," +
+            "Modalities,Series,Instances,StudyDescription,InstitutionName,RetrieveAETitle,DiscoveryDate");
 
         int flushEvery = 0;
         await foreach (var s in studyRepo.StreamForExportAsync(
@@ -563,12 +564,13 @@ try
         {
             await writer.WriteLineAsync(string.Join(',', new[]
             {
-                CsvField(s.StudyInstanceUid), CsvField(s.PatientId), CsvField(s.PatientName),
+                CsvField(s.StudyInstanceUid), CsvField(s.PatientId), CsvField(s.IssuerOfPatientId),
+                CsvField(s.PatientName), CsvField(s.PatientBirthDate), CsvField(s.PatientSex),
                 CsvField(s.AccessionNumber), CsvField(s.StudyDate), CsvField(s.StudyTime),
                 CsvField(s.ModalitiesInStudy),
                 s.NumberOfStudyRelatedSeries?.ToString() ?? "",
                 s.NumberOfStudyRelatedInstances?.ToString() ?? "",
-                CsvField(s.StudyDescription), CsvField(s.InstitutionName),
+                CsvField(s.StudyDescription), CsvField(s.InstitutionName), CsvField(s.RetrieveAETitle),
                 s.DiscoveryDate.ToString("yyyy-MM-dd HH:mm:ss"),
             }));
             // Flush every 500 rows so the client starts receiving immediately

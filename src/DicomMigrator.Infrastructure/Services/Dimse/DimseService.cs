@@ -68,6 +68,12 @@ public class DimseService(ILogger<DimseService> logger) : IDimseService
                 StudyDescription  = s.StudyDescription,
                 NumberOfInstances = s.NumberOfInstances,
                 NumberOfSeries    = s.NumberOfSeries,
+                StudyTime         = s.StudyTime,
+                InstitutionName   = s.InstitutionName,
+                RetrieveAETitle   = s.RetrieveAETitle,
+                PatientBirthDate  = s.PatientBirthDate,
+                PatientSex        = s.PatientSex,
+                IssuerOfPatientId = s.IssuerOfPatientId,
             }).ToList(),
         };
     }

@@ -64,6 +64,14 @@ public class TesterStudyDtoWeb
     public string? StudyDescription  { get; set; }
     public int?    NumberOfInstances { get; set; }
     public int?    NumberOfSeries    { get; set; }
+
+    // Claves de retorno adicionales (v207) — opcionales, pueden venir vacías.
+    public string? StudyTime         { get; set; }
+    public string? InstitutionName   { get; set; }
+    public string? RetrieveAETitle   { get; set; }
+    public string? PatientBirthDate  { get; set; }
+    public string? PatientSex        { get; set; }
+    public string? IssuerOfPatientId { get; set; }
 }
 
 // ── DicomWebTestService (copiado del Tester) ─────────────────────────────────
@@ -308,6 +316,12 @@ public class DicomWebTestService
                     StudyDescription  = GetVal(item, "00081030"),
                     NumberOfInstances = GetInt(item, "00201208"),  // NumberOfStudyRelatedInstances
                     NumberOfSeries    = GetInt(item, "00201206"),  // NumberOfStudyRelatedSeries
+                    StudyTime         = GetVal(item, "00080030"),  // StudyTime
+                    InstitutionName   = GetVal(item, "00080080"),  // InstitutionName
+                    RetrieveAETitle   = GetVal(item, "00080054"),  // RetrieveAETitle
+                    PatientBirthDate  = GetVal(item, "00100030"),  // PatientBirthDate
+                    PatientSex        = GetVal(item, "00100040"),  // PatientSex
+                    IssuerOfPatientId = GetVal(item, "00100021"),  // IssuerOfPatientID
                 });
             }
         }

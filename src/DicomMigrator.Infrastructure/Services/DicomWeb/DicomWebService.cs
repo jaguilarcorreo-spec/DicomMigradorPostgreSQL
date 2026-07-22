@@ -57,8 +57,15 @@ public class DicomWebService(ILogger<DicomWebService> logger, IHttpClientFactory
                 AccessionNumber   = s.AccessionNumber,
                 StudyInstanceUid  = s.StudyInstanceUid,
                 ModalitiesInStudy = s.ModalitiesInStudy,
+                StudyDescription  = s.StudyDescription,   // faltaba: se parseaba pero no se propagaba
                 NumberOfInstances = s.NumberOfInstances,
                 NumberOfSeries    = s.NumberOfSeries,
+                StudyTime         = s.StudyTime,
+                InstitutionName   = s.InstitutionName,
+                RetrieveAETitle   = s.RetrieveAETitle,
+                PatientBirthDate  = s.PatientBirthDate,
+                PatientSex        = s.PatientSex,
+                IssuerOfPatientId = s.IssuerOfPatientId,
             }).ToList(),
         };
     }

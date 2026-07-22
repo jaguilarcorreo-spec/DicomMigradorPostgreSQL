@@ -77,6 +77,14 @@ public class TesterStudyDto
     public string? StudyDescription  { get; set; }
     public int?    NumberOfInstances { get; set; }
     public int?    NumberOfSeries    { get; set; }
+
+    // Claves de retorno adicionales (v207) — opcionales, pueden venir vacías.
+    public string? StudyTime         { get; set; }
+    public string? InstitutionName   { get; set; }
+    public string? RetrieveAETitle   { get; set; }
+    public string? PatientBirthDate  { get; set; }
+    public string? PatientSex        { get; set; }
+    public string? IssuerOfPatientId { get; set; }
 }
 
 public class TesterCMoveResult
@@ -289,6 +297,14 @@ public class DimseTestService(ILogger<DimseTestService> logger)
         ds.AddOrUpdate(DicomTag.ModalitiesInStudy, query.ModalitiesInStudy ?? "");
         ds.AddOrUpdate(DicomTag.NumberOfStudyRelatedInstances, "");
         ds.AddOrUpdate(DicomTag.NumberOfStudyRelatedSeries, "");
+        // Claves de retorno adicionales (v207). Son atributos opcionales: un SCP
+        // conforme que no los soporte simplemente los devuelve vacíos.
+        ds.AddOrUpdate(DicomTag.StudyTime,          "");
+        ds.AddOrUpdate(DicomTag.InstitutionName,    "");
+        ds.AddOrUpdate(DicomTag.RetrieveAETitle,    "");
+        ds.AddOrUpdate(DicomTag.PatientBirthDate,   "");
+        ds.AddOrUpdate(DicomTag.PatientSex,         "");
+        ds.AddOrUpdate(DicomTag.IssuerOfPatientID,  "");
         return req;
     }
 
@@ -303,5 +319,11 @@ public class DimseTestService(ILogger<DimseTestService> logger)
         StudyDescription  = ds.GetSingleValueOrDefault(DicomTag.StudyDescription, string.Empty),
         NumberOfInstances = ds.TryGetValue(DicomTag.NumberOfStudyRelatedInstances, 0, out int n) ? n : null,
         NumberOfSeries    = ds.TryGetValue(DicomTag.NumberOfStudyRelatedSeries,    0, out int s) ? s : null,
+        StudyTime         = ds.GetSingleValueOrDefault(DicomTag.StudyTime,         string.Empty),
+        InstitutionName   = ds.GetSingleValueOrDefault(DicomTag.InstitutionName,   string.Empty),
+        RetrieveAETitle   = ds.GetSingleValueOrDefault(DicomTag.RetrieveAETitle,   string.Empty),
+        PatientBirthDate  = ds.GetSingleValueOrDefault(DicomTag.PatientBirthDate,  string.Empty),
+        PatientSex        = ds.GetSingleValueOrDefault(DicomTag.PatientSex,        string.Empty),
+        IssuerOfPatientId = ds.GetSingleValueOrDefault(DicomTag.IssuerOfPatientID, string.Empty),
     };
 }
