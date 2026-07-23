@@ -470,6 +470,11 @@ select.form-input { cursor: pointer; }
 .s-Verified            { background: rgba(167,139,250,0.1); color: var(--purple); border: 1px solid rgba(167,139,250,0.2); }
 .s-RetryPending        { background: rgba(249,115,22,0.1);  color: #f97316;       border: 1px solid rgba(249,115,22,0.2); }
 
+/* Faltaban: estos badges se renderizaban sin color (v211) */
+.s-Idle                { background: rgba(100,116,139,0.1); color: #64748b;       border: 1px solid rgba(100,116,139,0.2); }
+.s-VerifyFailed        { background: rgba(239,68,68,0.1);   color: var(--red);    border: 1px solid rgba(239,68,68,0.2); }
+.s-VerifyRetryPending  { background: rgba(249,115,22,0.1);  color: #f97316;       border: 1px solid rgba(249,115,22,0.2); }
+
 /* ── Progress bar ── */
 .progress-track { background: var(--border); border-radius: 99px; height: 6px; overflow: hidden; width: 100%; }
 .progress-fill  { height: 100%; border-radius: 99px; transition: width 0.4s ease; }

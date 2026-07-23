@@ -1,0 +1,275 @@
+@* ════════════════════════════════════════════════════════════════════════════
+   DatePicker.razor — selector de UNA fecha (calendario simple).
+   Uso:  <DatePicker @bind-Value="_eStart" />
+
+   Hermano de DateRangePicker: mismo lenguaje visual y misma navegación
+   (« año ‹ mes · etiqueta pulsable → rejilla de años → rejilla de meses),
+   pero sin atajos de rango ni segundo calendario.
+
+   Sin dependencias externas ni JS: el cierre "al hacer clic fuera" se resuelve
+   con un backdrop transparente por debajo del popup.
+   Estilos EMBEBIDOS a propósito: el proyecto no usa CSS isolation ni
+   cache-busting, así que depender de app.css haría frágil el componente.
+   Prefijo .sdp-* para no colisionar con .dp-* de DateRangePicker.
+   ════════════════════════════════════════════════════════════════════════════ *@
+
+<style>
+    .sdp-root { position: relative; }
+
+    .sdp-field {
+        display: flex; align-items: center; gap: 10px; cursor: pointer;
+        background: var(--bg); border: 1px solid var(--border); border-radius: var(--r);
+        padding: 8px 11px; user-select: none; font-family: var(--font-mono);
+        position: relative; z-index: 1; max-width: 210px;
+    }
+    .sdp-field:hover        { border-color: var(--border2); }
+    .sdp-field.sdp-open     { border-color: var(--purple); box-shadow: 0 0 0 3px rgba(167,139,250,.12); }
+    .sdp-field.sdp-disabled { opacity: .55; cursor: not-allowed; }
+    .sdp-field .sdp-ico     { color: var(--purple); font-size: 13px; line-height: 1; }
+    .sdp-field .sdp-val     { font-size: 13px; color: var(--text); letter-spacing: .02em; }
+    .sdp-field .sdp-chev    { margin-left: auto; color: var(--text-muted); font-size: 10px; }
+
+    .sdp-backdrop { position: fixed; inset: 0; z-index: 40; background: transparent; }
+
+    .sdp-pop {
+        position: absolute; top: calc(100% + 6px); left: 0; z-index: 50;
+        background: var(--panel); border: 1px solid var(--border2); border-radius: var(--r2);
+        box-shadow: 0 18px 40px rgba(0,0,0,.55); overflow: hidden; width: max-content;
+    }
+
+    .sdp-cal    { width: 236px; padding: 14px 16px; }
+    .sdp-cal-hd { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+    .sdp-navs   { display: flex; gap: 4px; }
+    .sdp-nav {
+        background: none; border: 1px solid var(--border); color: var(--text-dim);
+        width: 24px; height: 24px; border-radius: 5px; cursor: pointer; line-height: 1; font-size: 11px;
+    }
+    .sdp-nav:hover { border-color: var(--purple); color: var(--purple); }
+
+    .sdp-month-btn {
+        background: none; border: 1px solid transparent; border-radius: 5px;
+        color: var(--text); font-size: 12.5px; font-weight: 600; letter-spacing: .02em;
+        font-family: var(--font-ui); cursor: pointer; padding: 3px 8px; white-space: nowrap;
+    }
+    .sdp-month-btn:hover { border-color: var(--border2); background: rgba(167,139,250,.08); color: var(--purple); }
+
+    .sdp-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
+    .sdp-dow {
+        font-size: 9.5px; color: var(--text-muted); text-align: center; padding: 4px 0;
+        text-transform: uppercase; letter-spacing: .04em;
+    }
+    .sdp-day {
+        aspect-ratio: 1; display: flex; align-items: center; justify-content: center;
+        font-size: 11.5px; border-radius: 5px; cursor: pointer; color: var(--text-dim);
+        border: 1px solid transparent; font-family: var(--font-mono);
+    }
+    .sdp-day:hover   { background: rgba(167,139,250,.14); color: var(--text); }
+    .sdp-out         { cursor: default; }
+    .sdp-out:hover   { background: none; }
+    .sdp-sel         { background: var(--purple); color: var(--bg); font-weight: 600; }
+    .sdp-today       { border-color: rgba(167,139,250,.45); }
+
+    .sdp-pick-hd   { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+    .sdp-pick-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    .sdp-cell {
+        background: none; border: 1px solid var(--border); border-radius: var(--r);
+        color: var(--text-dim); padding: 10px 0; font-size: 12px; cursor: pointer;
+        font-family: var(--font-mono);
+    }
+    .sdp-cell:hover { border-color: var(--purple); color: var(--purple); background: rgba(167,139,250,.08); }
+    .sdp-cell-on    { background: var(--purple); border-color: var(--purple); color: var(--bg); font-weight: 600; }
+
+    .sdp-ft {
+        border-top: 1px solid var(--border); padding: 10px 14px;
+        display: flex; align-items: center; gap: 8px;
+    }
+    .sdp-summary { font-size: 11.5px; color: var(--purple); margin-right: auto; font-family: var(--font-mono); font-weight: 600; }
+</style>
+
+<div class="sdp-root">
+
+    <div class="sdp-field @(_open ? "sdp-open" : "") @(Disabled ? "sdp-disabled" : "")"
+         @onclick="Toggle">
+        <span class="sdp-ico">▦</span>
+        <span class="sdp-val">@Value.ToString("yyyy-MM-dd")</span>
+        <span class="sdp-chev">▾</span>
+    </div>
+
+    @if (_open)
+    {
+        <div class="sdp-backdrop" @onclick="Cancel"></div>
+
+        <div class="sdp-pop">
+
+            @if (_mode == Mode.Days)
+            {
+                var first = new DateOnly(_view.Year, _view.Month, 1);
+                var lead  = ((int)first.DayOfWeek + 6) % 7;              // lunes primero
+                var days  = DateTime.DaysInMonth(_view.Year, _view.Month);
+
+                <div class="sdp-cal">
+                    <div class="sdp-cal-hd">
+                        <span class="sdp-navs">
+                            <button type="button" class="sdp-nav" title="Año anterior" @onclick="() => _view = _view.AddYears(-1)">«</button>
+                            <button type="button" class="sdp-nav" title="Mes anterior" @onclick="() => _view = _view.AddMonths(-1)">‹</button>
+                        </span>
+
+                        <button type="button" class="sdp-month-btn" title="Elegir año y mes" @onclick="OpenYears">
+                            @MonthLabel(_view) ▾
+                        </button>
+
+                        <span class="sdp-navs">
+                            <button type="button" class="sdp-nav" title="Mes siguiente" @onclick="() => _view = _view.AddMonths(1)">›</button>
+                            <button type="button" class="sdp-nav" title="Año siguiente" @onclick="() => _view = _view.AddYears(1)">»</button>
+                        </span>
+                    </div>
+
+                    <div class="sdp-grid">
+                        @foreach (var d in _dow)
+                        {
+                            <div class="sdp-dow">@d</div>
+                        }
+                    </div>
+
+                    <div class="sdp-grid">
+                        @for (var i = 0; i < lead; i++)
+                        {
+                            <div class="sdp-day sdp-out"></div>
+                        }
+                        @for (var d = 1; d <= days; d++)
+                        {
+                            var cur = new DateOnly(_view.Year, _view.Month, d);
+                            <div class="@DayClass(cur)" @onclick="() => Pick(cur)">@d</div>
+                        }
+                    </div>
+                </div>
+            }
+            else if (_mode == Mode.Years)
+            {
+                <div class="sdp-cal">
+                    <div class="sdp-pick-hd">
+                        <button type="button" class="sdp-nav" @onclick="() => _decade -= 12">‹</button>
+                        <span class="sdp-month-btn" style="cursor:default">@_decade – @(_decade + 11)</span>
+                        <button type="button" class="sdp-nav" @onclick="() => _decade += 12">›</button>
+                    </div>
+                    <div class="sdp-pick-grid">
+                        @for (var y = _decade; y < _decade + 12; y++)
+                        {
+                            var yy = y;
+                            <button type="button" class="sdp-cell @(yy == _pickYear ? "sdp-cell-on" : "")"
+                                    @onclick="() => PickYear(yy)">@yy</button>
+                        }
+                    </div>
+                </div>
+            }
+            else
+            {
+                <div class="sdp-cal">
+                    <div class="sdp-pick-hd">
+                        <button type="button" class="sdp-nav" @onclick="() => _pickYear--">‹</button>
+                        <span class="sdp-month-btn" style="cursor:default">@_pickYear</span>
+                        <button type="button" class="sdp-nav" @onclick="() => _pickYear++">›</button>
+                    </div>
+                    <div class="sdp-pick-grid">
+                        @for (var m = 1; m <= 12; m++)
+                        {
+                            var mm = m;
+                            <button type="button" class="sdp-cell @(_pickYear == _view.Year && mm == _view.Month ? "sdp-cell-on" : "")"
+                                    @onclick="() => PickMonth(mm)">@_monthsShort[mm - 1]</button>
+                        }
+                    </div>
+                </div>
+            }
+
+            <div class="sdp-ft">
+                <span class="sdp-summary">@_tmp.ToString("yyyy-MM-dd")</span>
+                <button type="button" class="btn btn-sm" @onclick="Today">Hoy</button>
+                <button type="button" class="btn btn-sm" @onclick="Cancel">Cancelar</button>
+                <button type="button" class="btn btn-primary btn-sm" @onclick="Apply">Aplicar</button>
+            </div>
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter] public DateOnly Value { get; set; }
+    [Parameter] public EventCallback<DateOnly> ValueChanged { get; set; }
+    [Parameter] public bool Disabled { get; set; }
+
+    private static readonly string[] _dow =
+        ["lu", "ma", "mi", "ju", "vi", "sá", "do"];
+
+    private static readonly string[] _months =
+        ["enero", "febrero", "marzo", "abril", "mayo", "junio",
+         "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
+
+    private static readonly string[] _monthsShort =
+        ["ene", "feb", "mar", "abr", "may", "jun",
+         "jul", "ago", "sep", "oct", "nov", "dic"];
+
+    private enum Mode { Days, Years, Months }
+
+    private bool     _open;
+    private DateOnly _view;       // mes visible
+    private DateOnly _tmp;        // selección provisional (no se aplica hasta Aplicar)
+    private Mode     _mode = Mode.Days;
+    private int      _decade;
+    private int      _pickYear;
+
+    private static string MonthLabel(DateOnly m) => $"{_months[m.Month - 1]} {m.Year}";
+
+    void Toggle()
+    {
+        if (Disabled) return;
+        if (_open) { Cancel(); return; }
+
+        _tmp  = Value;
+        _view = new DateOnly(Value.Year, Value.Month, 1);
+        _mode = Mode.Days;
+        _open = true;
+    }
+
+    void Cancel() => _open = false;
+
+    async Task Apply()
+    {
+        _open = false;
+        if (_tmp != Value) await ValueChanged.InvokeAsync(_tmp);
+    }
+
+    void Today()
+    {
+        _tmp  = DateOnly.FromDateTime(DateTime.Today);
+        _view = new DateOnly(_tmp.Year, _tmp.Month, 1);
+        _mode = Mode.Days;
+    }
+
+    void Pick(DateOnly d) => _tmp = d;
+
+    void OpenYears()
+    {
+        _pickYear = _view.Year;
+        _decade   = _view.Year - (((_view.Year % 12) + 12) % 12);
+        _mode     = Mode.Years;
+    }
+
+    void PickYear(int y)
+    {
+        _pickYear = y;
+        _mode     = Mode.Months;
+    }
+
+    void PickMonth(int m)
+    {
+        _view = new DateOnly(_pickYear, m, 1);
+        _mode = Mode.Days;
+    }
+
+    string DayClass(DateOnly cur)
+    {
+        var cls = "sdp-day";
+        if (cur == _tmp) cls += " sdp-sel";
+        if (cur == DateOnly.FromDateTime(DateTime.Today)) cls += " sdp-today";
+        return cls;
+    }
+}

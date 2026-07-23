@@ -1,6 +1,8 @@
-@* StatusBadge.razor — copiado del Tester *@
-<span class="status-badge s-@Status">
-    <span class="status-dot"></span>@Status
+@* StatusBadge.razor — copiado del Tester
+   La clase CSS usa el valor CRUDO (s-Running, s-Verified…) para no perder el color;
+   el texto visible va traducido. Ver StatusText.cs. *@
+<span class="status-badge s-@Status" title="@Status">
+    <span class="status-dot"></span>@StatusText.Es(Status)
 </span>
 
 @code {

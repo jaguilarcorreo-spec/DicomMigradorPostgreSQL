@@ -86,7 +86,7 @@
         }
         else
         {
-            <span style="margin-left:auto;font-size:11px;color:var(--text-muted)">@_detail.Status</span>
+            <span style="margin-left:auto;font-size:11px;color:var(--text-muted)">@StatusText.Es(_detail.Status)</span>
         }
     </div>
 
@@ -128,7 +128,7 @@
             }
             else
             {
-                <span style="margin-left:auto;font-size:11px;color:var(--text-muted)">@_detail.CaptureStatus</span>
+                <span style="margin-left:auto;font-size:11px;color:var(--text-muted)">@StatusText.Es(_detail.CaptureStatus)</span>
             }
         </div>
     }
@@ -245,8 +245,12 @@
                 {
                     <div class="form-row">
                         <div class="form-group">
-                            <label class="form-label">Rango de fechas</label>
-                            <DateRangePicker @bind-Start="_eStart" @bind-End="_eEnd" />
+                            <label class="form-label">Fecha desde</label>
+                            <DatePicker @bind-Value="_eStart" />
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Fecha hasta</label>
+                            <DatePicker @bind-Value="_eEnd" />
                         </div>
                     </div>
                 }
@@ -529,8 +533,12 @@ else if (_showForm)
             {
                 <div class="form-row">
                     <div class="form-group">
-                        <label class="form-label">Rango de fechas *</label>
-                        <DateRangePicker @bind-Start="_fStart" @bind-End="_fEnd" />
+                        <label class="form-label">Fecha desde *</label>
+                        <DatePicker @bind-Value="_fStart" />
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Fecha hasta *</label>
+                        <DatePicker @bind-Value="_fEnd" />
                     </div>
                 </div>
                 <div class="form-row">
