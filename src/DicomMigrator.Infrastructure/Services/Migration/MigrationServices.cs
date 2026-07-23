@@ -529,6 +529,9 @@ public class VerificationService(
 
     public async Task StartVerificationAsync(int migrationId, CancellationToken ct = default)
     {
+        // Rearma el aviso de auto-pausa: si vuelve a caerse el destino, se registrará.
+        ConnBackoff.ResetPauseAnnouncement("VERIFY", migrationId);
+
         if (_verifyCts.TryGetValue(migrationId, out var existing))
         {
             if (!existing.IsCancellationRequested)
@@ -727,10 +730,13 @@ public class VerificationService(
                         // pausar pronto. La auto-reanudación lo retomará al volver la conexión.
                         if (connErrors >= ConnBackoff.AutoPauseThreshold)
                         {
-                            logger.LogError("Verificación: {N} errores de conexión consecutivos. " +
-                                "Pausando verificación de la migración {Id} (se reanudará sola).", connErrors, migrationId);
-                            await migR.UpdateVerificationStatusAsync(migrationId, "Paused");
-                            await migR.SetVerificationAutoPausedAsync(migrationId, true);
+                            if (ConnBackoff.TryAnnouncePause("VERIFY", migrationId))
+                            {
+                                logger.LogError("Verificación: {N} errores de conexión consecutivos. " +
+                                    "Pausando verificación de la migración {Id} (se reanudará sola).", connErrors, migrationId);
+                                await migR.UpdateVerificationStatusAsync(migrationId, "Paused");
+                                await migR.SetVerificationAutoPausedAsync(migrationId, true);
+                            }
                             // Cancelar el token compartido: detiene a los demás workers de
                             // inmediato y hace que el handler de finalización NO marque
                             // "Completed" (verá wasCancelled=true).
@@ -828,6 +834,8 @@ public class MigrationWorker(
 
     public async Task StartAsync(int migrationId, CancellationToken ct = default)
     {
+        ConnBackoff.ResetPauseAnnouncement("MIGRATE", migrationId);
+
         if (_cts.ContainsKey(migrationId))
         {
             logger.LogWarning("Migration {Id} already has active workers", migrationId);
@@ -955,11 +963,14 @@ public class MigrationWorker(
                     // El servicio de auto-reanudación lo retomará cuando vuelva la conexión.
                     if (connErrors >= ConnBackoff.AutoPauseThreshold)
                     {
-                        logger.LogError("Migración: {N} errores de conexión consecutivos. " +
-                            "Pausando migración {Id} (se reanudará sola al recuperarse la conexión).",
-                            connErrors, migration.Id);
-                        await MigrationRepo(scope).UpdateStatusAsync(migration.Id, "Paused");
-                        await MigrationRepo(scope).SetMigrationAutoPausedAsync(migration.Id, true);
+                        if (ConnBackoff.TryAnnouncePause("MIGRATE", migration.Id))
+                        {
+                            logger.LogError("Migración: {N} errores de conexión consecutivos. " +
+                                "Pausando migración {Id} (se reanudará sola al recuperarse la conexión).",
+                                connErrors, migration.Id);
+                            await MigrationRepo(scope).UpdateStatusAsync(migration.Id, "Paused");
+                            await MigrationRepo(scope).SetMigrationAutoPausedAsync(migration.Id, true);
+                        }
                         // Cancelar el token compartido: detiene a los demás workers de
                         // inmediato (no esperan a llegar cada uno al umbral) y hace que el
                         // handler de finalización NO marque "Completed" (wasCancelled=true).
@@ -1302,6 +1313,22 @@ internal static class ConnBackoff
     /// <summary>Short fixed wait between connection errors while counting toward the
     /// auto-pause threshold. Fixed (not exponential) so reaching the threshold is fast.</summary>
     public static readonly TimeSpan PrePauseWait = TimeSpan.FromSeconds(10);
+
+    // El contador de errores es POR WORKER, así que varios pueden cruzar el umbral
+    // en el mismo instante y cada uno anunciaría la pausa: en el log aparecía seis
+    // veces algo que ocurrió una. Este guardián deja pasar solo al primero.
+    // TryAdd es atómico, así que no hay carrera aunque lleguen simultáneamente.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _pauseAnnounced = new();
+
+    /// <summary>Devuelve true solo para el primer worker que alcanza el umbral.
+    /// Los demás cancelan y salen en silencio.</summary>
+    public static bool TryAnnouncePause(string process, int migrationId)
+        => _pauseAnnounced.TryAdd($"{process}:{migrationId}", 0);
+
+    /// <summary>Rearma el aviso. Se llama al (re)arrancar el proceso, para que una
+    /// pausa posterior vuelva a registrarse.</summary>
+    public static void ResetPauseAnnouncement(string process, int migrationId)
+        => _pauseAnnounced.TryRemove($"{process}:{migrationId}", out _);
 
     /// <summary>Exponential backoff for consecutive connection errors: 10s, 20s,
     /// 40s, 80s... capped at 5 minutes. consecutiveErrors starts at 1.</summary>
