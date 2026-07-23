@@ -227,6 +227,11 @@ public class DiscoveryService(
             int uidCol = Array.IndexOf(cols, "studyinstanceuid");
             int pidCol = Array.IndexOf(cols, "patientid");
             int dateCol = Array.IndexOf(cols, "studydate");
+            // Conteos de origen: si el CSV los trae, la verificación podrá comparar de
+            // verdad en vez de limitarse a comprobar que el estudio existe en destino.
+            // Se aceptan los nombres del propio export y los del estándar DICOM.
+            int seriesCol = FirstIndexOf(cols, "series", "numberofstudyrelatedseries", "srcseries");
+            int instCol   = FirstIndexOf(cols, "instances", "numberofstudyrelatedinstances", "srcinstances");
 
             if (uidCol < 0) { result.Errors.Add("Columna StudyInstanceUID requerida"); return result; }
 
@@ -255,6 +260,8 @@ public class DiscoveryService(
                     StudyInstanceUid = uid,
                     PatientId  = pidCol  >= 0 && parts.Length > pidCol  ? parts[pidCol].Trim('"', ' ')  : null,
                     StudyDate  = dateCol >= 0 && parts.Length > dateCol ? parts[dateCol].Trim('"', ' ') : null,
+                    SourceSeriesCount   = ParseCount(parts, seriesCol),
+                    SourceInstanceCount = ParseCount(parts, instCol),
                     MigrationStatus = "Pending",
                 });
             }
@@ -274,6 +281,28 @@ public class DiscoveryService(
             result.Errors.Add(ex.Message);
         }
         return result;
+    }
+
+    /// <summary>Primer índice que coincida con alguno de los nombres de columna dados
+    /// (el CSV puede venir del propio export o de una herramienta externa).</summary>
+    private static int FirstIndexOf(string[] cols, params string[] names)
+    {
+        foreach (var n in names)
+        {
+            var i = Array.IndexOf(cols, n);
+            if (i >= 0) return i;
+        }
+        return -1;
+    }
+
+    /// <summary>Lee un conteo entero de la columna indicada. Devuelve null si la columna
+    /// no existe, está fuera de rango o no es un número: null significa "desconocido",
+    /// que es justo lo que la verificación necesita distinguir de un cero real.</summary>
+    private static int? ParseCount(string[] parts, int col)
+    {
+        if (col < 0 || parts.Length <= col) return null;
+        var raw = parts[col].Trim('"', ' ');
+        return int.TryParse(raw, out var v) && v >= 0 ? v : null;
     }
 
     private static string[] ParseCsvLine(string line)
@@ -465,6 +494,15 @@ public class VerificationService(
                 result.ConnectionError = true;   // tratar como fallo de operación → reintento
             }
         }
+
+        // Qué comprobación se aplicó realmente. Es el dato que hace honesto el
+        // "Verified": sin él, un estudio sin conteos de origen conocidos aprueba
+        // por la tolerancia de más abajo sin haberse comparado nada.
+        result.VerifiedBy = result.Level2Checked
+            ? "UidSet"
+            : (study.SourceSeriesCount is not null || study.SourceInstanceCount is not null)
+                ? "Counts"
+                : "ExistenceOnly";
 
         return result;
     }
@@ -701,7 +739,8 @@ public class VerificationService(
                             ? $"Faltan {result.MissingCount} UIDs en destino"
                             : "Conteos no coinciden")),
                         result.MissingCount, result.ExtraCount,
-                        result.MissingUids.Count > 0 ? string.Join("\n", result.MissingUids) : null);
+                        result.MissingUids.Count > 0 ? string.Join("\n", result.MissingUids) : null,
+                        result.VerifiedBy);
 
                     await auditR.AddAsync(new MigrationAuditLog
                     {

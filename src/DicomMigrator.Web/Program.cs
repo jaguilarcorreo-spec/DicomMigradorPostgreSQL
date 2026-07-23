@@ -338,7 +338,7 @@ try
         await writer.WriteLineAsync(
             "StudyInstanceUID,PatientID,AccessionNumber,StudyDate,Modality,Status," +
             "SrcSeries,SrcInstances,TgtSeries,TgtInstances,MigRetries,VerifyRetries," +
-            "VerifyMissing,VerifyExtra,LastError," +
+            "VerifyMissing,VerifyExtra,VerifiedBy,LastError," +
             "DiscoveryDate,MigrationDate,VerificationDate");
 
         int flushEvery = 0;
@@ -351,7 +351,8 @@ try
                 s.SourceSeriesCount?.ToString() ?? "", s.SourceInstanceCount?.ToString() ?? "",
                 s.TargetSeriesCount?.ToString() ?? "", s.TargetInstanceCount?.ToString() ?? "",
                 s.RetryCount.ToString(), s.VerifyRetryCount.ToString(),
-                s.VerifyMissingCount.ToString(), s.VerifyExtraCount.ToString(), CsvField(s.LastError),
+                s.VerifyMissingCount.ToString(), s.VerifyExtraCount.ToString(),
+                CsvField(s.VerifiedBy), CsvField(s.LastError),
                 s.DiscoveryDate.ToString("yyyy-MM-dd HH:mm:ss"),
                 s.MigrationDate?.ToString("yyyy-MM-dd HH:mm:ss") ?? "",
                 s.VerificationDate?.ToString("yyyy-MM-dd HH:mm:ss") ?? "",

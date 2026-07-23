@@ -220,6 +220,8 @@ public class VerificationResult
     public bool    ConnectionError       { get; set; }
     // ── Nivel 2 (comparación de conjuntos de UIDs) ──
     public bool    Level2Checked         { get; set; }
+    /// <summary>Comprobación realmente aplicada: UidSet | Counts | ExistenceOnly.</summary>
+    public string? VerifiedBy            { get; set; }
     public int     SourceUidCount        { get; set; }
     public int     DestUidCount          { get; set; }
     public int     MissingCount          { get; set; }

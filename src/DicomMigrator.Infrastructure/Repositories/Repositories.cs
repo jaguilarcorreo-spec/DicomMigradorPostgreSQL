@@ -596,7 +596,8 @@ WHERE ms.""MigrationId"" = {migrationId}
 
     public async Task CompleteVerificationAsync(long id, bool success, int maxRetries,
         int? targetSeries, int? targetInstances, string? error = null,
-        int missingCount = 0, int extraCount = 0, string? missingUids = null)
+        int missingCount = 0, int extraCount = 0, string? missingUids = null,
+        string? verifiedBy = null)
     {
         await using var db = factory.CreateDbContext();
         await db.MigrationStudies
@@ -615,6 +616,7 @@ WHERE ms.""MigrationId"" = {migrationId}
                 .SetProperty(s => s.VerifyMissingCount, missingCount)
                 .SetProperty(s => s.VerifyExtraCount, extraCount)
                 .SetProperty(s => s.VerifyMissingUids, missingUids)
+                .SetProperty(s => s.VerifiedBy, verifiedBy)
                 .SetProperty(s => s.VerifyLockedByWorker, (string?)null)
                 .SetProperty(s => s.VerifyLockDate, (DateTime?)null)
                 .SetProperty(s => s.VerificationDate, success ? (DateTime?)DateTime.UtcNow : null)

@@ -590,6 +590,12 @@
                                     </td>
                                     <td>
                                         <StatusBadge Status="@s.MigrationStatus" />
+                                        @if (s.MigrationStatus == "Verified" && s.VerifiedBy is not null)
+                                        {
+                                            <span style="margin-left:5px;font-size:9px;padding:1px 5px;border-radius:3px;
+                                                         vertical-align:middle;@VerifiedByStyle(s.VerifiedBy)"
+                                                  title="@VerifiedByTitle(s.VerifiedBy)">@VerifiedByLabel(s.VerifiedBy)</span>
+                                        }
                                         @if (s.VerifyMissingCount > 0)
                                         {
                                             <div style="margin-top:3px">
@@ -984,6 +990,32 @@ else
     private MigrationStats?     _stats;
     private bool                _migHasN2;   // solo lectura: la migración incluye UIDs Nivel 2 (viene del descubridor)
     private MigrationStudy?     _missingReport;   // estudio cuyo informe de faltantes se muestra
+
+    // ── Nivel de verificación realmente aplicado (honestidad del "Verified") ──
+    static string VerifiedByLabel(string? v) => v switch
+    {
+        "UidSet"        => "UID",
+        "Counts"        => "N.º",
+        "ExistenceOnly" => "solo existe",
+        _               => "?",
+    };
+
+    static string VerifiedByStyle(string? v) => v switch
+    {
+        "UidSet"        => "background:rgba(167,139,250,0.14);color:var(--purple)",
+        "Counts"        => "background:rgba(148,163,184,0.12);color:var(--text-dim)",
+        "ExistenceOnly" => "background:rgba(245,158,11,0.14);color:var(--yellow)",
+        _               => "background:rgba(148,163,184,0.12);color:var(--text-dim)",
+    };
+
+    static string VerifiedByTitle(string? v) => v switch
+    {
+        "UidSet"        => "Verificado por comparación de conjuntos de SOPInstanceUID (Nivel 2).",
+        "Counts"        => "Verificado por coincidencia de conteos de series/instancias (Nivel 1).",
+        "ExistenceOnly" => "ATENCIÓN: no se conocía ningún conteo de origen. Solo se ha confirmado "
+                         + "que el estudio existe en destino; no se ha comprobado que esté completo.",
+        _               => "Nivel de verificación desconocido.",
+    };
     private string _actionMsg = "";
     private bool _actionOk, _actionBusy;
     private string _detailTab = "dashboard";

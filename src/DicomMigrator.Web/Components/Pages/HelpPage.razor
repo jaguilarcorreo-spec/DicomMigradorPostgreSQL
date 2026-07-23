@@ -267,6 +267,29 @@
         </p>
     </HelpSection>
 
+    <HelpSection Title="Qué comprobación se aplicó realmente (columna VerifiedBy)" Color="var(--yellow)">
+        <p style="margin:0 0 10px 0;color:var(--text-dim);font-size:13px;line-height:1.6">
+            Un estudio marcado <strong>Verificado</strong> no siempre se ha comprobado con la misma profundidad.
+            Junto al estado aparece una etiqueta que dice <strong>qué se comprobó de verdad</strong>:
+        </p>
+        <ul style="margin:0 0 10px 0;padding-left:20px;color:var(--text-dim);font-size:13px;line-height:1.8">
+            <li><strong style="color:var(--purple)">UID</strong> — se compararon los conjuntos de <code>SOPInstanceUID</code> (Nivel 2). Es la comprobación más fuerte.</li>
+            <li><strong>N.º</strong> — se compararon los conteos de series/instancias contra el origen (Nivel 1).</li>
+            <li><strong style="color:var(--yellow)">solo existe</strong> — <strong>no se conocía ningún conteo de origen</strong>: únicamente se confirmó que el estudio está en el destino. No se ha comprobado que esté completo.</li>
+        </ul>
+        <p style="margin:0 0 10px 0;color:var(--text-dim);font-size:13px;line-height:1.6">
+            El tercer caso ocurre cuando el PACS de origen no devuelve <code>(0020,1206)</code> /
+            <code>(0020,1208)</code>, o cuando la migración se importó de un CSV sin columnas de conteo.
+            La verificación no lo hace fallar —sería inservible contra esos PACS—, pero <strong>queda
+            registrado</strong> para que la auditoría pueda distinguirlo.
+        </p>
+        <p style="margin:0;color:var(--text-dim);font-size:13px;line-height:1.6">
+            El valor se exporta en el CSV de estudios (columna <code>VerifiedBy</code>), así que se puede
+            responder con exactitud cuántos estudios se verificaron de verdad y cuántos solo se confirmó
+            que existían.
+        </p>
+    </HelpSection>
+
     <HelpSection Title="Auto-pausa por errores de conexión y auto-reanudación" Color="var(--yellow)">
         <p style="margin:0 0 10px 0;color:var(--text-dim);font-size:13px;line-height:1.6">
             El sistema distingue entre un <strong>error de conexión transitorio</strong> (el PACS se cae o la red falla) y un

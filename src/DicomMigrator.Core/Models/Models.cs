@@ -198,6 +198,15 @@ public class MigrationStudy
     public int      VerifyExtraCount     { get; set; } = 0;
     public string?  VerifyMissingUids    { get; set; }
 
+    /// <summary>Qué comprobación se aplicó REALMENTE al verificar este estudio:
+    /// <c>UidSet</c> (comparación de conjuntos de SOPInstanceUID · la más fuerte),
+    /// <c>Counts</c> (se comparó al menos un conteo de origen contra el destino),
+    /// <c>ExistenceOnly</c> (no se conocía ningún conteo de origen: solo se confirmó
+    /// que el estudio existe en destino).
+    /// Sin esto, "Verified" significa dos cosas distintas y la auditoría no puede
+    /// distinguirlas. No es un estado: convive con MigrationStatus sin alterarlo.</summary>
+    public string?  VerifiedBy           { get; set; }
+
     public DateTime  DiscoveryDate     { get; set; } = DateTime.UtcNow;
     public DateTime? MigrationDate       { get; set; }
     public DateTime? MigrationStartDate  { get; set; }  // cuando el worker adquirió el estudio
