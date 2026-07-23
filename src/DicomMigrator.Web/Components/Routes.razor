@@ -1,5 +1,11 @@
 <Router AppAssembly="typeof(App).Assembly">
     <Found Context="routeData">
-        <RouteView RouteData="routeData" DefaultLayout="typeof(Layout.MainLayout)" />
+        @* AuthorizeRouteView respeta el [Authorize] de Pages/_Imports.razor:
+           si no hay sesión, se redirige al login en vez de renderizar la página. *@
+        <AuthorizeRouteView RouteData="routeData" DefaultLayout="typeof(Layout.MainLayout)">
+            <NotAuthorized>
+                <RedirectToLogin />
+            </NotAuthorized>
+        </AuthorizeRouteView>
     </Found>
 </Router>

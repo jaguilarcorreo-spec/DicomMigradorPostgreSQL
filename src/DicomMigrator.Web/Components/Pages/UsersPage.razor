@@ -1,0 +1,264 @@
+@page "/usuarios"
+@attribute [Authorize(Roles = AppRoles.Administrador)]
+@rendermode InteractiveServer
+
+@using DicomMigrator.Web.Services
+@inject IUserRepository UserRepo
+@inject UserAuthService Auth
+
+<PageTitle>Usuarios — MOVE</PageTitle>
+
+<div class="page-header">
+    <h1 class="page-title">Usuarios</h1>
+    @if (!_creating)
+    {
+        <button class="btn btn-primary btn-sm" style="margin-left:auto" @onclick="BeginCreate">+ Nuevo usuario</button>
+    }
+</div>
+
+@if (!string.IsNullOrEmpty(_msg))
+{
+    <div class="@(_ok ? "alert-success" : "alert-error")">@_msg</div>
+}
+
+@* ── Alta / edición ── *@
+@if (_creating || _editing is not null)
+{
+    <div class="card mb2" style="border-color:rgba(0,180,216,0.3)">
+        <div class="card-header">
+            <span class="card-title">@(_creating ? "Nuevo usuario" : $"Editar '{_editing!.UserName}'")</span>
+        </div>
+        <div class="card-body" style="display:flex;flex-direction:column;gap:14px;max-width:620px">
+
+            <div class="form-row">
+                <div class="form-group">
+                    <label class="form-label">Usuario *</label>
+                    <input class="form-input mono" @bind="_fUserName" disabled="@(!_creating)" />
+                    @if (!_creating)
+                    {
+                        <div style="font-size:11px;color:var(--text-muted);margin-top:3px">
+                            El nombre de acceso no se puede cambiar: la auditoría histórica lo referencia.
+                        </div>
+                    }
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Nombre visible</label>
+                    <input class="form-input" @bind="_fDisplayName" />
+                </div>
+            </div>
+
+            <div class="form-row">
+                <div class="form-group">
+                    <label class="form-label">Rol *</label>
+                    <select class="form-input" @bind="_fRole">
+                        @foreach (var r in AppRoles.All)
+                        {
+                            <option value="@r">@r</option>
+                        }
+                    </select>
+                    <div style="font-size:11px;color:var(--text-muted);margin-top:3px">@RoleHelp(_fRole)</div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">@(_creating ? "Contraseña inicial *" : "Nueva contraseña (opcional)")</label>
+                    <input class="form-input" type="password" @bind="_fPassword" />
+                    <div style="font-size:11px;color:var(--text-muted);margin-top:3px">
+                        Mínimo 8 caracteres. @(_creating ? "" : "Déjalo vacío para no cambiarla.")
+                    </div>
+                </div>
+            </div>
+
+            <div style="display:flex;align-items:center;gap:18px;flex-wrap:wrap">
+                <label style="display:flex;align-items:center;gap:7px;cursor:pointer;font-size:12px">
+                    <input type="checkbox" @bind="_fMustChange" />
+                    Debe cambiar la contraseña al entrar
+                </label>
+                @if (!_creating)
+                {
+                    <label style="display:flex;align-items:center;gap:7px;cursor:pointer;font-size:12px">
+                        <input type="checkbox" @bind="_fIsActive" />
+                        Cuenta activa
+                    </label>
+                }
+            </div>
+
+            <div style="display:flex;gap:8px">
+                <button class="btn btn-sm" @onclick="CancelEdit" disabled="@_busy">Cancelar</button>
+                <button class="btn btn-primary btn-sm" @onclick="SaveAsync" disabled="@_busy">💾 Guardar</button>
+            </div>
+        </div>
+    </div>
+}
+
+@* ── Listado ── *@
+<div class="card">
+    <div class="card-header">
+        <span class="card-title">Usuarios (@_users.Count)</span>
+    </div>
+    <div class="card-body" style="overflow-x:auto;padding:0">
+        <table class="data-table" style="width:100%">
+            <thead>
+                <tr>
+                    <th>Usuario</th>
+                    <th>Nombre visible</th>
+                    <th>Rol</th>
+                    <th>Estado</th>
+                    <th>Último acceso</th>
+                    <th style="text-align:right">Acciones</th>
+                </tr>
+            </thead>
+            <tbody>
+                @if (_users.Count == 0)
+                {
+                    <tr>
+                        <td colspan="6" class="text-dim" style="text-align:center;padding:22px">
+                            No hay usuarios dados de alta.
+                        </td>
+                    </tr>
+                }
+                @foreach (var u in _users)
+                {
+                    <tr>
+                        <td class="mono" style="color:var(--text)">@u.UserName</td>
+                        <td class="small">@(string.IsNullOrEmpty(u.DisplayName) ? "—" : u.DisplayName)</td>
+                        <td><span class="tag mono">@u.Role</span></td>
+                        <td>
+                            @{
+                                var (txt, col) = UserState(u);
+                            }
+                            <span style="font-size:11px;color:@col">@txt</span>
+                        </td>
+                        <td class="mono small text-dim">
+                            @(u.LastLoginDate?.ToLocalTime().ToString("yyyy-MM-dd HH:mm") ?? "—")
+                        </td>
+                        <td style="text-align:right;white-space:nowrap">
+                            @if (u.LockedUntil is { } l && l > DateTime.UtcNow)
+                            {
+                                <button class="btn btn-ghost btn-sm" @onclick="() => UnlockAsync(u)"
+                                        disabled="@_busy" title="Liberar el bloqueo por intentos fallidos">🔓 Desbloquear</button>
+                            }
+                            <button class="btn btn-ghost btn-sm" @onclick="() => BeginEdit(u)"
+                                    disabled="@_busy" title="Editar usuario">✎ Editar</button>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+</div>
+
+@code {
+    private List<AppUser> _users = [];
+    private bool _creating, _busy, _ok;
+    private AppUser? _editing;
+    private string _msg = "";
+
+    private string  _fUserName = "", _fDisplayName = "", _fRole = AppRoles.Consulta, _fPassword = "";
+    private bool    _fMustChange = true, _fIsActive = true;
+
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+
+    async Task LoadAsync() => _users = await UserRepo.GetAllAsync();
+
+    /// <summary>Texto y color del estado, en el orden de prioridad con que importa:
+    /// desactivado &gt; bloqueado &gt; cambio pendiente &gt; activo.</summary>
+    static (string Text, string Color) UserState(AppUser u)
+    {
+        if (!u.IsActive)                                              return ("Desactivado", "var(--text-muted)");
+        if (u.LockedUntil is { } lu && lu > DateTime.UtcNow)           return ("Bloqueado", "var(--yellow)");
+        if (u.MustChangePassword)                                     return ("Cambio pendiente", "var(--yellow)");
+        return ("Activo", "var(--green)");
+    }
+
+    static string RoleHelp(string role) => role switch
+    {
+        AppRoles.Administrador => "Todo, incluida la gestión de nodos, borrados y usuarios.",
+        AppRoles.Operador      => "Lanzar descubrimientos, migraciones y verificaciones. No puede borrar ni tocar nodos.",
+        _                      => "Solo lectura: consultar y exportar. No puede modificar nada.",
+    };
+
+    void BeginCreate()
+    {
+        _creating = true; _editing = null; _msg = "";
+        _fUserName = ""; _fDisplayName = ""; _fRole = AppRoles.Consulta;
+        _fPassword = ""; _fMustChange = true; _fIsActive = true;
+    }
+
+    void BeginEdit(AppUser u)
+    {
+        _creating = false; _editing = u; _msg = "";
+        _fUserName = u.UserName; _fDisplayName = u.DisplayName ?? ""; _fRole = u.Role;
+        _fPassword = ""; _fMustChange = u.MustChangePassword; _fIsActive = u.IsActive;
+    }
+
+    void CancelEdit() { _creating = false; _editing = null; _msg = ""; }
+
+    void Show(string m, bool ok) { _msg = m; _ok = ok; }
+
+    async Task SaveAsync()
+    {
+        _busy = true;
+        try
+        {
+            if (_creating)
+            {
+                var name = _fUserName.Trim().ToLowerInvariant();
+                if (string.IsNullOrWhiteSpace(name)) { Show("El nombre de usuario es obligatorio.", false); return; }
+                if (_fPassword.Length < 8)           { Show("La contraseña debe tener al menos 8 caracteres.", false); return; }
+                if (await UserRepo.GetByUserNameAsync(name) is not null)
+                {
+                    Show($"Ya existe un usuario llamado '{name}'.", false); return;
+                }
+
+                var u = new AppUser
+                {
+                    UserName           = name,
+                    DisplayName        = string.IsNullOrWhiteSpace(_fDisplayName) ? null : _fDisplayName.Trim(),
+                    Role               = _fRole,
+                    IsActive           = true,
+                    MustChangePassword = _fMustChange,
+                };
+                u.PasswordHash = Auth.Hash(u, _fPassword);
+                await UserRepo.AddAsync(u);
+                Show($"Usuario '{name}' creado.", true);
+            }
+            else if (_editing is not null)
+            {
+                _editing.DisplayName        = string.IsNullOrWhiteSpace(_fDisplayName) ? null : _fDisplayName.Trim();
+                _editing.Role               = _fRole;
+                _editing.IsActive           = _fIsActive;
+                _editing.MustChangePassword = _fMustChange;
+
+                if (!string.IsNullOrEmpty(_fPassword))
+                {
+                    if (_fPassword.Length < 8) { Show("La contraseña debe tener al menos 8 caracteres.", false); return; }
+                    _editing.PasswordHash = Auth.Hash(_editing, _fPassword);
+                    // Al resetear la contraseña se libera cualquier bloqueo previo.
+                    _editing.FailedAttempts = 0;
+                    _editing.LockedUntil    = null;
+                }
+
+                await UserRepo.UpdateAsync(_editing);
+                Show($"Usuario '{_editing.UserName}' actualizado.", true);
+            }
+
+            _creating = false; _editing = null;
+            await LoadAsync();
+        }
+        catch (Exception ex) { Show($"Error: {ex.Message}", false); }
+        finally { _busy = false; }
+    }
+
+    async Task UnlockAsync(AppUser u)
+    {
+        _busy = true;
+        try
+        {
+            u.LockedUntil = null; u.FailedAttempts = 0;
+            await UserRepo.UpdateAsync(u);
+            Show($"Usuario '{u.UserName}' desbloqueado.", true);
+            await LoadAsync();
+        }
+        catch (Exception ex) { Show($"Error: {ex.Message}", false); }
+        finally { _busy = false; }
+    }
+}

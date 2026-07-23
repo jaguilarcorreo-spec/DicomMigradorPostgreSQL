@@ -1,4 +1,5 @@
 @page "/nodos"
+@attribute [Authorize(Roles = AppRoles.Administrador)]
 @rendermode InteractiveServer
 @inject INodeRepository NodeRepo
 @inject IMigrationRepository MigrationRepo

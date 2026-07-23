@@ -12,6 +12,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<MigrationStudy>    MigrationStudies => Set<MigrationStudy>();
     public DbSet<MigrationInstance> MigrationInstances => Set<MigrationInstance>();
     public DbSet<MigrationAuditLog> AuditLogs        => Set<MigrationAuditLog>();
+    public DbSet<AppUser>           AppUsers         => Set<AppUser>();
     public DbSet<LocalConfiguration> LocalConfigurations => Set<LocalConfiguration>();
 
     // ── Discovery Engine (RF-020) ──────────────────────────────────────────────
@@ -127,6 +128,18 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
         });
 
         // ── MigrationAuditLog ────────────────────────────────────────────────
+        mb.Entity<AppUser>(e =>
+        {
+            e.HasKey(x => x.Id);
+            e.Property(x => x.UserName).IsRequired().HasMaxLength(64);
+            e.Property(x => x.DisplayName).HasMaxLength(120);
+            e.Property(x => x.PasswordHash).IsRequired().HasMaxLength(256);
+            e.Property(x => x.Role).IsRequired().HasMaxLength(20);
+            // El nombre se guarda ya normalizado en minúsculas, así que el índice
+            // único basta para impedir duplicados por diferencias de mayúsculas.
+            e.HasIndex(x => x.UserName).IsUnique();
+        });
+
         mb.Entity<MigrationAuditLog>(e =>
         {
             e.HasKey(x => x.Id);

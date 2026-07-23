@@ -1,4 +1,5 @@
 @inherits LayoutComponentBase
+@inject AuthenticationStateProvider AuthState
 @inject ILocalConfigRepository ConfigRepo
 @inject NavigationManager Nav
 @implements IDisposable
@@ -24,9 +25,11 @@
             <NavLink class="nav-item" href="/discovery">
                 <span class="nav-icon">🔍</span> Discovery Engine
             </NavLink>
-            <NavLink class="nav-item" href="/nodos">
+            <AuthorizeView Roles="@AppRoles.Administrador" Context="adm">
+                <NavLink class="nav-item" href="/nodos">
                 <span class="nav-icon">⊞</span> Nodos DICOM
             </NavLink>
+            </AuthorizeView>
             <NavLink class="nav-item" href="/diagnostico">
                 <span class="nav-icon">🔬</span> Diagnóstico
             </NavLink>
@@ -37,9 +40,14 @@
             <NavLink class="nav-item" href="/logs">
                 <span class="nav-icon">⌨</span> Logs y auditoría
             </NavLink>
-            <NavLink class="nav-item" href="/localconfig">
-                <span class="nav-icon">⚙</span> Config. local SCU
-            </NavLink>
+            <AuthorizeView Roles="@AppRoles.Administrador" Context="adm2">
+                <NavLink class="nav-item" href="/localconfig">
+                    <span class="nav-icon">⚙</span> Config. local SCU
+                </NavLink>
+                <NavLink class="nav-item" href="/usuarios">
+                    <span class="nav-icon">👤</span> Usuarios
+                </NavLink>
+            </AuthorizeView>
             <NavLink class="nav-item" href="/ayuda">
                 <span class="nav-icon">?</span> Ayuda
             </NavLink>
@@ -47,6 +55,39 @@
                 <span class="nav-icon">ℹ</span> Acerca de
             </NavLink>
         </div>
+
+        <AuthorizeView>
+            <Authorized>
+                <div style="padding:10px 14px;border-top:1px solid var(--border);
+                            display:flex;align-items:center;gap:8px">
+                    <span style="width:26px;height:26px;border-radius:50%;flex-shrink:0;
+                                 background:rgba(167,139,250,.15);color:var(--purple);
+                                 display:flex;align-items:center;justify-content:center;
+                                 font-size:11px;font-weight:700">
+                        @(Initials(context.User))
+                    </span>
+                    <span style="min-width:0;line-height:1.25">
+                        <span style="display:block;font-size:11.5px;color:var(--text);
+                                     overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+                            @DisplayName(context.User)
+                        </span>
+                        <span style="display:block;font-size:9.5px;color:var(--text-muted)">
+                            @RoleOf(context.User)
+                        </span>
+                    </span>
+                    @* POST y no enlace: cerrar sesión modifica estado, y así queda
+                       protegido por el antiforgery. *@
+                    <form method="post" action="/logout" style="margin-left:auto">
+                        <AntiforgeryToken />
+                        <button type="submit" title="Cerrar sesión"
+                                style="background:none;border:1px solid var(--border);color:var(--text-dim);
+                                       border-radius:5px;width:26px;height:26px;cursor:pointer;font-size:12px">
+                            ⏻
+                        </button>
+                    </form>
+                </div>
+            </Authorized>
+        </AuthorizeView>
 
         <div class="sidebar-footer">
             fo-dicom v5.2 · .NET 9<br />
@@ -65,6 +106,16 @@
 
     protected override async Task OnInitializedAsync()
     {
+        // Contraseña pendiente de cambio: no se puede usar la aplicación hasta hacerlo.
+        // Comprobarlo aquí (y no solo al entrar) cierra la vía de navegar a mano a otra URL.
+        var auth = await AuthState.GetAuthenticationStateAsync();
+        if (auth.User.HasClaim("must_change_pwd", "1")
+            && !Nav.Uri.Contains("/cambiar-password", StringComparison.OrdinalIgnoreCase))
+        {
+            Nav.NavigateTo("/cambiar-password", forceLoad: true);
+            return;
+        }
+
         await LoadConfig();
         Nav.LocationChanged += OnLocationChanged;
     }
@@ -73,6 +124,25 @@
     {
         await LoadConfig();
         await InvokeAsync(StateHasChanged);
+    }
+
+    // ── Identidad mostrada en el pie de la barra lateral ──
+    static string DisplayName(System.Security.Claims.ClaimsPrincipal u)
+        => u.FindFirst("display_name")?.Value
+           ?? u.Identity?.Name
+           ?? "usuario";
+
+    static string RoleOf(System.Security.Claims.ClaimsPrincipal u)
+        => u.FindFirst(System.Security.Claims.ClaimTypes.Role)?.Value ?? "";
+
+    static string Initials(System.Security.Claims.ClaimsPrincipal u)
+    {
+        var name = DisplayName(u).Trim();
+        if (string.IsNullOrEmpty(name)) return "?";
+        var parts = name.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        return parts.Length >= 2
+            ? $"{char.ToUpperInvariant(parts[0][0])}{char.ToUpperInvariant(parts[1][0])}"
+            : char.ToUpperInvariant(name[0]).ToString();
     }
 
     async Task LoadConfig()

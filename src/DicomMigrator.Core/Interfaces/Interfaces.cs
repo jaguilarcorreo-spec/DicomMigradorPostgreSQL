@@ -180,6 +180,18 @@ public interface ILocalConfigRepository
 }
 
 // ── Discovery Engine (RF-020) ───────────────────────────────────────────────
+/// <summary>Usuarios locales de la aplicación (autenticación).</summary>
+public interface IUserRepository
+{
+    Task<AppUser?> GetByUserNameAsync(string userName);
+    Task<AppUser?> GetByIdAsync(int id);
+    Task<List<AppUser>> GetAllAsync();
+    Task<AppUser> AddAsync(AppUser user);
+    Task UpdateAsync(AppUser user);
+    /// <summary>Nº de usuarios dados de alta. Se usa para sembrar el primer administrador.</summary>
+    Task<int> CountAsync();
+}
+
 public interface IDiscoveryJobRepository
 {
     Task<List<DiscoveryJob>> GetAllAsync();

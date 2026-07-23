@@ -1,0 +1,158 @@
+@page "/login"
+@layout DicomMigrator.Web.Components.Layout.BareLayout
+@attribute [AllowAnonymous]
+
+@* ════════════════════════════════════════════════════════════════════════════
+   IMPORTANTE: esta página NO lleva @rendermode a propósito.
+
+   Se renderiza de forma ESTÁTICA en el servidor porque un componente Blazor
+   interactivo no puede escribir la cookie de sesión: cuando el circuito SignalR
+   está vivo ya no hay una respuesta HTTP donde ponerla. Con render estático el
+   formulario llega como POST normal y SignInAsync funciona.
+   ════════════════════════════════════════════════════════════════════════════ *@
+
+@using System.Security.Claims
+@using Microsoft.AspNetCore.Authentication
+@using Microsoft.AspNetCore.Authentication.Cookies
+@using DicomMigrator.Web.Services
+@inject UserAuthService Auth
+@inject NavigationManager Nav
+
+<PageTitle>Acceso — MOVE</PageTitle>
+
+<style>
+    .lg-wrap {
+        min-height: 100vh; display: flex; align-items: center; justify-content: center;
+        padding: 24px; background: var(--bg);
+    }
+    .lg-card {
+        width: 100%; max-width: 380px; background: var(--panel);
+        border: 1px solid var(--border); border-radius: var(--r2); padding: 30px 28px;
+        box-shadow: 0 18px 40px rgba(0,0,0,.45);
+    }
+    .lg-brand  { display: flex; justify-content: center; margin-bottom: 26px; }
+    .lg-title  { font-size: 13px; color: var(--text-dim); text-align: center; margin: 0 0 18px; }
+    .lg-group  { margin-bottom: 14px; }
+    .lg-label  { display: block; font-size: 12px; color: var(--text-dim); margin-bottom: 6px; }
+    .lg-input  {
+        width: 100%; background: var(--bg); border: 1px solid var(--border);
+        border-radius: var(--r); color: var(--text); padding: 9px 11px;
+        font-size: 13px; outline: none; font-family: var(--font-ui);
+    }
+    .lg-input:focus { border-color: var(--purple); box-shadow: 0 0 0 3px rgba(167,139,250,.12); }
+    .lg-btn {
+        width: 100%; margin-top: 6px; padding: 10px; font-size: 13px; font-weight: 600;
+        background: var(--accent2); border: 1px solid var(--accent2); color: #fff;
+        border-radius: var(--r); cursor: pointer; font-family: var(--font-ui);
+    }
+    .lg-btn:hover { background: var(--accent); border-color: var(--accent); }
+    .lg-alert {
+        background: rgba(239,68,68,.08); border: 1px solid rgba(239,68,68,.3);
+        color: #fca5a5; border-radius: var(--r); padding: 9px 11px;
+        font-size: 12px; margin-bottom: 14px; line-height: 1.5;
+    }
+    .lg-warn {
+        background: rgba(245,158,11,.08); border: 1px solid rgba(245,158,11,.3);
+        color: #fcd34d; border-radius: var(--r); padding: 9px 11px;
+        font-size: 11.5px; margin-bottom: 14px; line-height: 1.5;
+    }
+    .lg-foot { margin-top: 20px; text-align: center; font-size: 10.5px; color: var(--text-muted); }
+</style>
+
+<div class="lg-wrap">
+    <div class="lg-card">
+
+        <div class="lg-brand">
+            <MoveLogo Variant="stacked" Size="30" Color="var(--text)" TaglineColor="#9fcfe6" />
+        </div>
+
+        <p class="lg-title">Identifícate para continuar</p>
+
+        @if (!IsSecure)
+        {
+            <div class="lg-warn">
+                ⚠ <strong>Conexión sin cifrar.</strong> La contraseña viajará en claro por la red.
+                Configura HTTPS antes de usar la aplicación fuera de este equipo.
+            </div>
+        }
+
+        @if (!string.IsNullOrEmpty(_error))
+        {
+            <div class="lg-alert">@_error</div>
+        }
+
+        <EditForm Model="Input" method="post" OnValidSubmit="SubmitAsync" FormName="login">
+            <DataAnnotationsValidator />
+
+            <div class="lg-group">
+                <label class="lg-label" for="u">Usuario</label>
+                <InputText id="u" class="lg-input" @bind-Value="Input.UserName" autocomplete="username" />
+            </div>
+
+            <div class="lg-group">
+                <label class="lg-label" for="p">Contraseña</label>
+                <InputText id="p" type="password" class="lg-input" @bind-Value="Input.Password"
+                           autocomplete="current-password" />
+            </div>
+
+            <button type="submit" class="lg-btn">Entrar</button>
+        </EditForm>
+
+        <div class="lg-foot">MOVE · DICOM data migrator</div>
+    </div>
+</div>
+
+@code {
+    [CascadingParameter]                 private HttpContext HttpContext { get; set; } = default!;
+    [SupplyParameterFromForm]            private LoginInput  Input       { get; set; } = new();
+    [SupplyParameterFromQuery]           private string?     ReturnUrl   { get; set; }
+
+    private string? _error;
+
+    private bool IsSecure => HttpContext?.Request.IsHttps ?? true;
+
+    public sealed class LoginInput
+    {
+        public string UserName { get; set; } = string.Empty;
+        public string Password { get; set; } = string.Empty;
+    }
+
+    private async Task SubmitAsync()
+    {
+        var (user, error) = await Auth.ValidateAsync(Input.UserName, Input.Password);
+        if (user is null)
+        {
+            _error = error;
+            return;
+        }
+
+        var claims = new List<Claim>
+        {
+            new(ClaimTypes.NameIdentifier, user.Id.ToString()),
+            new(ClaimTypes.Name,           user.UserName),
+            new(ClaimTypes.Role,           user.Role),
+            new("display_name",            user.DisplayName ?? user.UserName),
+        };
+
+        // Marca la sesión como "pendiente de cambiar contraseña". Se comprueba en el
+        // layout, así no se puede esquivar navegando a otra URL a mano.
+        if (user.MustChangePassword)
+            claims.Add(new Claim("must_change_pwd", "1"));
+
+        var principal = new ClaimsPrincipal(
+            new ClaimsIdentity(claims, CookieAuthenticationDefaults.AuthenticationScheme));
+
+        await HttpContext.SignInAsync(
+            CookieAuthenticationDefaults.AuthenticationScheme,
+            principal,
+            new AuthenticationProperties { IsPersistent = false });
+
+        // Si la contraseña está marcada como caducada, el cambio es obligatorio
+        // antes de poder usar la aplicación.
+        var target = user.MustChangePassword
+            ? "/cambiar-password"
+            : (string.IsNullOrWhiteSpace(ReturnUrl) ? "/" : ReturnUrl);
+
+        Nav.NavigateTo(target, forceLoad: true);
+    }
+}

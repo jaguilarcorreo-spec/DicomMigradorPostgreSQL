@@ -1,0 +1,10 @@
+@* Envía al login conservando la página solicitada, para volver a ella tras entrar. *@
+@inject NavigationManager Nav
+
+@code {
+    protected override void OnInitialized()
+    {
+        var returnUrl = Nav.ToBaseRelativePath(Nav.Uri);
+        Nav.NavigateTo($"/login?ReturnUrl=/{Uri.EscapeDataString(returnUrl)}", forceLoad: true);
+    }
+}

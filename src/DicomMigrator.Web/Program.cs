@@ -6,6 +6,8 @@ using DicomMigrator.Infrastructure.Services.DicomWeb;
 using DicomMigrator.Infrastructure.Services.Dimse;
 using DicomMigrator.Infrastructure.Services.Migration;
 using DicomMigrator.Web.Services;
+using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.EntityFrameworkCore;
 using Serilog;
 using Serilog.Events;
@@ -62,6 +64,27 @@ try
     builder.Services.AddRazorComponents()
         .AddInteractiveServerComponents();
 
+    // ── Autenticación por cookie ─────────────────────────────────────────────
+    // Cookie y no JWT: la aplicación se renderiza en el servidor y el navegador
+    // es el único cliente. HttpOnly para que no sea legible desde JavaScript.
+    builder.Services.AddCascadingAuthenticationState();
+    builder.Services
+        .AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)
+        .AddCookie(o =>
+        {
+            o.Cookie.Name        = "DicomMigrator.Auth";
+            o.Cookie.HttpOnly    = true;
+            o.Cookie.SameSite    = SameSiteMode.Lax;
+            // Always exigiría HTTPS; con SameAsRequest la aplicación sigue siendo
+            // usable en un despliegue HTTP local. En red, configura HTTPS.
+            o.Cookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
+            o.LoginPath          = "/login";
+            o.AccessDeniedPath   = "/login";
+            o.ExpireTimeSpan     = TimeSpan.FromHours(8);
+            o.SlidingExpiration  = true;
+        });
+    builder.Services.AddAuthorization();
+
     // ── EF Core / PostgreSQL ─────────────────────────────────────────────────
     // PostgreSQL es el único motor soportado. El servidor arbitra la concurrencia
     // (MVCC), por lo que no hay PRAGMAs ni interceptor de conexión, y las claves
@@ -102,6 +125,8 @@ try
     builder.Services.AddScoped<IMigrationRepository,   MigrationRepository>();
     builder.Services.AddScoped<IStudyRepository,       StudyRepository>();
     builder.Services.AddScoped<IInstanceRepository, InstanceRepository>();
+    builder.Services.AddScoped<IUserRepository, UserRepository>();
+    builder.Services.AddScoped<UserAuthService>();
     builder.Services.AddScoped<IDiscoveredInstanceRepository, DiscoveredInstanceRepository>();
     builder.Services.AddScoped<IAuditLogRepository,    AuditLogRepository>();
     builder.Services.AddSingleton<DicomMigrator.Infrastructure.Data.AuditLogBuffer>();
@@ -166,6 +191,31 @@ try
             // los crean (con el dueño del esquema, sin problemas de permisos).
             await db.Database.MigrateAsync();
             logger.LogInformation("Base de datos PostgreSQL migrada al último esquema.");
+
+            // ── Primer administrador ─────────────────────────────────────────
+            // Si no hay ningún usuario, se crea uno con contraseña inicial y la
+            // marca de cambio obligatorio: no se puede usar la aplicación sin
+            // cambiarla. La contraseña inicial es configurable por si el equipo
+            // de despliegue prefiere no usar la de por defecto.
+            var userRepo = scope.ServiceProvider.GetRequiredService<IUserRepository>();
+            if (await userRepo.CountAsync() == 0)
+            {
+                var authSvc  = scope.ServiceProvider.GetRequiredService<UserAuthService>();
+                var initial  = builder.Configuration["Auth:InitialAdminPassword"] ?? "admin";
+                var admin    = new AppUser
+                {
+                    UserName           = "admin",
+                    DisplayName        = "Administrador",
+                    Role               = AppRoles.Administrador,
+                    IsActive           = true,
+                    MustChangePassword = true,
+                };
+                admin.PasswordHash = authSvc.Hash(admin, initial);
+                await userRepo.AddAsync(admin);
+
+                logger.LogWarning("No había usuarios: creado 'admin' con contraseña inicial. " +
+                                  "DEBE cambiarse en el primer acceso.");
+            }
 
             // ── Reanudación de migraciones/verificaciones huérfanas ──────────────
             // El control de los workers vive en memoria del proceso. Si el proceso se
@@ -287,7 +337,16 @@ try
 
     app.UseStaticFiles();
     app.UseSerilogRequestLogging();
+    app.UseAuthentication();
+    app.UseAuthorization();
     app.UseAntiforgery();
+
+    // Cierre de sesión. POST (no GET) porque modifica estado.
+    app.MapPost("/logout", async (HttpContext ctx) =>
+    {
+        await ctx.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
+        return Results.Redirect("/login");
+    });
 
     app.MapRazorComponents<DicomMigrator.Web.Components.App>()
         .AddInteractiveServerRenderMode();
@@ -369,7 +428,7 @@ try
                 ? $"\"{v.Replace("\"", "\"\"")}\""
                 : v;
         }
-    });
+    }).RequireAuthorization();   // exporta datos de paciente: exige sesión
 
     // Exportar RESUMEN de todas las migraciones a Excel (.xlsx), una fila por migración,
     // con contadores y métricas de tiempo. Genera el fichero con ClosedXML.
@@ -525,7 +584,7 @@ try
         ms.Position = 0;
         await ms.CopyToAsync(ctx.Response.Body, ct);
         return Results.Empty;
-    });
+    }).RequireAuthorization();   // exporta datos de paciente: exige sesión
 
     app.MapGet("/discovery/{jobId:int}/export.csv",
         async (int jobId,
@@ -587,7 +646,7 @@ try
                 ? $"\"{v.Replace("\"", "\"\"")}\""
                 : v;
         }
-    });
+    }).RequireAuthorization();   // exporta datos de paciente: exige sesión
 
     // Al cerrar la aplicación: primero cancelar los workers en curso para que el proceso
     // pueda terminar con agilidad (los estudios a medias se reanudan al reiniciar), y

@@ -1,0 +1,8 @@
+@* Autorización por defecto para TODAS las páginas.
+
+   Colocarlo aquí (y no en Components/_Imports.razor) lo limita a las páginas
+   enrutables y evita aplicarlo a App.razor y a los layouts. Una página nueva
+   queda protegida automáticamente sin acordarse de nada; para abrir una al
+   público hay que declararlo de forma explícita con [AllowAnonymous]. *@
+@using Microsoft.AspNetCore.Authorization
+@attribute [Authorize]

@@ -27,11 +27,15 @@
         </div>
         <StatusBadge Status="@_detail.Status" />
         <button class="btn btn-ghost btn-sm" @onclick="RefreshDetailAsync" title="Actualizar">↺</button>
-        <button class="btn btn-ghost btn-sm" @onclick="OpenEditJob" title="Editar propiedades">✎ Editar</button>
-        <button class="btn btn-sm" style="background:rgba(245,158,11,0.08);color:var(--yellow);border:1px solid rgba(245,158,11,0.25)"
-                @onclick="RequestResetJob" title="Limpiar particiones y estudios descubiertos">🧹 Limpiar</button>
-        <button class="btn btn-sm" style="background:rgba(239,68,68,0.08);color:var(--red);border:1px solid rgba(239,68,68,0.25)"
-                @onclick="RequestDeleteJob" title="Eliminar job">🗑 Eliminar</button>
+        <AuthorizeView Roles="Administrador,Operador" Context="cOp">
+            <button class="btn btn-ghost btn-sm" @onclick="OpenEditJob" title="Editar propiedades">✎ Editar</button>
+        </AuthorizeView>
+        <AuthorizeView Roles="Administrador" Context="cAdm">
+            <button class="btn btn-sm" style="background:rgba(245,158,11,0.08);color:var(--yellow);border:1px solid rgba(245,158,11,0.25)"
+                    @onclick="RequestResetJob" title="Limpiar particiones y estudios descubiertos">🧹 Limpiar</button>
+            <button class="btn btn-sm" style="background:rgba(239,68,68,0.08);color:var(--red);border:1px solid rgba(239,68,68,0.25)"
+                    @onclick="RequestDeleteJob" title="Eliminar job">🗑 Eliminar</button>
+        </AuthorizeView>
     </div>
 
     @if (!string.IsNullOrEmpty(_deleteMsg))
@@ -44,6 +48,7 @@
         <div class="alert-success">@_actionMsg</div>
     }
 
+    <AuthorizeView Roles="Administrador,Operador" Context="cDesc">
     @* ── DESCUBRIR ── *@
     <div style="display:flex;align-items:center;gap:8px;padding:12px 16px;
                 background:var(--card);border:1px solid var(--border);border-radius:8px;
@@ -89,7 +94,9 @@
             <span style="margin-left:auto;font-size:11px;color:var(--text-muted)">@StatusText.Es(_detail.Status)</span>
         }
     </div>
+    </AuthorizeView>
 
+    <AuthorizeView Roles="Administrador,Operador" Context="cEnum">
     @* ── ENUMERAR (captura de UIDs de origen, Verificación Nivel 2) ── *@
     @if (_stats.StudiesDiscovered > 0)
     {
@@ -132,6 +139,7 @@
             }
         </div>
     }
+    </AuthorizeView>
 
     @* ── Configuración del job ── *@
     <div class="card mb2">
@@ -384,10 +392,12 @@
                 @* Crear migración desde inventario *@
                 @if (!_showCreateMigration)
                 {
-                    <button class="btn btn-primary btn-sm" style="align-self:flex-start"
-                            @onclick="@(() => _showCreateMigration = true)" disabled="@_busy">
-                        ⇄ Crear migración desde este inventario
-                    </button>
+                    <AuthorizeView Roles="Administrador,Operador" Context="cCrea">
+                        <button class="btn btn-primary btn-sm" style="align-self:flex-start"
+                                @onclick="@(() => _showCreateMigration = true)" disabled="@_busy">
+                            ⇄ Crear migración desde este inventario
+                        </button>
+                    </AuthorizeView>
                 }
                 else
                 {
@@ -603,7 +613,9 @@ else
             <p class="page-sub">@_jobs.Count job(s) de descubrimiento</p>
         </div>
         <button class="btn btn-ghost btn-sm" @onclick="LoadJobsAsync" title="Actualizar">↺ Actualizar</button>
-        <button class="btn btn-primary" @onclick="OpenNew">+ Nuevo Job</button>
+        <AuthorizeView Roles="Administrador,Operador" Context="cNew">
+            <button class="btn btn-primary" @onclick="OpenNew">+ Nuevo Job</button>
+        </AuthorizeView>
     </div>
 
     @if (_jobs.Count == 0)
