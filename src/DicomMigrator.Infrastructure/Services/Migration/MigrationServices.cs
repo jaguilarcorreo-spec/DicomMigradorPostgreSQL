@@ -326,6 +326,21 @@ public class DiscoveryService(
 // VERIFICATION SERVICE
 // ══════════════════════════════════════════════════════════════════════════════
 
+// ══════════════════════════════════════════════════════════════════════════════
+//  Atribución en la auditoría
+// ══════════════════════════════════════════════════════════════════════════════
+
+internal static class AuditActorHelper
+{
+    /// <summary>Compone el actor de una entrada de auditoría escrita por un proceso
+    /// automático. El proceso no lo inicia una persona en ese instante, sino quien
+    /// creó la migración o el job, así que se registran ambos: qué lo ejecutó y por
+    /// orden de quién. Si no consta autoría (datos anteriores al login), queda solo
+    /// el proceso.</summary>
+    public static string Actor(string process, string? user)
+        => string.IsNullOrWhiteSpace(user) ? process : $"{process} (por {user})";
+}
+
 public class VerificationService(
     IMigrationRepository migrationRepo,
     IDimseService dimse,
@@ -834,7 +849,7 @@ public class MigrationWorker(
             await AuditRepo(scope).AddAsync(new MigrationAuditLog
             {
                 MigrationId = migrationId, Action = "START", Result = "OK",
-                UserOrProcess = "WORKER",
+                UserOrProcess = AuditActorHelper.Actor("WORKER", migration.CreatedBy),
                 TechnicalMessage = $"Iniciando {migration.WorkerThreads} workers. Método: {migration.TransferMethod}"
             });
         }
@@ -1158,10 +1173,12 @@ public class MigrationWorker(
         await MigrationRepo(scope).UpdateStatusAsync(migrationId, "Paused");
         // Pausa/parada manual: limpiar el flag de auto-pausa (no debe auto-reanudar).
         await MigrationRepo(scope).SetMigrationAutoPausedAsync(migrationId, false);
+        var paused = await MigrationRepo(scope).GetByIdAsync(migrationId);
         await AuditRepo(scope).AddAsync(new MigrationAuditLog
         {
             MigrationId = migrationId, Action = "PAUSE", Result = "OK",
-            UserOrProcess = "SYSTEM", TechnicalMessage = "Workers detenidos. Migración pausada."
+            UserOrProcess = AuditActorHelper.Actor("SYSTEM", paused?.CreatedBy),
+            TechnicalMessage = "Workers detenidos. Migración pausada."
         });
     }
 

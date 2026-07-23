@@ -10,6 +10,7 @@
 @inject IDiscoveryEngine Engine
 @inject IInstanceCaptureService CaptureSvc
 @inject IDiscoveredInstanceRepository DiscInstanceRepo
+@inject AuthenticationStateProvider AuthState
 @inject IJSRuntime JS
 @inject NavigationManager Nav
 @implements IDisposable
@@ -98,14 +99,18 @@
 
     <AuthorizeView Roles="Administrador,Operador" Context="cEnum">
     @* ── ENUMERAR (captura de UIDs de origen, Verificación Nivel 2) ── *@
-    @if (_stats.StudiesDiscovered > 0)
-    {
         <div style="display:flex;align-items:center;gap:8px;padding:12px 16px;
                     background:var(--card);border:1px solid var(--border);border-radius:8px;
                     margin-bottom:14px;flex-wrap:wrap">
             <span style="font-size:11px;color:#a78bfa;margin-right:4px">ENUMERAR</span>
 
-            @if (_detail.CaptureStatus is not ("Running" or "Paused"))
+            @if (_stats.StudiesDiscovered == 0)
+            {
+                <span style="font-size:12px;color:var(--text-muted);font-style:italic">
+                    Aún no hay estudios que enumerar. Ejecuta primero el descubrimiento.
+                </span>
+            }
+            else if (_detail.CaptureStatus is not ("Running" or "Paused"))
             {
                 <button class="btn btn-sm" style="background:rgba(167,139,250,0.12);color:#a78bfa;border:1px solid rgba(167,139,250,0.3)"
                         @onclick="StartCaptureAsync" disabled="@_busy">▶ Iniciar</button>
@@ -138,7 +143,6 @@
                 <span style="margin-left:auto;font-size:11px;color:var(--text-muted)">@StatusText.Es(_detail.CaptureStatus)</span>
             }
         </div>
-    }
     </AuthorizeView>
 
     @* ── Configuración del job ── *@
@@ -709,6 +713,15 @@ else
     private const long    CsvMaxBytes = 50 * 1024 * 1024;  // 50 MB
     private const int     CsvMaxLines = 500_000;
 
+    /// <summary>Nombre de acceso del usuario actual, para atribuir la autoría.
+    /// Se guarda el nombre de acceso y no el visible: éste puede cambiar y dejaría
+    /// la auditoría histórica sin poder interpretarse.</summary>
+    async Task<string> CurrentUserAsync()
+    {
+        var auth = await AuthState.GetAuthenticationStateAsync();
+        return auth.User.Identity?.Name ?? "desconocido";
+    }
+
     protected override async Task OnInitializedAsync()
     {
         await LoadJobsAsync();
@@ -758,6 +771,7 @@ else
             {
                 Name            = _fName.Trim(),
                 Description     = _fDesc?.Trim(),
+                CreatedBy       = await CurrentUserAsync(),
                 SourcePacsId    = _fPacsId,
                 DiscoveryType   = _fMethod == "CSV" ? "CSV" : "Temporal",
                 QueryMethod     = _fMethod,
@@ -950,6 +964,7 @@ else
             {
                 Name              = name,
                 Description       = $"Origen: inventario del Discovery Job '{_detail.Name}'",
+                CreatedBy         = await CurrentUserAsync(),
                 OriginNodeId      = _detail.SourcePacsId,
                 DestNodeId        = _migDestId,
                 DiscoveryMethod   = verifyMethod,

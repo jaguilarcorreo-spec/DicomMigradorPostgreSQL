@@ -21,7 +21,14 @@
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
             @foreach (var lvl in LogLevel.AvailableLevels)
             {
-                <button class="@LevelCss(lvl)" @onclick="@(() => SetLevel(lvl))">@lvl</button>
+                <AuthorizeView Roles="Administrador" Context="cLvl">
+                    <Authorized>
+                        <button class="@LevelCss(lvl)" @onclick="@(() => SetLevel(lvl))">@lvl</button>
+                    </Authorized>
+                    <NotAuthorized>
+                        <span class="@LevelCss(lvl)" style="opacity:.5;cursor:default">@lvl</span>
+                    </NotAuthorized>
+                </AuthorizeView>
             }
         </div>
         <div class="form-hint" style="margin-top:10px">

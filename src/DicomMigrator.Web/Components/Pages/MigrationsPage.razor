@@ -245,6 +245,12 @@
                 <div class="mono" style="font-size:13px;color:var(--text);margin-top:3px">@_detail.DiscoveryMethod</div>
             </div>
             <div>
+                <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.08em">Creada por</div>
+                <div class="mono" style="font-size:13px;color:var(--text);margin-top:3px">
+                    @(string.IsNullOrWhiteSpace(_detail.CreatedBy) ? "—" : _detail.CreatedBy)
+                </div>
+            </div>
+            <div>
                 <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.08em">Migración N2</div>
                 <div class="mono" style="font-size:13px;color:var(--text);margin-top:3px"
                      title="Determinado por el descubridor: 'Sí' si se enumeraron los UIDs de origen (no editable).">
@@ -739,7 +745,9 @@
             <div class="card-header">
                 <span class="card-title">Ventana de ejecución</span>
                 <div style="margin-left:auto">
-                    <button class="btn btn-primary btn-sm" @onclick="SaveWindowAsync" disabled="@_actionBusy">💾 Guardar</button>
+                    <AuthorizeView Roles="Administrador,Operador" Context="cWin">
+                        <button class="btn btn-primary btn-sm" @onclick="SaveWindowAsync" disabled="@_actionBusy">💾 Guardar</button>
+                    </AuthorizeView>
                 </div>
             </div>
             <div class="card-body">

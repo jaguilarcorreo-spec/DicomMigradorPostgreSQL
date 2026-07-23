@@ -12,9 +12,11 @@
         <h1 class="page-title">Diagnóstico de Conectividad</h1>
         <p class="page-sub">Verifica la configuración de red y AET antes de migrar</p>
     </div>
+    <AuthorizeView Roles="Administrador,Operador" Context="cDiag">
     <button class="btn btn-primary" @onclick="RunAllChecksAsync" disabled="@_running">
         @(_running ? "⟳ Ejecutando..." : "▶ Ejecutar diagnóstico completo")
     </button>
+    </AuthorizeView>
 </div>
 
 @* ══════════════════════════════════════════════════════════
@@ -282,11 +284,13 @@
                                 }
                             </td>
                             <td>
+                                <AuthorizeView Roles="Administrador,Operador" Context="cNode">
                                 <button class="btn btn-ghost btn-sm"
                                         @onclick="@(() => RunNodeCheckAsync(n))"
                                         disabled="@(check?.EchoRunning == true)">
                                     📡 Test
                                 </button>
+                                </AuthorizeView>
                             </td>
                         </tr>
                     }
