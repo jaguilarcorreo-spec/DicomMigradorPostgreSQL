@@ -414,6 +414,98 @@
 @* ════════════════════════════════════════
    CONFIG. PACS
    ════════════════════════════════════════ *@
+@if (_tab == "access")
+{
+    <HelpSection Title="Acceso a la aplicación" Color="var(--purple)">
+        <p style="margin:0 0 10px 0;color:var(--text-dim);font-size:13px;line-height:1.6">
+            La aplicación exige identificarse. Ninguna pantalla es accesible sin sesión, y las
+            descargas de CSV y Excel también la requieren: contienen datos de paciente.
+        </p>
+        <p style="margin:0 0 10px 0;color:var(--text-dim);font-size:13px;line-height:1.6">
+            <strong>Primer acceso:</strong> si no hay ningún usuario, al arrancar se crea
+            <code>admin</code> con una contraseña inicial y la obligación de cambiarla. Hasta que no
+            se cambia no se puede usar nada más. La contraseña inicial se puede fijar con
+            <code>Auth:InitialAdminPassword</code> en <code>appsettings.Production.json</code>.
+        </p>
+        <p style="margin:0;color:var(--text-dim);font-size:13px;line-height:1.6">
+            <strong>Bloqueo:</strong> tras 5 intentos fallidos seguidos la cuenta queda bloqueada
+            15 minutos. Un administrador puede liberarla antes desde <em>Usuarios</em>, y resetear
+            la contraseña también levanta el bloqueo.
+        </p>
+    </HelpSection>
+
+    <HelpSection Title="Los tres roles" Color="var(--accent)">
+        <p style="margin:0 0 12px 0;color:var(--text-dim);font-size:13px;line-height:1.6">
+            Cada usuario tiene exactamente un rol. Los botones y menús que no corresponden al rol
+            <strong>no se muestran</strong>: no se pintan en gris, directamente no existen en la
+            pantalla, así que no hay forma de invocarlos.
+        </p>
+        <table class="data-table" style="width:100%">
+            <thead>
+                <tr><th>Acción</th><th>Administrador</th><th>Operador</th><th>Consulta</th></tr>
+            </thead>
+            <tbody>
+                @foreach (var p in _permissions)
+                {
+                    <tr>
+                        <td>@p.Action</td>
+                        <td>@Mark(p.Admin)</td>
+                        <td>@Mark(p.Operator)</td>
+                        <td>@Mark(p.Viewer)</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+        <p style="margin:12px 0 0 0;color:var(--text-muted);font-size:12px;line-height:1.6">
+            El criterio: <strong>Consulta</strong> puede ver y exportar cualquier cosa, pero no
+            modificar nada; <strong>Operador</strong> hace funcionar las migraciones del día a día;
+            <strong>Administrador</strong> añade lo irreversible (borrar) y lo que afecta a todo el
+            sistema (nodos, configuración local, usuarios, nivel de log).
+        </p>
+    </HelpSection>
+
+    <HelpSection Title="Gestión de usuarios" Color="var(--green)">
+        <p style="margin:0 0 10px 0;color:var(--text-dim);font-size:13px;line-height:1.6">
+            En <strong>Usuarios</strong> (solo Administrador) se dan de alta cuentas, se cambia el
+            rol, se resetea la contraseña, se desbloquean cuentas y se desactivan usuarios.
+        </p>
+        <ul style="margin:0;padding-left:20px;color:var(--text-dim);font-size:13px;line-height:1.8">
+            <li><strong>El nombre de acceso no se puede cambiar</strong> una vez creado: la auditoría histórica lo referencia y cambiarlo dejaría los registros antiguos sin poder atribuirse.</li>
+            <li><strong>Desactivar en lugar de borrar.</strong> Un usuario desactivado no puede entrar, pero sigue existiendo para que sus acciones pasadas conserven autor.</li>
+            <li><strong>Contraseñas:</strong> mínimo 8 caracteres. Nunca se almacenan en claro, solo su hash.</li>
+        </ul>
+    </HelpSection>
+
+    <HelpSection Title="Trazabilidad: quién hizo qué" Color="var(--yellow)">
+        <p style="margin:0 0 10px 0;color:var(--text-dim);font-size:13px;line-height:1.6">
+            Los jobs de descubrimiento y las migraciones guardan <strong>quién los creó</strong>, y
+            ese dato se propaga al registro de auditoría. Las entradas escritas por los procesos
+            automáticos quedan así:
+        </p>
+        <pre style="background:var(--bg);padding:12px;border-radius:6px;font-size:11.5px;line-height:1.5;overflow-x:auto;color:var(--text-dim);margin:0 0 10px 0">WORKER (por jaguilar)</pre>
+        <p style="margin:0;color:var(--text-dim);font-size:13px;line-height:1.6">
+            Es la forma honesta de registrarlo: lo ejecutó un proceso automático, <em>por orden de</em>
+            una persona. Las migraciones creadas antes de existir el control de acceso no tienen autor
+            y siguen apareciendo solo con el proceso: no se reescribe el histórico.
+        </p>
+    </HelpSection>
+
+    <HelpSection Title="Conexión cifrada (HTTPS)" Color="var(--red)">
+        <p style="margin:0 0 10px 0;color:var(--text-dim);font-size:13px;line-height:1.6">
+            Si la aplicación se usa <strong>desde otros equipos</strong>, la conexión debe ir cifrada:
+            de lo contrario, la contraseña y los datos de paciente viajan en claro por la red. La
+            pantalla de acceso avisa en ámbar cuando la conexión no es segura.
+        </p>
+        <p style="margin:0;color:var(--text-dim);font-size:13px;line-height:1.6">
+            Se activa por configuración, sin tocar código: basta con definir un endpoint
+            <code>Https</code> con su certificado en la sección <code>Kestrel</code> de
+            <code>appsettings.Production.json</code>. La redirección automática se activa sola al
+            detectarlo. Ojo: este cifrado es el de <strong>la interfaz web</strong>, independiente
+            del TLS de DICOM que se configura por nodo.
+        </p>
+    </HelpSection>
+}
+
 @if (_tab == "pacs")
 {
     <HelpSection Title="Datos del SCU local que debes registrar en el PACS origen" Color="var(--accent)">
@@ -637,6 +729,7 @@
         new("migration",  "⇄ Migración"),
         new("states",     "Estados del estudio"),
         new("retry",      "Reintentos y errores"),
+        new("access",     "🔐 Usuarios y acceso"),
         new("pacs",       "⚙ Config. PACS"),
         new("files",      "📄 Config. por fichero"),
     ];
@@ -662,6 +755,7 @@
         new("⊞", "Nodos DICOM",      "var(--green)",  "CRUD de nodos: AET/host/puerto para DIMSE, Base URL + paths + auth para DICOMweb. Toggle independiente para DICOMweb."),
         new("⚙", "Config. local SCU","var(--orange)", "AET, hostname y puerto del C-STORE SCP local. Estos datos los necesita el PACS origen para enviarte estudios."),
         new("🩺", "Diagnóstico",      "var(--yellow)", "Tests de conectividad: C-ECHO, C-FIND y QIDO contra cualquier nodo registrado para verificar que el canal funciona antes de lanzar una migración."),
+        new("👤", "Usuarios",         "var(--purple)", "Alta, edición y desactivación de usuarios, asignación de rol, reseteo de contraseña y desbloqueo de cuentas. Solo visible para el rol Administrador."),
         new("📋", "Logs y auditoría", "var(--text)",   "Logs en vivo del sistema. El nivel se cambia en caliente (Verbose, Debug, Information, Warning, Error). Rolling file diario en disco."),
     ];
 
@@ -692,6 +786,27 @@
     ];
 
     // ── Study states ────────────────────────────────────────────────────────
+    // ── Permisos por rol ────────────────────────────────────────────────────
+    private record Permission(string Action, bool Admin, bool Operator, bool Viewer);
+    private readonly Permission[] _permissions =
+    [
+        new("Consultar inventarios, migraciones y logs", true, true,  true),
+        new("Exportar CSV / Excel",                      true, true,  true),
+        new("Crear jobs y migraciones",                  true, true,  false),
+        new("Iniciar, pausar y reanudar procesos",       true, true,  false),
+        new("Enumerar UIDs (Nivel 2)",                   true, true,  false),
+        new("Reintentar fallidos",                       true, true,  false),
+        new("Editar propiedades y ventana horaria",      true, true,  false),
+        new("Ejecutar diagnóstico contra los PACS",      true, true,  false),
+        new("Limpiar y eliminar jobs o migraciones",     true, false, false),
+        new("Gestionar nodos DICOM",                     true, false, false),
+        new("Configuración local SCU",                   true, false, false),
+        new("Cambiar el nivel de log en caliente",       true, false, false),
+        new("Gestionar usuarios",                        true, false, false),
+    ];
+
+    private static string Mark(bool allowed) => allowed ? "✔" : "—";
+
     private record StudyState(string Status, string Name, string Desc);
     private readonly StudyState[] _states =
     [
@@ -700,7 +815,8 @@
         new("Migrated",             "Migrado",                  "C-MOVE completado con éxito. Pendiente de verificación."),
         new("VerificationPending",  "Verificación pendiente",   "Encolado para verificar su presencia en el destino."),
         new("Verified",             "Verificado",               "Confirmada la presencia del estudio en el destino con series e instancias coherentes."),
-        new("VerificationFailed",   "Verificación fallida",     "El destino no devuelve el estudio o lo devuelve incompleto."),
+        new("VerifyFailed",         "Verificación fallida",     "El destino no devuelve el estudio, lo devuelve incompleto o faltan UIDs. Ya no quedan reintentos de verificación."),
+        new("VerifyRetryPending",   "Reintento verificación",   "La verificación no cuadró pero quedan reintentos. Espera RetryDelaySeconds antes de volver a comprobarse."),
         new("Failed",               "Fallido",                  "El C-MOVE falló. Si no se ha superado MaxRetries puede pasar a RetryPending."),
         new("RetryPending",         "Reintento pendiente",      "Marcado para reintento. Volverá a Migrating cuando un worker lo recoja."),
     ];
