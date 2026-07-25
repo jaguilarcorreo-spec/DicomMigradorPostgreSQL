@@ -13,6 +13,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<MigrationInstance> MigrationInstances => Set<MigrationInstance>();
     public DbSet<MigrationAuditLog> AuditLogs        => Set<MigrationAuditLog>();
     public DbSet<AppUser>           AppUsers         => Set<AppUser>();
+    public DbSet<LicenseState>      LicenseStates    => Set<LicenseState>();
     public DbSet<LocalConfiguration> LocalConfigurations => Set<LocalConfiguration>();
 
     // ── Discovery Engine (RF-020) ──────────────────────────────────────────────
@@ -138,6 +139,16 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             // El nombre se guarda ya normalizado en minúsculas, así que el índice
             // único basta para impedir duplicados por diferencias de mayúsculas.
             e.HasIndex(x => x.UserName).IsUnique();
+        });
+
+        // ── LicenseState (fila única, Id=1) ──────────────────────────────────
+        mb.Entity<LicenseState>(e =>
+        {
+            e.HasKey(x => x.Id);
+            // Id fijo a 1: no autogenerado, hay una sola fila de estado de licencia.
+            e.Property(x => x.Id).ValueGeneratedNever();
+            e.Property(x => x.Token).HasColumnType("text");
+            e.Property(x => x.LicId).HasMaxLength(64);
         });
 
         mb.Entity<MigrationAuditLog>(e =>

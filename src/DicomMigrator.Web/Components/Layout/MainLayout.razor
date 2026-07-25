@@ -2,6 +2,7 @@
 @inject AuthenticationStateProvider AuthState
 @inject ILocalConfigRepository ConfigRepo
 @inject NavigationManager Nav
+@inject DicomMigrator.Infrastructure.Services.Licensing.LicenseStatusCache LicenseCache
 @implements IDisposable
 
 <div class="app-shell">
@@ -46,6 +47,9 @@
                 </NavLink>
                 <NavLink class="nav-item" href="/usuarios">
                     <span class="nav-icon">👤</span> Usuarios
+                </NavLink>
+                <NavLink class="nav-item" href="/licencia">
+                    <span class="nav-icon">🔑</span> Licencia
                 </NavLink>
             </AuthorizeView>
             <NavLink class="nav-item" href="/ayuda">
@@ -96,6 +100,17 @@
     </nav>
 
     <main class="main-content">
+        @if (!LicenseCache.Current.IsValid)
+        {
+            <div style="background:rgba(239,68,68,.10);border-bottom:1px solid rgba(239,68,68,.35);
+                        color:#fca5a5;padding:9px 18px;font-size:12.5px;line-height:1.5">
+                ⚠ <strong>Licencia no válida</strong> — @LicenseCache.Current.Reason
+                Las migraciones están bloqueadas.
+                <AuthorizeView Roles="@AppRoles.Administrador" Context="licAdm">
+                    <a href="/licencia" style="color:#fca5a5;text-decoration:underline">Gestionar licencia</a>
+                </AuthorizeView>
+            </div>
+        }
         @Body
     </main>
 </div>

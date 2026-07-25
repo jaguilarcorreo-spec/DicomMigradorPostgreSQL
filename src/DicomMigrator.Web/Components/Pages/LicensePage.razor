@@ -1,0 +1,147 @@
+@page "/licencia"
+@attribute [Authorize(Roles = AppRoles.Administrador)]
+@rendermode InteractiveServer
+
+@using DicomMigrator.Core.Interfaces
+@using DicomMigrator.Core.Models
+@using Microsoft.AspNetCore.Components.Authorization
+@inject ILicenseService License
+@inject DicomMigrator.Infrastructure.Services.Licensing.LicenseStatusCache LicenseCache
+@inject AuthenticationStateProvider AuthState
+
+<PageTitle>Licencia — MOVE</PageTitle>
+
+<style>
+    .lic-grid { display:grid; grid-template-columns:170px 1fr; gap:6px 16px; font-size:13px; }
+    .lic-grid .k { color:var(--text-dim); }
+    .lic-badge { display:inline-block; padding:3px 10px; border-radius:999px; font-size:12px; font-weight:600; }
+    .lic-ok   { background:rgba(34,197,94,.12);  color:#86efac; border:1px solid rgba(34,197,94,.35); }
+    .lic-bad  { background:rgba(239,68,68,.10);  color:#fca5a5; border:1px solid rgba(239,68,68,.35); }
+    .lic-fp   { font-family:var(--font-mono,monospace); font-size:14px; letter-spacing:1px;
+                background:var(--bg); border:1px solid var(--border); border-radius:var(--r);
+                padding:8px 11px; color:var(--text); user-select:all; }
+    .lic-ta   { width:100%; min-height:110px; background:var(--bg); border:1px solid var(--border);
+                border-radius:var(--r); color:var(--text); padding:9px 11px; font-family:var(--font-mono,monospace);
+                font-size:12px; resize:vertical; }
+    .lic-msg-ok  { background:rgba(34,197,94,.08); border:1px solid rgba(34,197,94,.3); color:#86efac;
+                   border-radius:var(--r); padding:9px 11px; font-size:12.5px; margin-top:10px; }
+    .lic-msg-err { background:rgba(239,68,68,.08); border:1px solid rgba(239,68,68,.3); color:#fca5a5;
+                   border-radius:var(--r); padding:9px 11px; font-size:12.5px; margin-top:10px; }
+</style>
+
+<div class="page-header">
+    <h1 class="page-title">Licencia</h1>
+</div>
+
+@{ var s = LicenseCache.Current; }
+
+<div class="card" style="margin-bottom:16px">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px">
+        <span class="lic-badge @(s.IsValid ? "lic-ok" : "lic-bad")">
+            @(s.IsValid ? "VÁLIDA" : "NO VÁLIDA")
+        </span>
+        <span style="font-size:12.5px;color:var(--text-dim)">@s.Reason</span>
+    </div>
+
+    <div class="lic-grid">
+        <div class="k">Veredicto</div>       <div>@VerdictLabel(s.Verdict)</div>
+        <div class="k">Cliente</div>          <div>@(string.IsNullOrEmpty(s.Customer) ? "—" : s.Customer)</div>
+        <div class="k">Edición</div>          <div>@(string.IsNullOrEmpty(s.Edition) ? "—" : s.Edition)</div>
+        <div class="k">Caduca</div>           <div>@(s.ExpiresUtc?.ToString("yyyy-MM-dd") ?? "Nunca (perpetua)")</div>
+        <div class="k">Serie (anti-rollback)</div> <div>@s.Serial</div>
+        <div class="k">Ligada a máquina</div> <div>@(string.IsNullOrEmpty(s.MachineFp) ? "No (cualquier máquina)" : s.MachineFp)</div>
+        <div class="k">Funciones</div>        <div>@(s.Features.Length == 0 ? "—" : string.Join(", ", s.Features))</div>
+        <div class="k">Evaluada</div>         <div>@s.EvaluatedUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm")</div>
+    </div>
+</div>
+
+<div class="card" style="margin-bottom:16px">
+    <h2 style="font-size:14px;margin:0 0 8px">Fingerprint de esta máquina</h2>
+    <p style="font-size:12.5px;color:var(--text-dim);margin:0 0 10px">
+        Envía este valor al proveedor para que emita una licencia ligada a este equipo.
+        También puedes obtenerlo por línea de comandos: <code>DicomMigrator.exe --fingerprint</code>.
+    </p>
+    <div class="lic-fp">@(string.IsNullOrEmpty(s.ThisMachineFp) ? "(no disponible)" : s.ThisMachineFp)</div>
+</div>
+
+<div class="card">
+    <h2 style="font-size:14px;margin:0 0 8px">Instalar / actualizar licencia</h2>
+    <p style="font-size:12.5px;color:var(--text-dim);margin:0 0 10px">
+        Pega el token de licencia (empieza por <code>DMLIC1.</code>). Se verifica la firma,
+        la vigencia y, si procede, que corresponde a esta máquina. No se admite instalar una
+        licencia con número de serie inferior al ya activado.
+    </p>
+
+    <textarea class="lic-ta" @bind="_token" placeholder="DMLIC1.…"></textarea>
+
+    <div style="margin-top:10px">
+        <button class="btn btn-primary btn-sm" @onclick="InstallAsync" disabled="@_busy">
+            @(_busy ? "Instalando…" : "Instalar licencia")
+        </button>
+    </div>
+
+    @if (!string.IsNullOrEmpty(_ok))   { <div class="lic-msg-ok">@_ok</div> }
+    @if (!string.IsNullOrEmpty(_err))  { <div class="lic-msg-err">@_err</div> }
+</div>
+
+@code {
+    private string  _token = "";
+    private string? _ok, _err;
+    private bool    _busy;
+
+    private async Task InstallAsync()
+    {
+        _ok = _err = null;
+        if (string.IsNullOrWhiteSpace(_token))
+        {
+            _err = "Pega un token de licencia.";
+            return;
+        }
+
+        _busy = true;
+        try
+        {
+            var actor = await CurrentUserAsync();
+            var (ok, error, snap) = await License.InstallAsync(_token.Trim(), actor);
+            if (ok)
+            {
+                _ok    = $"Licencia instalada correctamente para '{snap.Customer}'. " +
+                         $"Caduca: {(snap.ExpiresUtc?.ToString("yyyy-MM-dd") ?? "nunca")}.";
+                _token = "";
+            }
+            else
+            {
+                _err = "No se pudo instalar: " + error;
+            }
+        }
+        catch (Exception ex)
+        {
+            _err = "Error inesperado: " + ex.Message;
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task<string> CurrentUserAsync()
+    {
+        var st = await AuthState.GetAuthenticationStateAsync();
+        return st.User.Identity?.Name ?? "admin";
+    }
+
+    private static string VerdictLabel(LicenseVerdict v) => v switch
+    {
+        LicenseVerdict.Valid           => "Válida",
+        LicenseVerdict.Missing         => "Sin licencia instalada",
+        LicenseVerdict.Malformed       => "Token con formato inválido",
+        LicenseVerdict.BadSignature    => "Firma no válida",
+        LicenseVerdict.WrongProduct    => "Licencia de otro producto",
+        LicenseVerdict.NotYetValid     => "Aún no vigente",
+        LicenseVerdict.Expired         => "Caducada",
+        LicenseVerdict.MachineMismatch => "Ligada a otra máquina",
+        LicenseVerdict.Rollback        => "Rechazada por anti-rollback",
+        LicenseVerdict.Error           => "Error al evaluar",
+        _                              => "Sin evaluar",
+    };
+}

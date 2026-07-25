@@ -1,5 +1,6 @@
 using DicomMigrator.Core.Interfaces;
 using DicomMigrator.Core.Models;
+using DicomMigrator.Infrastructure.Services.Licensing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
@@ -799,6 +800,7 @@ public class VerificationService(
 
 public class MigrationWorker(
     IServiceScopeFactory scopeFactory,
+    LicenseStatusCache licenseCache,
     ILogger<MigrationWorker> logger) : IMigrationWorker
 {
     // Track active CancellationTokenSources per migration (Singleton state — OK)
@@ -834,6 +836,32 @@ public class MigrationWorker(
 
     public async Task StartAsync(int migrationId, CancellationToken ct = default)
     {
+        // ── Verja de licencia ────────────────────────────────────────────────
+        // Choke point ÚNICO de arranque de migraciones (incluye la auto-reanudación
+        // al iniciar el servicio): si la licencia no es válida, no se inicia ningún
+        // worker. La UI ya avisa con un banner y la página de Licencia.
+        var lic = licenseCache.Current;
+        if (!lic.CanMigrate)
+        {
+            logger.LogError("Migración {Id} NO se inicia: licencia no válida ({Verdict}) — {Reason}",
+                migrationId, lic.Verdict, lic.Reason);
+            try
+            {
+                using var scope = scopeFactory.CreateScope();
+                await AuditRepo(scope).AddAsync(new MigrationAuditLog
+                {
+                    MigrationId      = migrationId,
+                    Action           = "LICENSE",
+                    Level            = "WARN",
+                    Result           = "ERROR",
+                    UserOrProcess    = "LICENSE",
+                    TechnicalMessage = $"Inicio bloqueado por licencia: {lic.Verdict} — {lic.Reason}",
+                });
+            }
+            catch { /* el bloqueo nunca debe fallar por la auditoría */ }
+            return;
+        }
+
         ConnBackoff.ResetPauseAnnouncement("MIGRATE", migrationId);
 
         if (_cts.ContainsKey(migrationId))

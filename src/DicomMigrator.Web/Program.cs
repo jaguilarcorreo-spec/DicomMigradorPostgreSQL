@@ -22,6 +22,16 @@ try
 {
     Log.Information("Iniciando DicomMigrator...");
 
+    // Modo CLI: imprime el fingerprint de ESTA máquina y sale. El cliente lo envía al
+    // fabricante para que emita una licencia ligada a la máquina. No toca la BD.
+    //   DicomMigrator.exe --fingerprint
+    if (args.Any(a => string.Equals(a, "--fingerprint", StringComparison.OrdinalIgnoreCase)))
+    {
+        Console.WriteLine(DicomMigrator.Infrastructure.Services.Licensing.MachineFingerprint.Compute());
+        Log.CloseAndFlush();
+        return;
+    }
+
     var builder = WebApplication.CreateBuilder(args);
 
     // Permite ejecutar la app como Servicio de Windows (modo desatendido), integrándose
@@ -127,6 +137,20 @@ try
     builder.Services.AddScoped<IInstanceRepository, InstanceRepository>();
     builder.Services.AddScoped<IUserRepository, UserRepository>();
     builder.Services.AddScoped<UserAuthService>();
+
+    // ── Licencias ────────────────────────────────────────────────────────────
+    // Verificación de firma Ed25519 con clave pública embebida, fingerprint de
+    // máquina y anti-rollback contra PostgreSQL (tabla LicenseState).
+    builder.Services.AddSingleton(new DicomMigrator.Infrastructure.Services.Licensing.LicenseOptions
+    {
+        FilePath = builder.Configuration["License:Path"],
+    });
+    builder.Services.AddSingleton<DicomMigrator.Infrastructure.Services.Licensing.LicenseStatusCache>();
+    builder.Services.AddSingleton<IMachineFingerprintProvider,
+        DicomMigrator.Infrastructure.Services.Licensing.MachineFingerprint>();
+    builder.Services.AddScoped<ILicenseStateRepository, LicenseStateRepository>();
+    builder.Services.AddScoped<ILicenseService,
+        DicomMigrator.Infrastructure.Services.Licensing.LicenseService>();
     builder.Services.AddScoped<IDiscoveredInstanceRepository, DiscoveredInstanceRepository>();
     builder.Services.AddScoped<IAuditLogRepository,    AuditLogRepository>();
     builder.Services.AddSingleton<DicomMigrator.Infrastructure.Data.AuditLogBuffer>();
@@ -215,6 +239,25 @@ try
 
                 logger.LogWarning("No había usuarios: creado 'admin' con contraseña inicial. " +
                                   "DEBE cambiarse en el primer acceso.");
+            }
+
+            // ── Evaluación de licencia al arrancar ───────────────────────────────
+            // Deja el veredicto en la caché ANTES de la auto-reanudación, para que las
+            // migraciones huérfanas que se reanudan pasen también por la verja.
+            try
+            {
+                var licSvc = scope.ServiceProvider.GetRequiredService<ILicenseService>();
+                var snap   = await licSvc.EvaluateAsync();
+                if (snap.IsValid)
+                    logger.LogInformation("Licencia válida · cliente '{C}' · edición {E} · caduca {Exp} · serie {S}.",
+                        snap.Customer, snap.Edition, snap.ExpiresUtc?.ToString("yyyy-MM-dd") ?? "nunca", snap.Serial);
+                else
+                    logger.LogWarning("Licencia NO válida ({V}): {R}. Las migraciones quedarán bloqueadas " +
+                        "hasta instalar una licencia válida (menú Licencia).", snap.Verdict, snap.Reason);
+            }
+            catch (Exception exLic)
+            {
+                logger.LogError(exLic, "No se pudo evaluar la licencia al arrancar.");
             }
 
             // ── Reanudación de migraciones/verificaciones huérfanas ──────────────

@@ -17,6 +17,12 @@
     </PackageReference>
     <!-- CSV parsing -->
     <PackageReference Include="CsvHelper" Version="33.0.1" />
+    <!-- Licencias: verificación de firma Ed25519 (pura gestionada, sin dependencias nativas) -->
+    <PackageReference Include="BouncyCastle.Cryptography" Version="2.4.0" />
+    <!-- Licencias: fingerprint anclado a firmware (UUID SMBIOS + serie de placa) vía WMI -->
+    <PackageReference Include="System.Management" Version="9.0.0" />
+    <!-- Licencias: MachineGuid del registro como respaldo del fingerprint -->
+    <PackageReference Include="Microsoft.Win32.Registry" Version="5.0.0" />
   </ItemGroup>
 
   <ItemGroup>
