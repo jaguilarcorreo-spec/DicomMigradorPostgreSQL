@@ -680,6 +680,7 @@
                                     </td>
                                     <td>
                                         <div style="display:flex;gap:4px;align-items:center">
+                                            <AuthorizeView Roles="Administrador,Operador" Context="cStudyOps">
                                             @* Reset → Pending: Failed, Cancelled, Verified, Migrated *@
                                             @if (s.MigrationStatus is "Failed" or "Cancelled" or "Verified" or "Migrated")
                                             {
@@ -702,6 +703,7 @@
                                                         title="Cancelar este estudio"
                                                         @onclick="@(() => CancelStudyAsync(s))">✕</button>
                                             }
+                                            </AuthorizeView>
                                         </div>
                                     </td>
                                 </tr>
@@ -884,6 +886,7 @@ else
                             </div>
                         </div>
                         <div style="display:flex;gap:6px;align-items:center" @onclick:stopPropagation="true">
+                            <AuthorizeView Roles="Administrador,Operador" Context="cCardOps">
                             @if (m.Status == "Running")
                             {
                                 <button class="btn btn-ghost btn-sm" @onclick="@(async () => { await PauseAsync(m); })">⏸ Pausar</button>
@@ -896,6 +899,7 @@ else
                             {
                                 <button class="btn btn-primary btn-sm" @onclick="@(async () => { await StartAsync(m); })">▶ Iniciar</button>
                             }
+                            </AuthorizeView>
                         </div>
                     </div>
                     @if (stats is not null && stats.Total > 0)
