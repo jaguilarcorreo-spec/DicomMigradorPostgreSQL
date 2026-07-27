@@ -20,9 +20,33 @@ public class DiscoveryEngine(
     // Cancellation tokens per running job
     private static readonly ConcurrentDictionary<int, CancellationTokenSource> _running = new();
 
-    // Default modalities used when subdividing a truncated day partition
-    private static readonly string[] CommonModalities =
-        ["CT", "MR", "CR", "DX", "US", "MG", "NM", "PT", "XA", "OT"];
+    // Modalidades BASE para subdividir un día truncado. Se amplía en tiempo de
+    // ejecución con las modalidades realmente presentes en la respuesta del día
+    // (ver Subdivide), de modo que una modalidad poco habitual no se quede sin
+    // partición hija y, por tanto, sin descubrir. La lista base cubre además los
+    // códigos DICOM estándar más frecuentes por si esa modalidad solo tuviera
+    // estudios más allá del corte del truncamiento.
+    private static readonly string[] BaselineModalities =
+    [
+        "CT","MR","CR","DX","DR","RG","RF","XA","MG","US","NM","PT",
+        "MA","XC","PX","IO","GM","SM","OP","OPT","OCT","ES","IVUS","IVOCT",
+        "BI","BMD","ECG","EPS","HD","LS","TG","ST","HC",
+        "SR","KO","PR","REG","SEG","DOC",
+        "RTIMAGE","RTDOSE","RTSTRUCT","RTPLAN","RTRECORD",
+        "OT"
+    ];
+
+    // Separa un ModalitiesInStudy multivaluado ("CT\MR", "CT,PR"…) en códigos sueltos.
+    private static IEnumerable<string> SplitModalities(string? modalities)
+    {
+        if (string.IsNullOrWhiteSpace(modalities)) yield break;
+        foreach (var part in modalities.Split(['\\', ',', '/'],
+                     StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var m = part.ToUpperInvariant();
+            if (m.Length > 0) yield return m;
+        }
+    }
 
     // Time ranges used in level-3 subdivision (StudyTime HHmmss)
     private static readonly (string from, string to)[] TimeRanges =
@@ -294,7 +318,7 @@ public class DiscoveryEngine(
                 logger.LogWarning("[{Worker}] Partición posiblemente truncada ({Count} >= {Limit}) — subdividiendo",
                     workerId, studies.Count, job.PacsResultLimit);
 
-                var children = Subdivide(partition, jobId);
+                var children = Subdivide(partition, jobId, studies);
                 await jobRepo.AddPartitionsAsync(children);
 
                 partition.Status   = "Subdivided";
@@ -352,14 +376,23 @@ public class DiscoveryEngine(
         // Day → DayModality → DayModalityTime; can't subdivide beyond time ranges
         p.PartitionType is "Day" or "DayModality";
 
-    private static List<DiscoveryPartition> Subdivide(DiscoveryPartition parent, int jobId)
+    private static List<DiscoveryPartition> Subdivide(
+        DiscoveryPartition parent, int jobId, IReadOnlyList<DicomStudyDto> studies)
     {
         var children = new List<DiscoveryPartition>();
 
         if (parent.PartitionType == "Day")
         {
-            // Level 2: split by modality
-            foreach (var mod in CommonModalities)
+            // Level 2: split by modality.
+            // Conjunto a cubrir = modalidades base ∪ las realmente presentes en la
+            // respuesta (troceando ModalitiesInStudy multivaluado). Así ninguna
+            // modalidad del día se queda sin partición hija aunque no esté en la base.
+            var mods = new HashSet<string>(BaselineModalities, StringComparer.OrdinalIgnoreCase);
+            foreach (var s in studies)
+                foreach (var m in SplitModalities(s.ModalitiesInStudy))
+                    mods.Add(m);
+
+            foreach (var mod in mods.OrderBy(m => m, StringComparer.Ordinal))
             {
                 children.Add(new DiscoveryPartition
                 {
