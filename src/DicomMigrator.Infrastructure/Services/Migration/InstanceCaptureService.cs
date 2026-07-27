@@ -1,8 +1,10 @@
 // ══════════════════════════════════════════════════════════════════════════════
 //  InstanceCaptureService.cs
 //  Nivel 2 de verificación — captura de UIDs de ORIGEN en el DESCUBRIMIENTO.
-//  Enumera por C-FIND IMAGE los SOPInstanceUID de cada estudio de un DiscoveryJob
-//  y los persiste (DiscoveredInstance). Idempotente (borra y reinserta por estudio).
+//  Enumera los SOPInstanceUID de cada estudio de un DiscoveryJob por QIDO-instances
+//  (si el nodo de origen tiene DICOMweb) o por C-FIND IMAGE en su defecto — misma
+//  regla 4A que la enumeración de destino en la verificación. Los persiste
+//  (DiscoveredInstance). Idempotente (borra y reinserta por estudio).
 //  Proceso gobernado por jobId (Start/Pause/Resume/Stop), espejando verificación.
 //  Al crear una migración desde el inventario, estos UIDs se copian a
 //  MigrationInstance (ver ImportFromInventoryAsync, Opción A).
@@ -20,6 +22,7 @@ public class InstanceCaptureService(
     IDiscoveredInstanceRepository discInstanceRepo,
     INodeRepository               nodeRepo,
     IDimseService                 dimse,
+    IDicomWebService              dicomWeb,
     IServiceScopeFactory          scopeFactory,
     ILogger<InstanceCaptureService> logger) : IInstanceCaptureService
 {
@@ -177,9 +180,18 @@ public class InstanceCaptureService(
     public async Task<int> CaptureForStudyAsync(
         DicomNode originNode, long discoveredStudyId, string studyInstanceUid, CancellationToken ct = default)
     {
-        var enumRes = await dimse.EnumerateInstancesAsync(originNode, studyInstanceUid, ct);
+        // Regla 4A: QIDO-instances si el origen tiene DICOMweb; C-FIND IMAGE si no.
+        // Misma lógica que la enumeración de destino en VerifyStudyAsync, para que la
+        // captura no dependa del DIMSE del origen cuando el descubrimiento va por QIDO.
+        var useQido = originNode.HasDicomWeb
+            && !string.IsNullOrWhiteSpace(originNode.WebBaseUrl ?? originNode.QidoBaseUrl);
+
+        var enumRes = useQido
+            ? await dicomWeb.EnumerateInstancesAsync(originNode, studyInstanceUid, ct)
+            : await dimse.EnumerateInstancesAsync(originNode, studyInstanceUid, ct);
         if (!enumRes.Success)
-            throw new InvalidOperationException(enumRes.ErrorMessage ?? "C-FIND IMAGE sin éxito.");
+            throw new InvalidOperationException(enumRes.ErrorMessage
+                ?? (useQido ? "QIDO-instances sin éxito." : "C-FIND IMAGE sin éxito."));
 
         // Idempotente: delete-then-insert.
         await discInstanceRepo.DeleteForStudyAsync(discoveredStudyId);

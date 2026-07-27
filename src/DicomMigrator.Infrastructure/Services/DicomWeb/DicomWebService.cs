@@ -31,6 +31,7 @@ public class DicomWebService(ILogger<DicomWebService> logger, IHttpClientFactory
             AccessionNumber  = query.AccessionNumber,
             Modality         = query.Modality,
             ModalitiesInStudy = query.ModalitiesInStudy,
+            StudyTime        = query.StudyTime,
             Limit            = query.Limit,
             Offset           = query.Offset,
             IncludeField     = query.IncludeField,

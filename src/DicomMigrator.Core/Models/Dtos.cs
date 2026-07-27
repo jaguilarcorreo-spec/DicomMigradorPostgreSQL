@@ -46,6 +46,9 @@ public class CFindQuery
     public string? SopInstanceUid     { get; set; }
     public string? Modality           { get; set; }
     public string? ModalitiesInStudy  { get; set; }
+    /// <summary>Rango horario DICOM "HHMMSS-HHMMSS" para acotar la consulta por hora
+    /// (subdivisión del descubrimiento). Vacío/nulo = sin filtro de hora.</summary>
+    public string? StudyTime          { get; set; }
     public int?    MaxResults         { get; set; }
 }
 
@@ -127,6 +130,9 @@ public class QidoQuery
     public string? AccessionNumber   { get; set; }
     public string? Modality          { get; set; }
     public string? ModalitiesInStudy { get; set; }
+    /// <summary>Rango horario DICOM "HHMMSS-HHMMSS" (QIDO range matching sobre StudyTime).
+    /// Vacío/nulo = sin filtro de hora.</summary>
+    public string? StudyTime         { get; set; }
     public int     Limit             { get; set; } = 100;
     public int     Offset            { get; set; } = 0;
     public string? IncludeField      { get; set; }

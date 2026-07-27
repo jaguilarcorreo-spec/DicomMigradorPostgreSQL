@@ -172,5 +172,6 @@ public class DimseService(ILogger<DimseService> logger) : IDimseService
         SopInstanceUid    = q.SopInstanceUid,
         Modality          = q.Modality,
         ModalitiesInStudy = q.ModalitiesInStudy,
+        StudyTime         = q.StudyTime,
     };
 }

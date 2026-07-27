@@ -67,7 +67,7 @@
         </p>
     </HelpSection>
 
-    <HelpSection Title="Particionado adaptativo en 3 niveles" Color="var(--purple)">
+    <HelpSection Title="Particionado adaptativo (día → modalidad → hora)" Color="var(--purple)">
         <p style="margin:0 0 14px 0;color:var(--text-dim);font-size:13px;line-height:1.6">
             El motor empieza con una partición por día y baja de granularidad sólo cuando detecta posible truncamiento.
             Si el número de resultados devueltos es <strong>igual o mayor</strong> que el límite configurado, asume que el PACS truncó la respuesta y subdivide.
@@ -109,7 +109,7 @@
                 <tr><td><span class="status-badge s-Running">Running</span></td><td>Worker realizando la consulta al PACS.</td></tr>
                 <tr><td><span class="status-badge s-Completed">Completed</span></td><td>Procesada con éxito, sin truncamiento.</td></tr>
                 <tr><td><span class="status-badge s-Subdivided">Subdivided</span></td><td>Detectado posible truncamiento — se generaron particiones hijas.</td></tr>
-                <tr><td><span class="status-badge s-PossiblyTruncated">PossiblyTruncated</span></td><td>Llegó al nivel máximo de subdivisión y todavía rozó el límite. Datos posiblemente incompletos. <em>Estado terminal — no se reintenta.</em></td></tr>
+                <tr><td><span class="status-badge s-PossiblyTruncated">PossiblyTruncated</span></td><td>Llegó al suelo de subdivisión (franja horaria mínima de ~5 min) y todavía rozó el límite. Datos posiblemente incompletos. <em>Estado terminal — no se reintenta.</em></td></tr>
                 <tr><td><span class="status-badge s-Failed">Failed</span></td><td>Error de comunicación o superó 5 reintentos.</td></tr>
             </tbody>
         </table>
@@ -766,9 +766,9 @@
         new("1", "Particionado inicial por día",  "#3B82F6",       "Se genera una partición tipo 'Day' por cada día del rango configurado. Si el rango es 2026-01-01 → 2026-06-30, se crean ~180 particiones."),
         new("2", "Worker procesa una partición",  "var(--accent)", "Lock atómico en BD asegura que cada partición la procesa un solo worker. Lanza C-FIND o QIDO-RS con el filtro de fecha y, si aplica, modalidad y franja horaria."),
         new("3", "Detección de truncamiento",     "var(--yellow)", "Si el PACS devuelve un número de resultados ≥ al límite configurado, asume truncamiento y subdivide automáticamente."),
-        new("4", "Nivel 2 — DayModality",         "var(--purple)", "Genera 10 particiones hijas, una por modalidad (CT, MR, CR, DX, US, MG, NM, PT, XA, OT). La partición original pasa a Subdivided."),
-        new("5", "Nivel 3 — DayModalityTime",     "var(--green)",  "Si una DayModality sigue truncándose, se subdivide en 4 franjas horarias: 00-05, 06-11, 12-17, 18-23. Es el nivel máximo de subdivisión."),
-        new("6", "Estado terminal PossiblyTruncated", "var(--orange)", "Si una partición de nivel 3 todavía roza el límite, queda como PossiblyTruncated y no se reintenta. Indica que el límite es demasiado bajo para esa franja concreta."),
+        new("4", "Nivel 2 — DayModality",         "var(--purple)", "Genera una partición hija por modalidad: una lista base amplia de códigos DICOM (~45) MÁS las modalidades que realmente aparecen en la respuesta de ese día, de modo que ninguna modalidad (por rara que sea) se quede sin cubrir. La partición original pasa a Subdivided."),
+        new("5", "Nivel 3 — DayModalityTime",     "var(--green)",  "Si una DayModality sigue truncándose, se subdivide por hora (StudyTime): primero en 4 tramos de 6 h (00-05, 06-11, 12-17, 18-23) y, si alguno aún se trunca, se biseca su ventana recursivamente (la mitad cada vez) hasta bajar del límite o llegar a un suelo de ~5 min. El filtro de hora se aplica de verdad en C-FIND y QIDO."),
+        new("6", "Estado terminal PossiblyTruncated", "var(--orange)", "Si una franja horaria ya en el suelo (~5 min) todavía roza el límite, queda como PossiblyTruncated y no se reintenta. Señala una densidad de estudios extraordinaria en ese tramo o un límite demasiado bajo."),
         new("7", "Upsert al inventario",          "var(--red)",    "Cada estudio descubierto se inserta o actualiza por StudyInstanceUID. Un mismo estudio nunca se duplica, aunque distintas particiones lo devuelvan."),
     ];
 

@@ -36,6 +36,7 @@ public class TesterCFindQueryInternal
     public string? SopInstanceUid    { get; set; }
     public string? Modality          { get; set; }
     public string? ModalitiesInStudy { get; set; }
+    public string? StudyTime         { get; set; }
 }
 
 public class TesterCMoveRequestInternal
@@ -299,7 +300,9 @@ public class DimseTestService(ILogger<DimseTestService> logger)
         ds.AddOrUpdate(DicomTag.NumberOfStudyRelatedSeries, "");
         // Claves de retorno adicionales (v207). Son atributos opcionales: un SCP
         // conforme que no los soporte simplemente los devuelve vacíos.
-        ds.AddOrUpdate(DicomTag.StudyTime,          "");
+        // StudyTime: si viene un rango ("HHMMSS-HHMMSS") actúa como clave de MATCHING
+        // (acota por hora en la subdivisión); si viene vacío, es solo clave de retorno.
+        ds.AddOrUpdate(DicomTag.StudyTime,          query.StudyTime ?? "");
         ds.AddOrUpdate(DicomTag.InstitutionName,    "");
         ds.AddOrUpdate(DicomTag.RetrieveAETitle,    "");
         ds.AddOrUpdate(DicomTag.PatientBirthDate,   "");

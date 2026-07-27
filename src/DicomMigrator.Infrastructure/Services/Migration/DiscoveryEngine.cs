@@ -256,6 +256,7 @@ public class DiscoveryEngine(
                 {
                     StudyDate    = BuildDateForQuery(partition),
                     Modality     = partition.Modality,
+                    StudyTime    = BuildTimeForQuery(partition),
                     Limit        = job.PacsResultLimit + 1,  // +1 to detect truncation
                     IncludeField = DiscoveryIncludeFields,
                 }, ct);
@@ -269,6 +270,7 @@ public class DiscoveryEngine(
                     Level             = "STUDY",
                     StudyDate         = BuildDateForQuery(partition),
                     ModalitiesInStudy = partition.Modality,
+                    StudyTime         = BuildTimeForQuery(partition),
                 }, ct);
                 studies = find.Studies;
                 if (!find.Success) result = "ERROR";
@@ -317,6 +319,16 @@ public class DiscoveryEngine(
             {
                 logger.LogWarning("[{Worker}] Partición posiblemente truncada ({Count} >= {Limit}) — subdividiendo",
                     workerId, studies.Count, job.PacsResultLimit);
+
+                // Persistir la MUESTRA truncada antes de subdividir: los estudios de la
+                // primera página quedan guardados aunque tengan StudyTime o modalidad
+                // vacíos (que los filtros de las particiones hijas no capturarían). El
+                // upsert por StudyInstanceUID deduplica con lo que traigan las hijas.
+                var sample = studies
+                    .Where(s => !string.IsNullOrEmpty(s.StudyInstanceUid))
+                    .Select(s => { var d = MapToDiscovered(s, job); d.PartitionId = partition.Id; return d; })
+                    .ToList();
+                await studyRepo.UpsertAsync(sample);
 
                 var children = Subdivide(partition, jobId, studies);
                 await jobRepo.AddPartitionsAsync(children);
@@ -373,8 +385,11 @@ public class DiscoveryEngine(
 
     // ── Adaptive subdivision logic ──────────────────────────────────────────────
     private static bool CanSubdivide(DiscoveryPartition p) =>
-        // Day → DayModality → DayModalityTime; can't subdivide beyond time ranges
-        p.PartitionType is "Day" or "DayModality";
+        // Day → DayModality → DayModalityTime, y un DayModalityTime todavía se puede
+        // afinar bisecando su ventana horaria hasta el suelo mínimo. La bisección es
+        // agnóstica a la modalidad, así que no pierde estudios por su modalidad.
+        p.PartitionType is "Day" or "DayModality"
+        || (p.PartitionType == "DayModalityTime" && TimeWindowSeconds(p) > MinTimeWindowSeconds);
 
     private static List<DiscoveryPartition> Subdivide(
         DiscoveryPartition parent, int jobId, IReadOnlyList<DicomStudyDto> studies)
@@ -407,25 +422,62 @@ public class DiscoveryEngine(
         }
         else if (parent.PartitionType == "DayModality")
         {
-            // Level 3: split by time range
+            // Level 3: split by time range (4 franjas de 6 h)
             foreach (var (from, to) in TimeRanges)
+                children.Add(TimeChild(parent, jobId, ParseHms(from), ParseHms(to)));
+        }
+        else if (parent.PartitionType == "DayModalityTime")
+        {
+            // Level 3+: bisección recursiva de la ventana horaria. Mantiene la
+            // modalidad del padre (agnóstica a modalidad → no pierde estudios); solo
+            // afina el rango hasta bajar del límite o llegar al suelo (MinTimeWindowSeconds).
+            int from = ParseHms(parent.StudyTimeFrom);
+            int to   = ParseHms(parent.StudyTimeTo);
+            if (to > from)
             {
-                children.Add(new DiscoveryPartition
-                {
-                    DiscoveryJobId = jobId,
-                    PartitionType  = "DayModalityTime",
-                    StartDate      = parent.StartDate,
-                    EndDate        = parent.EndDate,
-                    Modality       = parent.Modality,
-                    StudyTimeFrom  = from,
-                    StudyTimeTo    = to,
-                    Status         = "Pending",
-                });
+                int mid = from + (to - from) / 2;
+                children.Add(TimeChild(parent, jobId, from, mid));
+                children.Add(TimeChild(parent, jobId, mid + 1, to));
             }
         }
 
         return children;
     }
+
+    // ── Helpers de ventana horaria (subdivisión temporal recursiva) ──────────────
+    /// <summary>Suelo de bisección: si una ventana de ≤ este tamaño sigue truncándose,
+    /// se marca PossiblyTruncated en vez de seguir partiendo (evita partición infinita).</summary>
+    private const int MinTimeWindowSeconds = 300;   // 5 minutos
+
+    private static int TimeWindowSeconds(DiscoveryPartition p)
+        => ParseHms(p.StudyTimeTo) - ParseHms(p.StudyTimeFrom);
+
+    private static int ParseHms(string? hms)
+    {
+        if (string.IsNullOrEmpty(hms) || hms.Length < 6) return 0;
+        _ = int.TryParse(hms.AsSpan(0, 2), out var h);
+        _ = int.TryParse(hms.AsSpan(2, 2), out var m);
+        _ = int.TryParse(hms.AsSpan(4, 2), out var s);
+        return h * 3600 + m * 60 + s;
+    }
+
+    private static string FmtHms(int totalSeconds)
+    {
+        totalSeconds = Math.Clamp(totalSeconds, 0, 86399);
+        return $"{totalSeconds / 3600:D2}{(totalSeconds % 3600) / 60:D2}{totalSeconds % 60:D2}";
+    }
+
+    private static DiscoveryPartition TimeChild(DiscoveryPartition parent, int jobId, int fromSec, int toSec) => new()
+    {
+        DiscoveryJobId = jobId,
+        PartitionType  = "DayModalityTime",
+        StartDate      = parent.StartDate,
+        EndDate        = parent.EndDate,
+        Modality       = parent.Modality,
+        StudyTimeFrom  = FmtHms(fromSec),
+        StudyTimeTo    = FmtHms(toSec),
+        Status         = "Pending",
+    };
 
     // ── Mapping helpers ─────────────────────────────────────────────────────────
     private static string BuildDateForQuery(DiscoveryPartition p)
@@ -435,6 +487,17 @@ public class DiscoveryEngine(
         var start = p.StartDate.Value.ToString("yyyyMMdd");
         if (p.EndDate is null || p.EndDate == p.StartDate) return start;
         return $"{start}-{p.EndDate.Value:yyyyMMdd}";
+    }
+
+    /// <summary>Rango horario para la consulta ("HHMMSS-HHMMSS"), o null si la partición
+    /// no acota por hora. Se aplica como matching key en C-FIND (StudyTime) y como
+    /// parámetro StudyTime en QIDO-RS, de modo que la subdivisión por hora reduce de
+    /// verdad el conjunto (antes viajaba solo en la entidad y no llegaba a la consulta).</summary>
+    private static string? BuildTimeForQuery(DiscoveryPartition p)
+    {
+        if (string.IsNullOrEmpty(p.StudyTimeFrom) || string.IsNullOrEmpty(p.StudyTimeTo))
+            return null;
+        return $"{p.StudyTimeFrom}-{p.StudyTimeTo}";
     }
 
     /// <summary>Claves de retorno pedidas al PACS por QIDO-RS en el descubrimiento (v207).

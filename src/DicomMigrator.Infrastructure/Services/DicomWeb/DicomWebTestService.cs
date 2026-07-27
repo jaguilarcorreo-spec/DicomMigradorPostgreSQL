@@ -35,6 +35,7 @@ public class TesterQidoQuery
     public string? AccessionNumber   { get; set; }
     public string? Modality          { get; set; }
     public string? ModalitiesInStudy { get; set; }
+    public string? StudyTime         { get; set; }
     public int     Limit             { get; set; } = 100;
     public int     Offset            { get; set; } = 0;
     public string? IncludeField      { get; set; }
@@ -287,6 +288,7 @@ public class DicomWebTestService
         var qs  = new List<string>();
         if (!string.IsNullOrWhiteSpace(query.PatientId))         qs.Add($"PatientID={Uri.EscapeDataString(query.PatientId)}");
         if (!string.IsNullOrWhiteSpace(query.StudyDate))         qs.Add($"StudyDate={Uri.EscapeDataString(query.StudyDate)}");
+        if (!string.IsNullOrWhiteSpace(query.StudyTime))         qs.Add($"StudyTime={Uri.EscapeDataString(query.StudyTime)}");
         if (!string.IsNullOrWhiteSpace(query.AccessionNumber))   qs.Add($"AccessionNumber={Uri.EscapeDataString(query.AccessionNumber)}");
         if (!string.IsNullOrWhiteSpace(query.StudyInstanceUid))  qs.Add($"StudyInstanceUID={Uri.EscapeDataString(query.StudyInstanceUid)}");
         if (!string.IsNullOrWhiteSpace(query.Modality))          qs.Add($"Modality={Uri.EscapeDataString(query.Modality)}");
