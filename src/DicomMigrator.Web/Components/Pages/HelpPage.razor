@@ -127,8 +127,9 @@
         <p style="margin:0 0 10px 0;color:var(--text-dim);font-size:13px;line-height:1.6">
             Además de <strong>DESCUBRIR</strong> (catalogar los estudios), cada job ofrece un segundo proceso gobernado:
             <strong style="color:#a78bfa">ENUMERAR</strong>. Enumera, estudio a estudio, los <code>SOPInstanceUID</code> de origen
-            (por <strong>QIDO-instances</strong> si el origen tiene DICOMweb, o <strong>C-FIND a nivel IMAGE</strong> en su defecto) y los
-            almacena en el inventario. Es opcional y más lento que descubrir; tiene sus mismos controles
+            <strong>por el mismo método que el descubrimiento</strong>: <strong>QIDO-instances</strong> si el job descubre por QIDO,
+            o <strong>C-FIND a nivel IMAGE</strong> si descubre por C-FIND (los jobs CSV, sin protocolo de consulta, usan QIDO si el
+            origen tiene DICOMweb y C-FIND si no). Los almacena en el inventario. Es opcional y más lento que descubrir; tiene sus mismos controles
             (Iniciar/Pausar/Reanudar/Parar), su propia barra de progreso (con tiempo transcurrido e instancias acumuladas)
             y usa los mismos <code>workers</code> del job.
         </p>

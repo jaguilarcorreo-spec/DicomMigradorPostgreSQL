@@ -42,7 +42,7 @@ public interface IInstanceCaptureService
     Task<InstanceCaptureResult> CaptureForJobAsync(int jobId, bool forceRecapture = false, CancellationToken ct = default);
 
     /// <summary>Captura (enumera + persiste) los UIDs de origen de un estudio descubierto.</summary>
-    Task<int> CaptureForStudyAsync(DicomNode originNode, long discoveredStudyId, string studyInstanceUid, CancellationToken ct = default);
+    Task<int> CaptureForStudyAsync(DicomNode originNode, long discoveredStudyId, string studyInstanceUid, bool? preferQido = null, CancellationToken ct = default);
 
     // ── Proceso gobernado (Start/Pause/Resume/Stop), por job ──────────────────
     Task StartCaptureAsync(int jobId, CancellationToken ct = default);

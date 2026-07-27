@@ -1,9 +1,10 @@
 // ══════════════════════════════════════════════════════════════════════════════
 //  InstanceCaptureService.cs
 //  Nivel 2 de verificación — captura de UIDs de ORIGEN en el DESCUBRIMIENTO.
-//  Enumera los SOPInstanceUID de cada estudio de un DiscoveryJob por QIDO-instances
-//  (si el nodo de origen tiene DICOMweb) o por C-FIND IMAGE en su defecto — misma
-//  regla 4A que la enumeración de destino en la verificación. Los persiste
+//  Enumera los SOPInstanceUID de cada estudio de un DiscoveryJob SIGUIENDO EL MÉTODO
+//  DE CONSULTA del propio job: QIDO-instances si descubre por QIDO, C-FIND IMAGE si
+//  descubre por C-FIND. Los jobs CSV (sin protocolo de consulta) caen al auto por
+//  capacidad del nodo (QIDO si tiene DICOMweb, C-FIND IMAGE si no). Los persiste
 //  (DiscoveredInstance). Idempotente (borra y reinserta por estudio).
 //  Proceso gobernado por jobId (Start/Pause/Resume/Stop), espejando verificación.
 //  Al crear una migración desde el inventario, estos UIDs se copian a
@@ -134,6 +135,13 @@ public class InstanceCaptureService(
         logger.LogInformation("Captura Nivel 2 · job {Id} · {N} estudios · origen {Alias} · {T} hilo(s)",
             jobId, studies.Count, origin.Alias, threads);
 
+        // La enumeración sigue el MÉTODO DE CONSULTA del descubrimiento: si el job
+        // descubre por QIDO, enumera por QIDO-instances; si por C-FIND, por C-FIND IMAGE.
+        // Los jobs CSV no tienen protocolo de consulta → null = auto por capacidad del nodo.
+        bool? preferQido = string.Equals(job.DiscoveryType, "CSV", StringComparison.OrdinalIgnoreCase)
+            ? null
+            : string.Equals(job.QueryMethod, "QIDO", StringComparison.OrdinalIgnoreCase);
+
         int captured = 0, skipped = 0, failed = 0, instances = 0;
         var failures = new System.Collections.Concurrent.ConcurrentBag<string>();
 
@@ -152,7 +160,7 @@ public class InstanceCaptureService(
                 }
                 try
                 {
-                    var n = await CaptureForStudyAsync(origin, study.Id, study.Uid, token);
+                    var n = await CaptureForStudyAsync(origin, study.Id, study.Uid, preferQido, token);
                     Interlocked.Increment(ref captured);
                     Interlocked.Add(ref instances, n);
                 }
@@ -178,13 +186,15 @@ public class InstanceCaptureService(
     }
 
     public async Task<int> CaptureForStudyAsync(
-        DicomNode originNode, long discoveredStudyId, string studyInstanceUid, CancellationToken ct = default)
+        DicomNode originNode, long discoveredStudyId, string studyInstanceUid,
+        bool? preferQido = null, CancellationToken ct = default)
     {
-        // Regla 4A: QIDO-instances si el origen tiene DICOMweb; C-FIND IMAGE si no.
-        // Misma lógica que la enumeración de destino en VerifyStudyAsync, para que la
-        // captura no dependa del DIMSE del origen cuando el descubrimiento va por QIDO.
-        var useQido = originNode.HasDicomWeb
-            && !string.IsNullOrWhiteSpace(originNode.WebBaseUrl ?? originNode.QidoBaseUrl);
+        // La enumeración sigue el método del descubrimiento (preferQido): true = QIDO-instances,
+        // false = C-FIND IMAGE. Si no se especifica (jobs CSV, o llamada suelta), se decide por
+        // capacidad del nodo (regla 4A): QIDO si tiene DICOMweb, C-FIND IMAGE si no.
+        var useQido = preferQido
+            ?? (originNode.HasDicomWeb
+                && !string.IsNullOrWhiteSpace(originNode.WebBaseUrl ?? originNode.QidoBaseUrl));
 
         var enumRes = useQido
             ? await dicomWeb.EnumerateInstancesAsync(originNode, studyInstanceUid, ct)
