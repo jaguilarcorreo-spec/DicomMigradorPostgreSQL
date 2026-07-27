@@ -6,22 +6,31 @@
 > Lee primero el **Paso 0**: ahí se decide todo lo demás.
 >
 > **Buena noticia:** no hay que tocar ni una línea de código. Todo es configuración.
+>
+> **Revisión (correcciones aplicadas frente a versiones anteriores):**
+> - Cadena de conexión: la clave correcta es **`Default`**, no `DefaultConnection`
+>   (el Anexo tenía este error, que dejaba la BD sin conectar → error `28P01`).
+> - Aviso de **choque de puertos**: el `appsettings.json` base trae un endpoint HTTP
+>   en el 5200 y la configuración **se combina**; si añades HTTPS también en el 5200,
+>   Kestrel falla con `Failed to bind to address`. Ver Paso 5.
+> - Para uso **solo desde el propio servidor**, HTTPS es opcional: HTTP en `localhost`
+>   es una opción final perfectamente válida (ver Paso 0).
 
 ---
 
 ## Índice
 
-1. [Paso 0 — Decidir qué necesitas](#paso-0--decidir-qué-necesitas)
-2. [Paso 1 — Elegir el tipo de certificado](#paso-1--elegir-el-tipo-de-certificado)
-3. [Paso 2 — Obtener el certificado](#paso-2--obtener-el-certificado)
-4. [Paso 3 — Instalarlo en Windows](#paso-3--instalar-el-certificado-en-windows)
-5. [Paso 4 — Dar permisos al servicio](#paso-4--dar-permisos-al-servicio-el-paso-que-más-falla)
-6. [Paso 5 — Configurar la aplicación](#paso-5--configurar-la-aplicación)
-7. [Paso 6 — Abrir el firewall](#paso-6--abrir-el-firewall)
-8. [Paso 7 — Reiniciar y comprobar](#paso-7--reiniciar-y-comprobar)
-9. [Problemas frecuentes](#problemas-frecuentes)
-10. [Cómo volver atrás](#cómo-volver-atrás)
-11. [Anexo: fichero de configuración completo](#anexo-fichero-de-configuración-completo)
+1. Paso 0 — Decidir qué necesitas
+2. Paso 1 — Elegir el tipo de certificado
+3. Paso 2 — Obtener el certificado
+4. Paso 3 — Instalarlo en Windows
+5. Paso 4 — Dar permisos al servicio
+6. Paso 5 — Configurar la aplicación
+7. Paso 6 — Abrir el firewall
+8. Paso 7 — Reiniciar y comprobar
+9. Problemas frecuentes
+10. Cómo volver atrás
+11. Anexo: fichero de configuración completo
 
 ---
 
@@ -33,13 +42,19 @@ Antes de tocar nada, responde a estas dos preguntas. **Determinan todo el resto.
 
 | Respuesta | Qué implica |
 |---|---|
-| **Solo desde el propio servidor** (abres el navegador en la máquina donde está instalada) | HTTPS es opcional: el tráfico no sale de la máquina. Puedes hacerlo igualmente, pero no es urgente |
-| **Desde otros ordenadores de la red** | **HTTPS es obligatorio.** Ahora mismo viajan datos de paciente en claro por la red del hospital |
+| **Solo desde el propio servidor** (abres el navegador en la máquina donde está instalada) | **HTTPS no es necesario.** El tráfico nunca sale de la máquina, así que no hay de quién protegerse. Lo más simple y válido es quedarte en `http://localhost:5200` y no instalar ningún certificado. |
+| **Desde otros ordenadores de la red** | **HTTPS es obligatorio.** Ahora mismo viajan datos de paciente en claro por la red del hospital. |
+
+> ✅ **Si solo usas la aplicación desde el servidor, puedes parar aquí:** deja la
+> configuración en `http://localhost:5200` y sáltate el resto de la guía. El único
+> "efecto" de ir por HTTP es que la pantalla de acceso muestra un aviso ámbar de
+> "conexión sin cifrar", que en localhost es inofensivo (no hay red por la que viajen
+> los datos). Si ese aviso cosmético te molesta, entonces sí sigue con la guía usando
+> `localhost` (no `0.0.0.0`) y **sáltate el Paso 6** (firewall).
 
 > ⚠️ Hoy la aplicación está configurada como `http://localhost:5200`. La palabra
 > `localhost` significa que **solo acepta conexiones desde la propia máquina**.
-> Si accedes desde otros equipos, ya lo habrás cambiado; si no, este es el momento
-> de decidirlo (Paso 5).
+> Si accedes desde otros equipos, hay que cambiarlo a `0.0.0.0` (Paso 5).
 
 ### Pregunta 2: ¿El servidor está en un dominio Windows del hospital?
 
@@ -76,6 +91,7 @@ El certificado se emite **para un nombre concreto**. Tienes que decidirlo ahora:
 
 - Si accedes por nombre: `dicommigrator.hospital.local`
 - Si accedes por IP: `192.168.1.50`
+- Si accedes solo desde el servidor: `localhost`
 
 **Ese es el nombre que tendrás que escribir en el navegador.** Si el certificado
 dice `dicommigrator.hospital.local` y entras por `https://192.168.1.50:5200`, el
@@ -109,7 +125,8 @@ Se genera en 2 minutos con PowerShell.
 1. Abre **PowerShell como Administrador** en el servidor
    *(botón derecho sobre el icono → "Ejecutar como administrador")*
 
-2. Ejecuta, cambiando el nombre por el tuyo:
+2. Ejecuta, cambiando el nombre por el tuyo (deja `localhost` en la lista si vas a
+   entrar desde el propio servidor):
 
 ```powershell
 $cert = New-SelfSignedCertificate `
@@ -170,7 +187,7 @@ bien, y aun así el servicio no arranca: no puede *leer* la clave privada.
 ### Averiguar con qué cuenta corre el servicio
 
 1. `Win + R` → `services.msc` → Enter
-2. Busca el servicio **DicomMigrator**
+2. Busca el servicio **DicomMigrator** *(o el nombre con el que lo registraste)*
 3. Botón derecho → **Propiedades** → pestaña **Iniciar sesión**
 4. Anota la cuenta:
    - `Sistema local` (LocalSystem) → **no necesitas hacer nada**, salta al Paso 5
@@ -200,7 +217,13 @@ C:\DicomMigrator\appsettings.Production.json
 ```
 
 > 📌 Este fichero se crea **a mano** en el servidor y no se sobrescribe al
-> publicar una versión nueva. Si no existe, créalo.
+> publicar una versión nueva. Si no existe, créalo. (En tu instalación la carpeta
+> puede ser otra, p. ej. `C:\DicomMOVE`; usa la tuya.)
+
+> ⚠️ **La cadena de conexión debe seguir presente y con la clave `Default`.** Si este
+> fichero no incluye `ConnectionStrings:Default` con la contraseña real, la aplicación
+> cae al valor por defecto (usuario `postgres` sin contraseña) y **no arranca**
+> (`28P01`). Ver el Anexo para el fichero completo.
 
 ### Antes de editar: haz copia
 
@@ -209,27 +232,27 @@ Copy-Item C:\DicomMigrator\appsettings.Production.json `
           C:\DicomMigrator\appsettings.Production.json.bak
 ```
 
-### La sección a cambiar
+### ⚠️ Importante: el choque de puertos
 
-Busca la sección `"Kestrel"`. Ahora dirá algo parecido a:
+El `appsettings.json` base (el que se publica junto al `.exe`) ya define un endpoint
+**HTTP en el puerto 5200**. La configuración de `appsettings.Production.json`
+**se combina** con la base, **no la reemplaza**. Por tanto:
+
+- Si añades **HTTPS también en el 5200** sin tocar el HTTP, Kestrel intenta enlazar el
+  mismo puerto dos veces y **falla al arrancar** con `Failed to bind to address`.
+- La forma fiable de evitarlo es **definir los dos endpoints** en tu fichero, con el
+  HTTP en un puerto distinto (así tu valor sobrescribe el HTTP del base). Es el
+  **Caso recomendado** de abajo.
+
+### Caso recomendado — HTTP (otro puerto) + HTTPS
+
+Mueve el HTTP a otro puerto (p. ej. 5201) y pon el HTTPS en el 5200. Quien entre por
+HTTP será **redirigido automáticamente** a HTTPS.
 
 ```json
 "Kestrel": {
   "Endpoints": {
-    "Http": {
-      "Url": "http://localhost:5200"
-    }
-  }
-}
-```
-
-Sustitúyela por **una** de estas dos, según el caso.
-
-#### Caso 1 — Solo HTTPS (recomendado)
-
-```json
-"Kestrel": {
-  "Endpoints": {
+    "Http":  { "Url": "http://0.0.0.0:5201" },
     "Https": {
       "Url": "https://0.0.0.0:5200",
       "Certificate": {
@@ -248,17 +271,19 @@ Cambia `Subject` por el nombre de **tu** certificado.
 > 🔧 `"AllowInvalid": true` es necesario **si el certificado es autofirmado**.
 > Si es de una CA interna o pública, ponlo a `false`.
 
-#### Caso 2 — HTTP y HTTPS a la vez (transición)
+### Caso alternativo — Solo HTTPS
 
-Útil mientras avisas a los usuarios: quien entre por HTTP será **redirigido
-automáticamente** a HTTPS.
+Si quieres **únicamente** HTTPS (sin ningún HTTP), no basta con poner solo el bloque
+`Https`: hay que **eliminar el endpoint HTTP del `appsettings.json` base**, porque el
+overlay no puede borrarlo, solo cambiarlo. Es decir:
+
+1. Edita `C:\DicomMigrator\appsettings.json` (el base) y **quita** el bloque
+   `Kestrel:Endpoints:Http`.
+2. Pon en `appsettings.Production.json` solo el bloque `Https`:
 
 ```json
 "Kestrel": {
   "Endpoints": {
-    "Http": {
-      "Url": "http://0.0.0.0:5201"
-    },
     "Https": {
       "Url": "https://0.0.0.0:5200",
       "Certificate": {
@@ -272,8 +297,8 @@ automáticamente** a HTTPS.
 }
 ```
 
-> La aplicación detecta sola que hay un endpoint HTTPS y **activa la redirección
-> automática**. No hay que configurar nada más.
+> Si no quieres tocar el fichero base, usa el **Caso recomendado** (dos endpoints): es
+> más simple y no choca.
 
 ### ¿`localhost` o `0.0.0.0`?
 
@@ -282,7 +307,8 @@ automáticamente** a HTTPS.
 | `localhost` | Solo se puede acceder **desde el propio servidor** |
 | `0.0.0.0` | Se puede acceder **desde cualquier equipo de la red** |
 
-Si respondiste "desde otros ordenadores" en el Paso 0, usa `0.0.0.0`.
+Si respondiste "desde otros ordenadores" en el Paso 0, usa `0.0.0.0`. Si solo accedes
+desde el servidor, usa `localhost` y **sáltate el Paso 6**.
 
 ### Alternativa: certificado desde fichero PFX
 
@@ -317,7 +343,8 @@ Si no dice nada, el fichero es correcto. Si da error, revisa comas y llaves.
 
 ## Paso 6 — Abrir el firewall
 
-Solo si vas a acceder **desde otros equipos**.
+**Solo si vas a acceder desde otros equipos.** Si usas la aplicación únicamente desde
+el propio servidor, **sáltate este paso**.
 
 En PowerShell **como Administrador**:
 
@@ -351,7 +378,7 @@ Si dice `https://`, **ha funcionado**.
 
 ### Comprobar desde el navegador
 
-Entra por el nombre exacto del certificado:
+Entra por el nombre exacto del certificado (o `localhost` si es solo local):
 
 ```
 https://dicommigrator.hospital.local:5200
@@ -367,14 +394,16 @@ https://dicommigrator.hospital.local:5200
 
 ### El servicio no arranca
 
-Mira el log en `C:\DicomMigrator\logs\` y busca el mensaje:
+Mira el log en `C:\DicomMigrator\logs\` (o ejecuta el `.exe` a mano en una consola,
+que muestra el error directo) y busca el mensaje:
 
 | Mensaje | Causa | Solución |
 |---|---|---|
+| `28P01: la autentificación password falló` | Falta la cadena de conexión real (o la clave está mal escrita: debe ser `Default`, no `DefaultConnection`) | Revisa `ConnectionStrings:Default` en `appsettings.Production.json` |
+| `Failed to bind to address` | **Choque de puertos**: HTTP y HTTPS en el mismo 5200 (el HTTP del `appsettings.json` base sigue ahí), u otro programa ocupa el puerto | Usa el **Caso recomendado** (HTTP en otro puerto) o quita el HTTP del fichero base — ver Paso 5 |
 | `The certificate ... was not found` | El `Subject` no coincide con el certificado | Revisa el nombre exacto en `certlm.msc` |
 | `Keyset does not exist` / `Acceso denegado` | El servicio no puede leer la clave privada | **Paso 4** |
 | `No such file or directory` (con PFX) | Ruta mal escrita | Revisa las barras dobles `\\` |
-| `Failed to bind to address` | El puerto ya está en uso | Otro programa usa el 5200; cambia de puerto |
 | Error de JSON al arrancar | Sintaxis del fichero | Valida con el comando del Paso 5 |
 
 ### "No se puede acceder a este sitio" desde otro equipo
@@ -391,8 +420,7 @@ Es lo esperado con autofirmado. Dos opciones:
 
 **A) Convivir con ello** — pulsar "Avanzado → Continuar" cada vez.
 
-**B) Quitar el aviso** instalando el certificado como *confiable* en cada equipo
-cliente:
+**B) Quitar el aviso** instalando el certificado como *confiable*:
 
 1. En el servidor, exporta el certificado **sin clave privada**:
 
@@ -401,13 +429,11 @@ $c = Get-ChildItem cert:\LocalMachine\My | Where-Object { $_.FriendlyName -eq "D
 Export-Certificate -Cert $c -FilePath C:\DicomMigrator\dicommigrator-public.cer
 ```
 
-2. Copia ese `.cer` a cada equipo cliente.
-3. En el cliente: doble clic → **Instalar certificado** → **Equipo local** →
-   *Colocar todos los certificados en el siguiente almacén* → **Entidades de
-   certificación raíz de confianza**.
+2. En el propio servidor (para uso local) o en cada equipo cliente: doble clic sobre
+   el `.cer` → **Instalar certificado** → **Equipo local** → *Colocar todos los
+   certificados en el siguiente almacén* → **Entidades de certificación raíz de confianza**.
 
-> En un dominio, TI puede distribuirlo a todos los equipos por directiva de grupo
-> (GPO) de una vez.
+> En un dominio, TI puede distribuirlo a todos los equipos por directiva de grupo (GPO).
 
 ### Volví a HTTP y ahora el navegador no me deja entrar
 
@@ -418,7 +444,7 @@ próximos 30 días"*. Si vuelves a HTTP, el navegador se niega.
 **Solución en Chrome / Edge:**
 
 1. Ve a `chrome://net-internals/#hsts` *(o `edge://net-internals/#hsts`)*
-2. En **"Delete domain security policies"**, escribe el nombre del servidor
+2. En **"Delete domain security policies"**, escribe el nombre del servidor (p. ej. `localhost`)
 3. Pulsa **Delete**
 
 > 📌 **Por eso conviene decidir el esquema antes de dar acceso a los usuarios**:
@@ -445,6 +471,12 @@ Copy-Item C:\DicomMigrator\appsettings.Production.json.bak `
 Restart-Service DicomMigrator
 ```
 
+Y para quitar el certificado autofirmado del almacén (empezar de cero):
+
+```powershell
+Get-ChildItem cert:\LocalMachine\My | Where-Object { $_.FriendlyName -eq "DicomMigrator HTTPS" } | Remove-Item
+```
+
 Recuerda que quizá tengas que limpiar el HSTS del navegador (ver arriba).
 
 ---
@@ -457,11 +489,12 @@ Los valores marcados con ⬅️ son los que debes adaptar.
 ```json
 {
   "ConnectionStrings": {
-    "DefaultConnection": "Host=localhost;Port=5432;Database=dicommigrator;Username=dicom_app_migrator;Password=TU_PASSWORD"
+    "Default": "Host=localhost;Port=5432;Database=dicommigrator;Username=dicom_app_migrator;Password=TU_PASSWORD"
   },
 
   "Kestrel": {
     "Endpoints": {
+      "Http":  { "Url": "http://0.0.0.0:5201" },
       "Https": {
         "Url": "https://0.0.0.0:5200",
         "Certificate": {
@@ -491,9 +524,12 @@ Los valores marcados con ⬅️ son los que debes adaptar.
 ```
 
 ⬅️ A adaptar:
-- `Password` de la base de datos
-- `Subject` — el nombre de tu certificado
-- `AllowInvalid` — `true` si es autofirmado, `false` si es de una CA
+- `Default` → la contraseña real de la base de datos (**la clave es `Default`, no `DefaultConnection`**).
+- `Subject` — el nombre de tu certificado.
+- `AllowInvalid` — `true` si es autofirmado, `false` si es de una CA.
+- Puertos — el Anexo usa el **Caso recomendado** (HTTP 5201 + HTTPS 5200) para no chocar
+  con el HTTP del `appsettings.json` base. Si solo accedes desde el servidor, cambia
+  `0.0.0.0` por `localhost`.
 
 ---
 
@@ -502,8 +538,9 @@ Los valores marcados con ⬅️ son los que debes adaptar.
 1. Consigue un certificado (CA interna, o autofirmado con PowerShell).
 2. Instálalo en **Equipo local → Personal**.
 3. Da permiso de **lectura de clave privada** a la cuenta del servicio.
-4. Cambia la sección `Kestrel` de `appsettings.Production.json` a `Https`.
-5. Abre el puerto en el firewall si accedes desde la red.
+4. Cambia la sección `Kestrel` de `appsettings.Production.json` (HTTP en otro puerto +
+   HTTPS en 5200) y deja la cadena `ConnectionStrings:Default` intacta.
+5. Abre el puerto en el firewall **solo** si accedes desde la red.
 6. `Restart-Service DicomMigrator` y comprueba el log.
 
 ---
