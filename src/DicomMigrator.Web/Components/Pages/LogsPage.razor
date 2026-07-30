@@ -38,6 +38,59 @@
     </div>
 </div>
 
+@* ── Diagnóstico avanzado (v218) ── *@
+<div class="card mb2">
+    <div class="card-header">
+        <span class="card-title">Diagnóstico avanzado</span>
+        <span class="card-sub" style="margin-left:8px;font-size:10px;color:var(--text-muted)">
+            categorías tapadas por defecto · cambio en caliente
+        </span>
+    </div>
+    <div class="card-body">
+        <div class="form-hint" style="margin-bottom:12px">
+            El nivel general no llega a estas tres categorías: van capadas a
+            <span class="mono">Warning</span> aparte para que el log no se llene de ruido.
+            Bájalas a <span class="mono">Debug</span> solo mientras diagnostiques.
+        </div>
+
+        @foreach (var cat in _categories)
+        {
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+                <div style="min-width:210px">
+                    <div style="font-size:12px;font-weight:600">@cat.Title</div>
+                    <div class="form-hint" style="margin:0">@cat.Hint</div>
+                </div>
+                @foreach (var lvl in LogLevel.AvailableLevels)
+                {
+                    <AuthorizeView Roles="Administrador" Context="cCat">
+                        <Authorized>
+                            <button class="@CatCss(cat.Current(), lvl)"
+                                    @onclick="@(() => SetCatLevel(cat.Key, lvl))">@lvl</button>
+                        </Authorized>
+                        <NotAuthorized>
+                            <span class="@CatCss(cat.Current(), lvl)" style="opacity:.5;cursor:default">@lvl</span>
+                        </NotAuthorized>
+                    </AuthorizeView>
+                }
+            </div>
+        }
+
+        <div class="info-block" style="margin-top:12px">
+            <div style="margin-bottom:4px"><strong>Volcado DIMSE (requiere reiniciar el servicio)</strong></div>
+            <div>
+                Las opciones <span class="mono">Diagnostics:DicomPduLogging</span> y
+                <span class="mono">Diagnostics:DicomDatasetLogging</span> de
+                <span class="mono">appsettings.json</span> no son niveles de log sino opciones de
+                fo-dicom, así que no se pueden cambiar en caliente.
+            </div>
+            <div style="color:var(--yellow);margin-top:6px">
+                ⚠ <strong>DicomDatasetLogging vuelca los datasets completos, con datos de paciente.</strong>
+                Actívalo solo en pruebas y nunca de forma permanente en producción.
+            </div>
+        </div>
+    </div>
+</div>
+
 @* ── Fichero de log (reutilizado del Tester) ── *@
 <div class="card mb2">
     <div class="card-header">
@@ -230,6 +283,43 @@
 
     void SetLevel(string level) { LogLevel.CurrentLevel = level; LogLevel.NotifyChange(); }
     void OnLevelChanged() => InvokeAsync(StateHasChanged);
+
+    // ── Diagnóstico avanzado por categoría (v218) ────────────────────────────
+    private sealed record LogCategory(string Key, string Title, string Hint, Func<string> Current);
+
+    private List<LogCategory> _categories => [
+        new("sql",   "SQL de EF Core",
+            "Microsoft.EntityFrameworkCore · consultas, parámetros y tiempos",
+            () => LogLevel.SqlLevel),
+        new("http",  "HTTP saliente (DICOMweb)",
+            "System.Net.Http.HttpClient · llamadas QIDO-RS y WADO-RS",
+            () => LogLevel.HttpLevel),
+        new("dicom", "Diálogo DIMSE (fo-dicom)",
+            "FellowOakDicom · asociación, contextos y C-STORE recibidos",
+            () => LogLevel.DicomLevel),
+    ];
+
+    void SetCatLevel(string key, string level)
+    {
+        switch (key)
+        {
+            case "sql":   LogLevel.SqlLevel   = level; break;
+            case "http":  LogLevel.HttpLevel  = level; break;
+            case "dicom": LogLevel.DicomLevel = level; break;
+        }
+        LogLevel.NotifyChange();
+    }
+
+    string CatCss(string current, string l)
+    {
+        if (current != l) return "btn btn-sm btn-ghost";
+        return l switch
+        {
+            "Error" or "Fatal" => "btn btn-sm btn-danger",
+            "Warning"          => "btn btn-sm btn-yellow",
+            _                  => "btn btn-sm btn-primary",
+        };
+    }
 
     string LevelCss(string l)
     {

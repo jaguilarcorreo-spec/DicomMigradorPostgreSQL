@@ -53,9 +53,14 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             e.Property(x => x.DiscoveryMethod).HasMaxLength(20);
             e.Property(x => x.TransferMethod).HasMaxLength(30);
 
-            e.HasOne(x => x.Window)
+            // 1:N — una migración tiene como mucho dos tramos (Tramo1 / Tramo2), cada
+            // uno con sus propios días, horario y modo 24 h.
+            // Antes era 1:1 (HasOne/WithOne), lo que forzaba un índice ÚNICO sobre
+            // MigrationId e impedía separar el horario de L-V del de S-D.
+            e.HasMany(x => x.Windows)
              .WithOne(x => x.Migration)
-             .HasForeignKey<ExecutionWindow>(x => x.MigrationId);
+             .HasForeignKey(x => x.MigrationId)
+             .OnDelete(DeleteBehavior.Cascade);
 
             e.HasMany(x => x.Studies)
              .WithOne(x => x.Migration)
@@ -71,6 +76,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
         {
             e.HasKey(x => x.Id);
             e.Property(x => x.TimeZoneId).HasMaxLength(50);
+            e.Property(x => x.Kind).HasMaxLength(20);
             // PostgreSQL tiene 'time' nativo: Npgsql mapea TimeOnly directamente,
             // sin conversión a string. (Antes se guardaba como "HH:mm" por SQLite.)
         });

@@ -36,22 +36,67 @@ public class LocalConfigState
 public class LogLevelService
 {
     public static readonly LoggingLevelSwitch Switch = new(LogEventLevel.Information);
+
+    // ── Interruptores por categoría (v218) ───────────────────────────────────
+    // Serilog aplica el override de prefijo MÁS LARGO que case con el SourceContext,
+    // así que estos tres ganan al capado genérico de "Microsoft"/"System" que se
+    // configura en Program.cs. Al ser LoggingLevelSwitch se pueden mover EN CALIENTE
+    // desde la UI, igual que el nivel global: no hay que reiniciar el servicio.
+    //
+    // Arrancan en Warning (equivalente a como estaba antes de la v218): mientras no se
+    // toquen, el log se comporta exactamente igual que hasta ahora.
+
+    /// <summary>Categoría "Microsoft.EntityFrameworkCore": al bajarlo a Debug se ve el
+    /// SQL que EF Core ejecuta, con sus parámetros y tiempos.</summary>
+    public static readonly LoggingLevelSwitch SqlSwitch = new(LogEventLevel.Warning);
+
+    /// <summary>Categoría "System.Net.Http.HttpClient": tráfico HTTP saliente, es decir
+    /// las llamadas QIDO-RS / WADO-RS a los PACS con DICOMweb.</summary>
+    public static readonly LoggingLevelSwitch HttpSwitch = new(LogEventLevel.Warning);
+
+    /// <summary>Categoría "FellowOakDicom": diálogo DIMSE de la propia librería
+    /// (asociación, presentation contexts, C-STORE recibidos…). Requiere que fo-dicom
+    /// esté registrado en el contenedor de la aplicación (Program.cs).</summary>
+    public static readonly LoggingLevelSwitch DicomSwitch = new(LogEventLevel.Warning);
+
     private static readonly string[] _levels = ["Verbose", "Debug", "Information", "Warning", "Error", "Fatal"];
     public string[] AvailableLevels => _levels;
+
+    private static LogEventLevel Parse(string? value, LogEventLevel fallback) => value switch
+    {
+        "Verbose"     => LogEventLevel.Verbose,
+        "Debug"       => LogEventLevel.Debug,
+        "Information" => LogEventLevel.Information,
+        "Warning"     => LogEventLevel.Warning,
+        "Error"       => LogEventLevel.Error,
+        "Fatal"       => LogEventLevel.Fatal,
+        _             => fallback,
+    };
+
     public string CurrentLevel
     {
         get => Switch.MinimumLevel.ToString();
-        set => Switch.MinimumLevel = value switch
-        {
-            "Verbose"     => LogEventLevel.Verbose,
-            "Debug"       => LogEventLevel.Debug,
-            "Information" => LogEventLevel.Information,
-            "Warning"     => LogEventLevel.Warning,
-            "Error"       => LogEventLevel.Error,
-            "Fatal"       => LogEventLevel.Fatal,
-            _             => LogEventLevel.Information,
-        };
+        set => Switch.MinimumLevel = Parse(value, LogEventLevel.Information);
     }
+
+    public string SqlLevel
+    {
+        get => SqlSwitch.MinimumLevel.ToString();
+        set => SqlSwitch.MinimumLevel = Parse(value, LogEventLevel.Warning);
+    }
+
+    public string HttpLevel
+    {
+        get => HttpSwitch.MinimumLevel.ToString();
+        set => HttpSwitch.MinimumLevel = Parse(value, LogEventLevel.Warning);
+    }
+
+    public string DicomLevel
+    {
+        get => DicomSwitch.MinimumLevel.ToString();
+        set => DicomSwitch.MinimumLevel = Parse(value, LogEventLevel.Warning);
+    }
+
     public event Action? OnChange;
     public void NotifyChange() => OnChange?.Invoke();
 
@@ -62,16 +107,17 @@ public class LogLevelService
     public static void InitializeFromConfig(string? level)
     {
         if (string.IsNullOrWhiteSpace(level)) return;
-        Switch.MinimumLevel = level switch
-        {
-            "Verbose"     => LogEventLevel.Verbose,
-            "Debug"       => LogEventLevel.Debug,
-            "Information" => LogEventLevel.Information,
-            "Warning"     => LogEventLevel.Warning,
-            "Error"       => LogEventLevel.Error,
-            "Fatal"       => LogEventLevel.Fatal,
-            _             => Switch.MinimumLevel,
-        };
+        Switch.MinimumLevel = Parse(level, Switch.MinimumLevel);
+    }
+
+    /// <summary>Nivel inicial de los interruptores por categoría, desde la sección
+    /// "Diagnostics" de appsettings. Todos son opcionales; lo no indicado se queda en
+    /// Warning, que es el comportamiento previo a la v218.</summary>
+    public static void InitializeCategoriesFromConfig(string? sql, string? http, string? dicom)
+    {
+        if (!string.IsNullOrWhiteSpace(sql))   SqlSwitch.MinimumLevel   = Parse(sql,   SqlSwitch.MinimumLevel);
+        if (!string.IsNullOrWhiteSpace(http))  HttpSwitch.MinimumLevel  = Parse(http,  HttpSwitch.MinimumLevel);
+        if (!string.IsNullOrWhiteSpace(dicom)) DicomSwitch.MinimumLevel = Parse(dicom, DicomSwitch.MinimumLevel);
     }
 }
 

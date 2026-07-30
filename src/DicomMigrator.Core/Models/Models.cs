@@ -119,7 +119,11 @@ public class Migration
     // ── Navigation ───────────────────────────────────────────────────────────
     public DicomNode?            OriginNode     { get; set; }
     public DicomNode?            DestNode       { get; set; }
-    public ExecutionWindow?      Window         { get; set; }
+    /// <summary>Tramos horarios de ejecución. Como mucho dos (<see cref="WindowKinds.Tramo1"/>
+    /// y <see cref="WindowKinds.Tramo2"/>), cada uno con sus propios días, horario y
+    /// modo 24 h. Está abierto si lo está cualquiera de ellos. Colección vacía = sin
+    /// restricción horaria.</summary>
+    public ICollection<ExecutionWindow> Windows { get; set; } = [];
     public ICollection<MigrationStudy>   Studies  { get; set; } = [];
     public ICollection<MigrationAuditLog> AuditLogs { get; set; } = [];
 }
@@ -128,21 +132,53 @@ public class Migration
 // VENTANA DE EJECUCIÓN
 // ══════════════════════════════════════════════════════════════════════════════
 
+/// <summary>Identificadores de los dos tramos horarios que admite una migración.
+/// Son solo etiquetas estables para casar cada registro con su hueco en la UI:
+/// los días de cada tramo los elige el usuario y NO se deducen del identificador.</summary>
+public static class WindowKinds
+{
+    public const string Tramo1 = "Tramo1";
+    public const string Tramo2 = "Tramo2";
+
+    /// <summary>Días ISO con los que se propone cada tramo la primera vez (1=Lun … 7=Dom).
+    /// Es únicamente un valor inicial: el usuario puede cambiarlos libremente.</summary>
+    public const string DiasPorDefectoTramo1 = "1,2,3,4,5";  // lunes a viernes
+    public const string DiasPorDefectoTramo2 = "6,7";        // sábado y domingo
+
+    public static string DefaultDaysFor(string kind) =>
+        kind == Tramo2 ? DiasPorDefectoTramo2 : DiasPorDefectoTramo1;
+
+    /// <summary>Etiqueta legible para la UI y los logs.</summary>
+    public static string Label(string kind) =>
+        kind == Tramo2 ? "Tramo 2" : "Tramo 1";
+}
+
 public class ExecutionWindow
 {
     public int    Id          { get; set; }
     public int    MigrationId { get; set; }
 
-    /// <summary>Comma-separated ISO day numbers: 1=Mon … 7=Sun. E.g. "1,2,3,4,5"</summary>
-    public string EnabledDays   { get; set; } = "1,2,3,4,5";
+    /// <summary>Tramo al que pertenece ("Tramo1" / "Tramo2"). Identificador estable
+    /// del hueco en la UI; no impone qué días cubre.</summary>
+    public string Kind          { get; set; } = WindowKinds.Tramo1;
+
+    /// <summary>Comma-separated ISO day numbers: 1=Mon … 7=Sun. E.g. "1,2,3,4,5".
+    /// Se elige por tramo de forma independiente.</summary>
+    public string EnabledDays   { get; set; } = WindowKinds.DiasPorDefectoTramo1;
     public TimeOnly StartTime   { get; set; } = new TimeOnly(23, 0);
     public TimeOnly EndTime     { get; set; } = new TimeOnly(6, 0);
+
+    /// <summary>Cuando es true el tramo cubre las 24 horas de cada uno de sus días
+    /// y se ignoran StartTime/EndTime. No se prolonga al día siguiente: un tramo de
+    /// fin de semana a 24 h termina el domingo a las 23:59, no el lunes.</summary>
+    public bool   AllDay        { get; set; }
 
     /// <summary>IANA timezone id, e.g. "Europe/Madrid"</summary>
     public string TimeZoneId    { get; set; } = "Europe/Madrid";
 
-    /// <summary>True when StartTime > EndTime (crosses midnight)</summary>
-    public bool   CrossesMidnight => StartTime > EndTime;
+    /// <summary>True when StartTime > EndTime (crosses midnight). Un tramo de 24 h
+    /// nunca se considera que cruce medianoche.</summary>
+    public bool   CrossesMidnight => !AllDay && StartTime > EndTime;
 
     public Migration? Migration  { get; set; }
 }

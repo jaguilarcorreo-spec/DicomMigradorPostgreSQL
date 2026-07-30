@@ -686,7 +686,7 @@ public class VerificationService(
                 if ((DateTime.UtcNow - lastWindowCheck).TotalSeconds >= 30)
                 {
                     var fresh = await migR.GetByIdAsync(migrationId);
-                    windowOpen = fresh?.Window is null || windowScheduler.IsWindowOpen(fresh.Window);
+                    windowOpen = windowScheduler.IsWindowOpen(fresh?.Windows);
                     lastWindowCheck = DateTime.UtcNow;
                 }
                 if (!windowOpen)
@@ -945,7 +945,7 @@ public class MigrationWorker(
 
                 // Respect the execution window — reload migration to pick up window changes
                 var freshMig = await MigrationRepo(scope).GetByIdAsync(migration.Id);
-                if (freshMig?.Window is not null && !WindowSched(scope).IsWindowOpen(freshMig.Window))
+                if (freshMig is not null && !WindowSched(scope).IsWindowOpen(freshMig.Windows))
                 {
                     // Window closed — wait without processing. The WindowScheduler will
                     // flip the migration to Paused; meanwhile workers idle politely.
@@ -1236,25 +1236,68 @@ public class WindowScheduler(
 {
     private readonly Dictionary<int, bool> _lastWindowState = new();
 
+    /// <summary>Evalúa el conjunto de tramos de una migración. Abierto = lo está
+    /// CUALQUIERA de ellos. Sin tramos definidos → sin restricción horaria (true).</summary>
+    public bool IsWindowOpen(IEnumerable<ExecutionWindow>? windows)
+    {
+        if (windows is null) return true;
+        var list = windows as IReadOnlyList<ExecutionWindow> ?? windows.ToList();
+        if (list.Count == 0) return true;
+        foreach (var w in list)
+            if (IsWindowOpen(w)) return true;
+        return false;
+    }
+
+    // Días ISO (1=Lun … 7=Dom) a partir del CSV de EnabledDays.
+    private static HashSet<int> ParseDays(string? csv) =>
+        (csv ?? string.Empty)
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(d => int.TryParse(d, out var n) ? n : -1)
+            .Where(n => n is >= 1 and <= 7)
+            .ToHashSet();
+
+    private static int IsoDow(DateTime d) =>
+        d.DayOfWeek == DayOfWeek.Sunday ? 7 : (int)d.DayOfWeek;
+
     public bool IsWindowOpen(ExecutionWindow window)
     {
         try
         {
-            var tz = TimeZoneInfo.FindSystemTimeZoneById(window.TimeZoneId);
+            var tz  = TimeZoneInfo.FindSystemTimeZoneById(window.TimeZoneId);
             var now = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, tz);
             var currentTime = new TimeOnly(now.Hour, now.Minute);
-            var dayOfWeek = (int)now.DayOfWeek;
-            var isoDow = dayOfWeek == 0 ? 7 : dayOfWeek;
 
-            var enabledDays = window.EnabledDays.Split(',')
-                .Select(d => int.TryParse(d.Trim(), out var n) ? n : -1)
-                .ToHashSet();
+            var enabledDays = ParseDays(window.EnabledDays);
+            if (enabledDays.Count == 0) return false;
 
-            if (!enabledDays.Contains(isoDow)) return false;
+            var todayIso = IsoDow(now);
 
-            return window.CrossesMidnight
-                ? currentTime >= window.StartTime || currentTime <= window.EndTime
-                : currentTime >= window.StartTime && currentTime <= window.EndTime;
+            // Tramo de 24 h: cubre el día natural completo de cada día habilitado.
+            // NO se prolonga al día siguiente (S-D a 24 h acaba el domingo a las 23:59).
+            if (window.AllDay) return enabledDays.Contains(todayIso);
+
+            // Tramo normal dentro del mismo día.
+            if (!window.CrossesMidnight)
+                return enabledDays.Contains(todayIso)
+                    && currentTime >= window.StartTime
+                    && currentTime <= window.EndTime;
+
+            // ── Tramo que CRUZA MEDIANOCHE — manda el día de INICIO ──────────────
+            // "L-V de 22:00 a 06:00" = las cinco noches de lunes a viernes, cada una
+            // prolongándose hasta las 06:00 del día siguiente. Antes se miraba el día
+            // en que estaba el reloj, con dos efectos poco intuitivos: la noche del
+            // viernes se cortaba en seco a medianoche, y en cambio la madrugada del
+            // domingo al lunes sí migraba pese a ser fin de semana.
+
+            // Parte de hoy anterior a medianoche: [Start, 24:00) → la abre HOY.
+            if (currentTime >= window.StartTime)
+                return enabledDays.Contains(todayIso);
+
+            // Cola de la ventana que arrancó AYER: [00:00, End] → la abre AYER.
+            if (currentTime <= window.EndTime)
+                return enabledDays.Contains(IsoDow(now.AddDays(-1)));
+
+            return false;
         }
         catch (Exception ex)
         {
@@ -1283,9 +1326,10 @@ public class WindowScheduler(
                 foreach (var orphanId in _lastWindowState.Keys.Where(k => !liveIds.Contains(k)).ToList())
                     _lastWindowState.Remove(orphanId);
 
-                foreach (var m in migrations.Where(m => m is { Status: "Running" or "Paused", Window: not null }))
+                foreach (var m in migrations.Where(m => m is { Status: "Running" or "Paused" }
+                                                     && m.Windows.Count > 0))
                 {
-                    var open = IsWindowOpen(m.Window!);
+                    var open = IsWindowOpen(m.Windows);
                     // Default to "was open" so that a migration started OUTSIDE its window
                     // is detected as a close transition on the first tick and gets paused.
                     // Without this, the first tick initializes wasOpen=open and the

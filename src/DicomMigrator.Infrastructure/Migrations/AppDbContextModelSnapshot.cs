@@ -505,12 +505,20 @@ namespace DicomMigrator.Infrastructure.Migrations
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
 
+                    b.Property<bool>("AllDay")
+                        .HasColumnType("boolean");
+
                     b.Property<string>("EnabledDays")
                         .IsRequired()
                         .HasColumnType("text");
 
                     b.Property<TimeOnly>("EndTime")
                         .HasColumnType("time without time zone");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
 
                     b.Property<int>("MigrationId")
                         .HasColumnType("integer");
@@ -525,8 +533,7 @@ namespace DicomMigrator.Infrastructure.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("MigrationId")
-                        .IsUnique();
+                    b.HasIndex("MigrationId");
 
                     b.ToTable("ExecutionWindows");
                 });
@@ -951,8 +958,8 @@ namespace DicomMigrator.Infrastructure.Migrations
             modelBuilder.Entity("DicomMigrator.Core.Models.ExecutionWindow", b =>
                 {
                     b.HasOne("DicomMigrator.Core.Models.Migration", "Migration")
-                        .WithOne("Window")
-                        .HasForeignKey("DicomMigrator.Core.Models.ExecutionWindow", "MigrationId")
+                        .WithMany("Windows")
+                        .HasForeignKey("MigrationId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
@@ -1034,7 +1041,7 @@ namespace DicomMigrator.Infrastructure.Migrations
 
                     b.Navigation("Studies");
 
-                    b.Navigation("Window");
+                    b.Navigation("Windows");
                 });
 
             modelBuilder.Entity("DicomMigrator.Core.Models.MigrationStudy", b =>

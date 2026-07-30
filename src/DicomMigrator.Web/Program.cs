@@ -6,6 +6,8 @@ using DicomMigrator.Infrastructure.Services.DicomWeb;
 using DicomMigrator.Infrastructure.Services.Dimse;
 using DicomMigrator.Infrastructure.Services.Migration;
 using DicomMigrator.Web.Services;
+using FellowOakDicom;
+using FellowOakDicom.Network;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.EntityFrameworkCore;
@@ -52,6 +54,13 @@ try
     // permite además cambiarlo en caliente desde la UI (Logs y auditoría).
     LogLevelService.InitializeFromConfig(builder.Configuration["Serilog:MinimumLevel:Default"]);
 
+    // Nivel inicial de las tres categorías de diagnóstico (v218). Si no se indican en
+    // appsettings se quedan en Warning, que es como se comportaba antes.
+    LogLevelService.InitializeCategoriesFromConfig(
+        builder.Configuration["Diagnostics:SqlLevel"],
+        builder.Configuration["Diagnostics:HttpLevel"],
+        builder.Configuration["Diagnostics:DicomLevel"]);
+
     var logPath = Path.Combine(AppContext.BaseDirectory, "logs", "dicommigrator-.log");
 
     builder.Host.UseSerilog((ctx, services, cfg) =>
@@ -59,6 +68,20 @@ try
            .MinimumLevel.Override("Microsoft",            LogEventLevel.Warning)
            .MinimumLevel.Override("Microsoft.AspNetCore", LogEventLevel.Warning)
            .MinimumLevel.Override("System",               LogEventLevel.Warning)
+           // ── Excepciones al capado anterior (v218) ───────────────────────────
+           // Serilog resuelve el override por el prefijo MÁS LARGO que case con el
+           // SourceContext, así que estas tres ganan a "Microsoft" y a "System".
+           // Al ser LoggingLevelSwitch se mueven en caliente desde la página /logs.
+           .MinimumLevel.Override("Microsoft.EntityFrameworkCore", LogLevelService.SqlSwitch)
+           .MinimumLevel.Override("System.Net.Http.HttpClient",    LogLevelService.HttpSwitch)
+           // Dos prefijos a propósito: fo-dicom nombra sus categorías
+           // "FellowOakDicom.Network" en las versiones recientes y "Dicom.Network" en
+           // las antiguas de la rama 5.x, y no está garantizado cuál usa la 5.2.2.
+           // Poner ambos no cuesta nada y evita que el interruptor no haga nada.
+           // "Dicom" NO afecta a los logs propios: Serilog compara contra el prefijo
+           // "Dicom." y "DicomMigrator.Infrastructure…" no empieza por ahí.
+           .MinimumLevel.Override("FellowOakDicom",                LogLevelService.DicomSwitch)
+           .MinimumLevel.Override("Dicom",                         LogLevelService.DicomSwitch)
            .WriteTo.File(
                logPath,
                rollingInterval: Serilog.RollingInterval.Day,
@@ -187,6 +210,30 @@ try
     builder.Services.AddSingleton<LocalConfigState>();
     builder.Services.AddSingleton<LogLevelService>();
 
+    // ── fo-dicom en el contenedor de la aplicación (v218) ─────────────────────
+    // Sin esto, fo-dicom se inicializa con su contenedor interno por defecto y sus
+    // trazas NO llegan a Serilog: no había ninguna traza del diálogo DICOM real
+    // (asociación, presentation contexts, C-STORE recibidos), solo lo que escribía
+    // el código de la aplicación alrededor de cada llamada.
+    // Ojo: además de registrar los servicios hay que puentear el setup GLOBAL con este
+    // contenedor mediante DicomSetupBuilder.UseServiceProvider(app.Services), más abajo.
+    builder.Services.AddFellowOakDicom();
+
+    // Volcado de PDUs y de datasets DIMSE. NO son niveles de log sino opciones de
+    // fo-dicom, así que se leen al arrancar y cambiarlas exige reiniciar el servicio.
+    // Ambas por defecto en false.
+    //   · DicomPduLogging     → una línea por cada PDU P-DATA-TF enviado o recibido.
+    //                           Muy verboso; es lo que hace falta para diagnosticar
+    //                           una asociación que se cae o un C-MOVE que no entrega.
+    //   · DicomDatasetLogging → vuelca los datasets de comando y de datos.
+    //                           ⚠ CONTIENE DATOS DE PACIENTE. Activar solo en pruebas,
+    //                           nunca de forma permanente en producción.
+    builder.Services.Configure<DicomServiceOptions>(o =>
+    {
+        o.LogDataPDUs      = builder.Configuration.GetValue("Diagnostics:DicomPduLogging", false);
+        o.LogDimseDatasets = builder.Configuration.GetValue("Diagnostics:DicomDatasetLogging", false);
+    });
+
     // ── Window Scheduler como hosted service ─────────────────────────────────
     builder.Services.AddHostedService<WindowSchedulerHostedService>();
 
@@ -198,6 +245,13 @@ try
     builder.Services.AddHostedService<DicomMigrator.Web.Services.AuditLogFlushService>();
 
     var app = builder.Build();
+
+    // ── Puente del setup GLOBAL de fo-dicom con este contenedor (v218) ────────
+    // AddFellowOakDicom() por sí solo no basta: fo-dicom mantiene un setup estático que
+    // usan los caminos de código que no reciben el IServiceProvider por inyección. Sin
+    // esta línea, esos caminos siguen usando el contenedor interno y sus trazas nunca
+    // llegan a Serilog. Debe ejecutarse justo después de construir el host.
+    DicomSetupBuilder.UseServiceProvider(app.Services);
 
     // ── Base de datos ─────────────────────────────────────────────────────────
     using (var scope = app.Services.CreateScope())

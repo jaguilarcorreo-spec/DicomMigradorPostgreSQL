@@ -753,42 +753,92 @@
                 </div>
             </div>
             <div class="card-body">
-                <div class="form-section">Días habilitados</div>
-                <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px">
-                    @foreach (var day in _weekDays)
+                @foreach (var slot in _winSlots)
+                {
+                    <div class="form-section">@WindowKinds.Label(slot.Kind)</div>
+                    <div style="display:flex;gap:20px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
+                        <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+                            <input type="checkbox" @bind="slot.Enabled" />
+                            <span>Tramo activo</span>
+                        </label>
+                        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;@(slot.Enabled ? "" : "opacity:.45")">
+                            <input type="checkbox" @bind="slot.AllDay" disabled="@(!slot.Enabled)" />
+                            <span>24 horas (todo el día)</span>
+                        </label>
+                    </div>
+
+                    <label class="form-label">Días de este tramo</label>
+                    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;@(slot.Enabled ? "" : "opacity:.45")">
+                        @foreach (var day in _weekDays)
+                        {
+                            var dayNum = day.num;
+                            var on     = slot.Days.Contains(dayNum);
+                            <div class="@(on ? "day-pill day-on" : "day-pill day-off")"
+                                 style="cursor:@(slot.Enabled ? "pointer" : "not-allowed")"
+                                 @onclick="@(() => ToggleDay(slot, dayNum))">
+                                @day.label
+                            </div>
+                        }
+                    </div>
+                    @if (slot.Enabled && slot.Days.Count == 0)
                     {
-                        var on = _enabledDays.Contains(day.num);
-                        <div class="@(on ? "day-pill day-on" : "day-pill day-off")" style="cursor:pointer"
-                             @onclick="@(() => ToggleDay(day.num))">
-                            @day.label
+                        <div style="color:var(--yellow);margin-bottom:10px">
+                            ⚠ Tramo activo sin ningún día seleccionado: no se aplicará nunca.
                         </div>
                     }
-                </div>
+                    <div class="form-row" style="@(slot.Enabled && !slot.AllDay ? "" : "opacity:.45")">
+                        <div class="form-group">
+                            <label class="form-label">Hora inicio</label>
+                            <input class="form-input mono" @bind="slot.Start" placeholder="23:00"
+                                   disabled="@(!slot.Enabled || slot.AllDay)" />
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Hora fin</label>
+                            <input class="form-input mono" @bind="slot.End" placeholder="06:00"
+                                   disabled="@(!slot.Enabled || slot.AllDay)" />
+                        </div>
+                    </div>
+                    @if (slot.Enabled && !slot.AllDay && slot.CrossesMidnight && slot.Days.Count > 0)
+                    {
+                        <div style="color:var(--yellow);margin-bottom:12px">
+                            ⚠ Cruza medianoche: cada noche de @FormatEnabledDays(slot.DaysCsv)
+                            continúa hasta las @slot.End del día siguiente.
+                        </div>
+                    }
+                }
 
-                <div class="form-section">Horario</div>
-                <div class="form-row-3">
+                <div class="form-section">Zona horaria</div>
+                <div class="form-row">
                     <div class="form-group">
-                        <label class="form-label">Hora inicio</label>
-                        <input class="form-input mono" @bind="_winStart" placeholder="23:00" />
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Hora fin</label>
-                        <input class="form-input mono" @bind="_winEnd" placeholder="06:00" />
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Zona horaria</label>
+                        <label class="form-label">Zona horaria (común a ambos tramos)</label>
                         <input class="form-input mono" @bind="_winTz" placeholder="Europe/Madrid" />
                     </div>
                 </div>
 
-                @if (_detail?.Window is not null)
+                @if (!_winSlots.Any(s => s.Enabled))
                 {
                     <div class="info-block" style="margin-top:8px">
-                        <div>Ventana activa: <span>@_detail.Window.StartTime.ToString("HH:mm") — @_detail.Window.EndTime.ToString("HH:mm") (@_detail.Window.TimeZoneId)</span></div>
-                        <div>Días: <span>@FormatEnabledDays(_detail.Window.EnabledDays)</span></div>
-                        @if (_detail.Window.CrossesMidnight)
+                        <div style="color:var(--yellow)">
+                            ⚠ Sin ningún tramo activo la migración se ejecuta <strong>sin restricción horaria</strong>.
+                        </div>
+                    </div>
+                }
+
+                @if (_detail is not null && _detail.Windows.Count > 0)
+                {
+                    <div class="info-block" style="margin-top:8px">
+                        <div style="margin-bottom:4px"><strong>Configuración guardada</strong></div>
+                        @foreach (var w in _detail.Windows.OrderBy(w => w.Kind == WindowKinds.Tramo2 ? 1 : 0))
                         {
-                            <div style="color:var(--yellow)">⚠ La ventana cruza medianoche</div>
+                            <div>
+                                @WindowKinds.Label(w.Kind):
+                                <span>
+                                    @FormatEnabledDays(w.EnabledDays) ·
+                                    @(w.AllDay ? "24 h (todo el día)"
+                                               : $"{w.StartTime:HH\\:mm} — {w.EndTime:HH\\:mm}")
+                                    (@w.TimeZoneId)
+                                </span>
+                            </div>
                         }
                     </div>
                 }
@@ -1056,8 +1106,47 @@ else
     private static readonly string[] _studyStatuses = ["Pending","Queued","Migrating","Migrated","VerificationPending","Verified","Failed","RetryPending","VerifyFailed","VerifyRetryPending","Cancelled"];
 
     // ── Window config ─────────────────────────────────────────────────────────
-    private HashSet<int> _enabledDays = new([1, 2, 3, 4, 5]);
-    private string _winStart = "23:00", _winEnd = "06:00", _winTz = "Europe/Madrid";
+    // Dos tramos independientes. Cada uno elige SUS días, su horario y si cubre 24 h.
+    // Los días por defecto (L-V y S-D) son solo la propuesta inicial.
+    private sealed class WinSlot
+    {
+        public string       Kind    { get; init; } = WindowKinds.Tramo1;
+        public bool         Enabled { get; set; }
+        public bool         AllDay  { get; set; }
+        public string       Start   { get; set; } = "23:00";
+        public string       End     { get; set; } = "06:00";
+        public HashSet<int> Days    { get; set; } = [];
+
+        public string DaysCsv => string.Join(",", Days.OrderBy(d => d));
+
+        public bool CrossesMidnight =>
+            TimeOnly.TryParse(Start, out var s) && TimeOnly.TryParse(End, out var e) && s > e;
+    }
+
+    private List<WinSlot> _winSlots = NewWinSlots();
+    private string _winTz = "Europe/Madrid";
+
+    private static HashSet<int> ParseDays(string? csv) =>
+        (csv ?? string.Empty)
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(d => int.TryParse(d, out var n) ? n : -1)
+            .Where(n => n is >= 1 and <= 7)
+            .ToHashSet();
+
+    private static List<WinSlot> NewWinSlots() =>
+    [
+        new WinSlot
+        {
+            Kind = WindowKinds.Tramo1, Start = "23:00", End = "06:00",
+            Days = ParseDays(WindowKinds.DiasPorDefectoTramo1),
+        },
+        new WinSlot
+        {
+            Kind = WindowKinds.Tramo2, Start = "08:00", End = "20:00",
+            Days = ParseDays(WindowKinds.DiasPorDefectoTramo2),
+        },
+    ];
+
     private static readonly (int num, string label)[] _weekDays =
         [(1,"Lun"),(2,"Mar"),(3,"Mié"),(4,"Jue"),(5,"Vie"),(6,"Sáb"),(7,"Dom")];
 
@@ -1096,15 +1185,7 @@ else
         _actionMsg = "";
 
         _delStep = 0; _delMsg = ""; _editingMig = false;
-        if (_detail?.Window is not null)
-        {
-            _enabledDays = _detail.Window.EnabledDays.Split(',')
-                .Select(d => int.TryParse(d.Trim(), out var n) ? n : -1)
-                .Where(n => n > 0).ToHashSet();
-            _winStart = _detail.Window.StartTime.ToString("HH:mm");
-            _winEnd   = _detail.Window.EndTime.ToString("HH:mm");
-            _winTz    = _detail.Window.TimeZoneId;
-        }
+        LoadWindowSlots();
         // Restart auto-refresh if migration OR verification is still active
         if (_detail?.Status is "Running" or "Paused" || _detail?.VerificationStatus is "Running" or "Paused")
             StartAutoRefresh();
@@ -1255,7 +1336,39 @@ else
 
     // ── Discovery ─────────────────────────────────────────────────────────────
     // ── Window ───────────────────────────────────────────────────────────────
-    void ToggleDay(int d) { if (!_enabledDays.Remove(d)) _enabledDays.Add(d); }
+
+    /// <summary>Activa o desactiva un día en un tramo concreto. Cada tramo lleva su
+    /// propia selección: pueden solaparse (el resultado es la unión) o dejar días sin
+    /// cubrir.</summary>
+    void ToggleDay(WinSlot slot, int day)
+    {
+        if (!slot.Enabled) return;
+        if (!slot.Days.Remove(day)) slot.Days.Add(day);
+    }
+
+    /// <summary>Vuelca los tramos guardados en el formulario. Un tramo que no existe en
+    /// BD aparece desactivado con sus valores por defecto.</summary>
+    void LoadWindowSlots()
+    {
+        _winSlots = NewWinSlots();
+        // Reiniciar también la zona horaria: si no, al abrir una migración SIN ventanas
+        // se arrastraba la TZ de la migración vista antes y se guardaba esa por error.
+        _winTz = "Europe/Madrid";
+        if (_detail is null) return;
+
+        foreach (var slot in _winSlots)
+        {
+            var saved = _detail.Windows.FirstOrDefault(w => w.Kind == slot.Kind);
+            if (saved is null) continue;
+
+            slot.Enabled = true;
+            slot.AllDay  = saved.AllDay;
+            slot.Start   = saved.StartTime.ToString("HH:mm");
+            slot.End     = saved.EndTime.ToString("HH:mm");
+            slot.Days    = ParseDays(saved.EnabledDays);
+            _winTz       = saved.TimeZoneId;
+        }
+    }
 
     async Task SaveWindowAsync()
     {
@@ -1263,19 +1376,53 @@ else
         _actionBusy = true;
         try
         {
-            var updated = await MigrationRepo.GetByIdAsync(_detail.Id);
-            if (updated is null) return;
-            updated.Window = new ExecutionWindow
+            // Validar las horas ANTES de tocar la BD: si una está mal escrita no se
+            // guarda nada, en vez de dejar media configuración aplicada.
+            var toSave = new List<ExecutionWindow>();
+            foreach (var slot in _winSlots.Where(s => s.Enabled))
             {
-                MigrationId = _detail.Id,
-                EnabledDays = string.Join(",", _enabledDays.OrderBy(d => d)),
-                StartTime   = TimeOnly.Parse(_winStart),
-                EndTime     = TimeOnly.Parse(_winEnd),
-                TimeZoneId  = _winTz,
-            };
-            await MigrationRepo.UpdateAsync(updated);
-            _detail = updated;
-            ShowMsg("Ventana guardada.", true);
+                if (slot.Days.Count == 0)
+                {
+                    ShowMsg($"{WindowKinds.Label(slot.Kind)}: selecciona al menos un día " +
+                            "o desactiva el tramo.", false);
+                    return;
+                }
+
+                TimeOnly start = default, end = default;
+                if (!slot.AllDay)
+                {
+                    if (!TimeOnly.TryParse(slot.Start, out start) || !TimeOnly.TryParse(slot.End, out end))
+                    {
+                        ShowMsg($"{WindowKinds.Label(slot.Kind)}: hora no válida (formato HH:mm).", false);
+                        return;
+                    }
+                    if (start == end)
+                    {
+                        ShowMsg($"{WindowKinds.Label(slot.Kind)}: inicio y fin no pueden coincidir. " +
+                                "Para cubrir el día entero marca «24 horas».", false);
+                        return;
+                    }
+                }
+
+                toSave.Add(new ExecutionWindow
+                {
+                    MigrationId = _detail.Id,
+                    Kind        = slot.Kind,
+                    EnabledDays = slot.DaysCsv,
+                    AllDay      = slot.AllDay,
+                    StartTime   = slot.AllDay ? new TimeOnly(0, 0)  : start,
+                    EndTime     = slot.AllDay ? new TimeOnly(23, 59) : end,
+                    TimeZoneId  = _winTz,
+                });
+            }
+
+            await MigrationRepo.SetWindowsAsync(_detail.Id, toSave);
+            _detail = await MigrationRepo.GetByIdAsync(_detail.Id);
+            LoadWindowSlots();
+
+            ShowMsg(toSave.Count == 0
+                ? "Ventana guardada: sin restricción horaria."
+                : $"Ventana guardada ({toSave.Count} tramo{(toSave.Count == 1 ? "" : "s")}).", true);
         }
         catch (Exception ex) { ShowMsg($"Error: {ex.Message}", false); }
         finally { _actionBusy = false; }

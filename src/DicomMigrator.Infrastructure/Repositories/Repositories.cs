@@ -64,7 +64,7 @@ public class MigrationRepository(IDbContextFactory<AppDbContext> factory) : IMig
         return await db.Migrations
             .Include(m => m.OriginNode)
             .Include(m => m.DestNode)
-            .Include(m => m.Window)
+            .Include(m => m.Windows)
             .OrderByDescending(m => m.CreatedAt)
             .ToListAsync();
     }
@@ -75,7 +75,7 @@ public class MigrationRepository(IDbContextFactory<AppDbContext> factory) : IMig
         return await db.Migrations
             .Include(m => m.OriginNode)
             .Include(m => m.DestNode)
-            .Include(m => m.Window)
+            .Include(m => m.Windows)
             .FirstOrDefaultAsync(m => m.Id == id);
     }
 
@@ -92,43 +92,57 @@ public class MigrationRepository(IDbContextFactory<AppDbContext> factory) : IMig
     {
         await using var db = factory.CreateDbContext();
         var existing = await db.Migrations
-            .Include(m => m.Window)
+            .Include(m => m.Windows)
             .FirstOrDefaultAsync(m => m.Id == migration.Id)
             ?? throw new InvalidOperationException($"Migración {migration.Id} no encontrada");
 
         migration.UpdatedAt = DateTime.UtcNow;
         db.Entry(existing).CurrentValues.SetValues(migration);
 
-        if (migration.Window is not null)
-        {
-            if (existing.Window is null)
-            {
-                // Primera vez que se asigna ventana — insertar directamente
-                migration.Window.MigrationId = existing.Id;
-                existing.Window = migration.Window;
-            }
-            else
-            {
-                // EF Core no permite modificar la PK de una entidad dependiente
-                // con FK identificadora → borrar y volver a crear
-                db.ExecutionWindows.Remove(existing.Window);
-                await db.SaveChangesAsync();
+        // Los tramos horarios NO se tocan aquí: se editan por SetWindowsAsync. Así un
+        // guardado de otros campos (nombre, reintentos, workers…) hecho sobre una
+        // migración cargada sin Include(Windows) no puede borrar la configuración
+        // horaria por accidente.
+        await db.SaveChangesAsync();
+        return existing;
+    }
 
-                var newWindow = new ExecutionWindow
-                {
-                    MigrationId  = existing.Id,
-                    EnabledDays  = migration.Window.EnabledDays,
-                    StartTime    = migration.Window.StartTime,
-                    EndTime      = migration.Window.EndTime,
-                    TimeZoneId   = migration.Window.TimeZoneId,
-                };
-                db.ExecutionWindows.Add(newWindow);
-                existing.Window = newWindow;
-            }
+    /// <summary>Reemplaza por completo los tramos horarios de una migración. Como mucho
+    /// son dos (Tramo1 / Tramo2), así que se borran todos y se reinsertan: es más
+    /// simple y más seguro que casar fila por fila. Lista vacía = sin restricción horaria.</summary>
+    public async Task SetWindowsAsync(int migrationId, IReadOnlyList<ExecutionWindow> windows)
+    {
+        await using var db = factory.CreateDbContext();
+
+        var existing = await db.ExecutionWindows
+            .Where(w => w.MigrationId == migrationId)
+            .ToListAsync();
+
+        if (existing.Count > 0)
+        {
+            db.ExecutionWindows.RemoveRange(existing);
+            await db.SaveChangesAsync();
+        }
+
+        foreach (var w in windows)
+        {
+            db.ExecutionWindows.Add(new ExecutionWindow
+            {
+                MigrationId = migrationId,
+                Kind        = w.Kind,
+                EnabledDays = w.EnabledDays,
+                StartTime   = w.StartTime,
+                EndTime     = w.EndTime,
+                AllDay      = w.AllDay,
+                TimeZoneId  = w.TimeZoneId,
+            });
         }
 
         await db.SaveChangesAsync();
-        return existing;
+
+        await db.Migrations
+            .Where(m => m.Id == migrationId)
+            .ExecuteUpdateAsync(s => s.SetProperty(m => m.UpdatedAt, DateTime.UtcNow));
     }
 
     public async Task<bool> UpdateStatusAsync(int id, string status)

@@ -12,8 +12,8 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace DicomMigrator.Infrastructure.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    [Migration("20260722170102_VerificationLevelApplied")]
-    partial class VerificationLevelApplied
+    [Migration("20260729172027_VentanasPorTramo")]
+    partial class VentanasPorTramo
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
@@ -24,6 +24,59 @@ namespace DicomMigrator.Infrastructure.Migrations
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
+
+            modelBuilder.Entity("DicomMigrator.Core.Models.AppUser", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime>("CreatedDate")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("DisplayName")
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)");
+
+                    b.Property<int>("FailedAttempts")
+                        .HasColumnType("integer");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("boolean");
+
+                    b.Property<DateTime?>("LastLoginDate")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime?>("LockedUntil")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<bool>("MustChangePassword")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("PasswordHash")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<string>("Role")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<string>("UserName")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserName")
+                        .IsUnique();
+
+                    b.ToTable("AppUsers");
+                });
 
             modelBuilder.Entity("DicomMigrator.Core.Models.DicomNode", b =>
                 {
@@ -455,12 +508,20 @@ namespace DicomMigrator.Infrastructure.Migrations
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
 
+                    b.Property<bool>("AllDay")
+                        .HasColumnType("boolean");
+
                     b.Property<string>("EnabledDays")
                         .IsRequired()
                         .HasColumnType("text");
 
                     b.Property<TimeOnly>("EndTime")
                         .HasColumnType("time without time zone");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
 
                     b.Property<int>("MigrationId")
                         .HasColumnType("integer");
@@ -475,10 +536,44 @@ namespace DicomMigrator.Infrastructure.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("MigrationId")
-                        .IsUnique();
+                    b.HasIndex("MigrationId");
 
                     b.ToTable("ExecutionWindows");
+                });
+
+            modelBuilder.Entity("DicomMigrator.Core.Models.LicenseState", b =>
+                {
+                    b.Property<int>("Id")
+                        .HasColumnType("integer");
+
+                    b.Property<long>("ActivatedSerial")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTime?>("ActivatedUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime?>("ExpiresUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<long>("HighestSerial")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTime>("LastSeenUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("LicId")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("Token")
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("UpdatedUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("LicenseStates");
                 });
 
             modelBuilder.Entity("DicomMigrator.Core.Models.LocalConfiguration", b =>
@@ -866,8 +961,8 @@ namespace DicomMigrator.Infrastructure.Migrations
             modelBuilder.Entity("DicomMigrator.Core.Models.ExecutionWindow", b =>
                 {
                     b.HasOne("DicomMigrator.Core.Models.Migration", "Migration")
-                        .WithOne()
-                        .HasForeignKey("DicomMigrator.Core.Models.ExecutionWindow", "MigrationId")
+                        .WithMany("Windows")
+                        .HasForeignKey("MigrationId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
@@ -949,6 +1044,7 @@ namespace DicomMigrator.Infrastructure.Migrations
 
                     b.Navigation("Studies");
 
+                    b.Navigation("Windows");
                 });
 
             modelBuilder.Entity("DicomMigrator.Core.Models.MigrationStudy", b =>

@@ -31,6 +31,11 @@ public interface IMigrationRepository
     /// <summary>All migrations currently auto-paused (migration or verification) due to
     /// connection errors, with origin/dest nodes loaded — for the auto-resume watcher.</summary>
     Task<List<Migration>> GetAutoPausedAsync();
+    /// <summary>Reemplaza POR COMPLETO los tramos horarios de una migración. Pasar una
+    /// lista vacía elimina toda restricción horaria. Es la vía explícita para editar
+    /// ventanas: UpdateAsync nunca las borra, para que un guardado de otros campos no
+    /// se lleve por delante la configuración horaria.</summary>
+    Task SetWindowsAsync(int migrationId, IReadOnlyList<ExecutionWindow> windows);
     Task DeleteAsync(int id);
 }
 
@@ -352,8 +357,13 @@ public interface IMigrationWorker
 
 public interface IWindowScheduler
 {
-    /// <summary>Returns true if the migration window is currently open.</summary>
+    /// <summary>Returns true if this single tramo is currently open.</summary>
     bool IsWindowOpen(ExecutionWindow window);
+
+    /// <summary>Evalúa el conjunto de tramos de una migración: está abierto si lo está
+    /// CUALQUIERA de ellos. Una colección vacía o nula significa "sin restricción
+    /// horaria" y devuelve true.</summary>
+    bool IsWindowOpen(IEnumerable<ExecutionWindow>? windows);
 
     /// <summary>Background service that starts/pauses migrations based on their windows.</summary>
     Task RunAsync(CancellationToken ct = default);

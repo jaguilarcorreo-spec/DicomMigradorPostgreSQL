@@ -854,7 +854,7 @@ namespace DicomMigrator.Infrastructure.Migrations
             modelBuilder.Entity("DicomMigrator.Core.Models.ExecutionWindow", b =>
                 {
                     b.HasOne("DicomMigrator.Core.Models.Migration", "Migration")
-                        .WithOne("Window")
+                        .WithOne()
                         .HasForeignKey("DicomMigrator.Core.Models.ExecutionWindow", "MigrationId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
@@ -937,7 +937,6 @@ namespace DicomMigrator.Infrastructure.Migrations
 
                     b.Navigation("Studies");
 
-                    b.Navigation("Window");
                 });
 
             modelBuilder.Entity("DicomMigrator.Core.Models.MigrationStudy", b =>
