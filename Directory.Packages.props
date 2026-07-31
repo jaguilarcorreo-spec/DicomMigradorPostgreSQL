@@ -1,0 +1,49 @@
+<Project>
+
+  <!-- ══════════════════════════════════════════════════════════════════════
+       Central Package Management (CPM)
+
+       La versión de CADA paquete NuGet de la solución se declara AQUÍ, una sola
+       vez. Los .csproj referencian los paquetes por nombre (sin Version="...").
+       Así, subir fo-dicom u otra dependencia es cambiar un único número en este
+       fichero, y desaparece el riesgo de que dos proyectos queden en versiones
+       distintas (que provocaba avisos NU1605 de "package downgrade").
+
+       Para actualizar un paquete: cambia su Version aquí y restaura/compila.
+       Para añadir uno nuevo: añade la línea PackageVersion aquí y un
+       <PackageReference Include="..." /> (SIN versión) en el .csproj que lo use.
+       ══════════════════════════════════════════════════════════════════════ -->
+
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- DICOM -->
+    <PackageVersion Include="fo-dicom" Version="5.2.2" />
+
+    <!-- Base de datos / EF Core -->
+    <PackageVersion Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="9.0.4" />
+    <PackageVersion Include="Microsoft.EntityFrameworkCore.Design" Version="9.0.0" />
+
+    <!-- Hosting / HTTP -->
+    <PackageVersion Include="Microsoft.Extensions.Http" Version="9.0.0" />
+    <PackageVersion Include="Microsoft.Extensions.Hosting.WindowsServices" Version="9.0.0" />
+
+    <!-- Logging (Serilog) -->
+    <PackageVersion Include="Serilog.AspNetCore" Version="8.0.3" />
+    <PackageVersion Include="Serilog.Sinks.File" Version="6.0.0" />
+    <PackageVersion Include="Serilog.Sinks.Console" Version="6.0.0" />
+    <PackageVersion Include="Serilog.Settings.Configuration" Version="8.0.4" />
+
+    <!-- Informes / CSV -->
+    <PackageVersion Include="ClosedXML" Version="0.104.2" />
+    <PackageVersion Include="CsvHelper" Version="33.0.1" />
+
+    <!-- Licencias (Ed25519 + fingerprint por firmware) -->
+    <PackageVersion Include="BouncyCastle.Cryptography" Version="2.4.0" />
+    <PackageVersion Include="System.Management" Version="9.0.0" />
+    <PackageVersion Include="Microsoft.Win32.Registry" Version="5.0.0" />
+  </ItemGroup>
+
+</Project>

@@ -12,6 +12,7 @@
 @using Microsoft.Extensions.DependencyInjection
 @inject IMigrationWorker Worker
 @inject NavigationManager Nav
+@inject ILogger<MigrationsPage> Logger
 @implements IDisposable
 
 <PageTitle>Migraciones — MOVE</PageTitle>
@@ -43,6 +44,37 @@
         <div class="alert-error mb2">⚠ @_delMsg</div>
     }
 
+    @* ── Poblado desde inventario en segundo plano (v225) ── *@
+    @if (_detail.PopulateStatus == "Running")
+    {
+        var pct = _detail.PopulateTotal > 0
+            ? (int)Math.Round(100.0 * _detail.PopulateDone / _detail.PopulateTotal) : 0;
+        <div style="padding:12px 16px;background:var(--card);border:1px solid var(--accent);
+                    border-radius:8px;margin-bottom:14px">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+                <span style="width:7px;height:7px;border-radius:50%;background:var(--accent);display:inline-block"></span>
+                <span style="font-size:12px;color:var(--accent);font-weight:600">Poblando desde el inventario…</span>
+                <span style="margin-left:auto;font-size:12px;color:var(--text-dim)">
+                    @_detail.PopulateDone.ToString("N0") / @_detail.PopulateTotal.ToString("N0") estudios (@pct%)
+                </span>
+            </div>
+            <div style="height:8px;background:var(--border);border-radius:4px;overflow:hidden">
+                <div style="height:100%;width:@pct%;background:var(--accent);transition:width .4s"></div>
+            </div>
+            <div style="font-size:11px;color:var(--text-muted);margin-top:6px">
+                Se insertan los estudios y se copian sus UIDs Nivel 2. Puedes esperar aquí; la migración
+                se podrá iniciar cuando termine.
+            </div>
+        </div>
+    }
+    else if (_detail.PopulateStatus == "Failed")
+    {
+        <div class="alert-error mb2">
+            ⚠ El poblado desde el inventario falló@(string.IsNullOrEmpty(_detail.PopulateError) ? "." : $": {_detail.PopulateError}").
+            Puedes eliminar esta migración y volver a crearla desde el inventario.
+        </div>
+    }
+
     <AuthorizeView Roles="Administrador,Operador" Context="cMig">
     @* ── Panel de control de MIGRACIÓN ── *@
     <div style="display:flex;align-items:center;gap:8px;padding:12px 16px;
@@ -51,10 +83,14 @@
 
         <span style="font-size:11px;color:var(--accent);margin-right:4px">MIGRACIÓN</span>
 
-        @* Iniciar: cuando no está corriendo ni pausada (Draft/Ready/Completed/Cancelled/Failed) *@
+        @* Iniciar: cuando no está corriendo ni pausada (Draft/Ready/Completed/Cancelled/Failed).
+           Mientras se puebla desde el inventario, el botón se muestra deshabilitado: aún no hay
+           todos los estudios cargados. *@
         @if (_detail.Status is not ("Running" or "Paused"))
         {
-            <button class="btn btn-primary btn-sm" @onclick="StartMigrationAsync" disabled="@_actionBusy">
+            <button class="btn btn-primary btn-sm" @onclick="StartMigrationAsync"
+                    disabled="@(_actionBusy || _detail.PopulateStatus == "Running")"
+                    title="@(_detail.PopulateStatus == "Running" ? "Espera a que termine el poblado desde el inventario" : null)">
                 ▶ Iniciar
             </button>
         }
@@ -1186,8 +1222,11 @@ else
 
         _delStep = 0; _delMsg = ""; _editingMig = false;
         LoadWindowSlots();
-        // Restart auto-refresh if migration OR verification is still active
-        if (_detail?.Status is "Running" or "Paused" || _detail?.VerificationStatus is "Running" or "Paused")
+        // Restart auto-refresh if migration OR verification is active, o si se está
+        // poblando desde el inventario (para que la barra avance sola).
+        if (_detail?.Status is "Running" or "Paused"
+            || _detail?.VerificationStatus is "Running" or "Paused"
+            || _detail?.PopulateStatus == "Running")
             StartAutoRefresh();
         // Cargar salud de conexión (cacheada; sondea si está caduca)
         _health = null;
@@ -1207,12 +1246,30 @@ else
 
     async Task RefreshDetailAsync()
     {
-        if (_detail is null) return;
-        _detail = await MigrationRepo.GetByIdAsync(_detail.Id);
-        _stats  = await StudyRepo.GetStatsAsync(_detail!.Id);
-        _migHasN2 = await InstanceRepo.CountForMigrationAsync(_detail.Id) > 0;
+        // Copia local para no releer el campo compartido _detail tras cada await: el
+        // auto-refresco (hilo del pool) y la navegación (BackToList pone _detail=null)
+        // podían entrelazarse y provocar NullReferenceException. Con la copia local no
+        // reventamos aunque _detail cambie a mitad de método.
+        var mig = _detail;
+        if (mig is null) return;
+
+        var fresh = await MigrationRepo.GetByIdAsync(mig.Id);
+        if (fresh is null)
+        {
+            // La migración ya no existe (borrada mientras se refrescaba): cortar el ciclo.
+            StopAutoRefresh();
+            return;
+        }
+
+        // Si el usuario cambió de migración o volvió a la lista mientras esperábamos la
+        // BD, abandonar sin pisar el estado de la vista nueva.
+        if (_detail is null || _detail.Id != fresh.Id) return;
+        _detail = fresh;
+
+        _stats    = await StudyRepo.GetStatsAsync(fresh.Id);
+        _migHasN2 = await InstanceRepo.CountForMigrationAsync(fresh.Id) > 0;
         // Update the stats for this migration in the list too
-        var idx = _migrations.FindIndex(m => m.Id == _detail.Id);
+        var idx = _migrations.FindIndex(m => m.Id == fresh.Id);
         if (idx >= 0 && idx < _statsList.Count)
             _statsList[idx] = _stats;
         // Si estamos viendo la pestaña de estudios, recargar también la tabla
@@ -1221,15 +1278,16 @@ else
         // Detener auto-refresh solo si NO hay nada que pueda cambiar solo: ni migración
         // activa (Running/Paused) ni verificación activa (Running/Paused). Una pausa
         // (manual o automática) puede reanudarse sola, así que mantenemos el refresco.
-        var migActive    = _detail.Status is "Running" or "Paused";
-        var verifyActive = _detail.VerificationStatus is "Running" or "Paused";
-        if (!migActive && !verifyActive)
+        var migActive     = fresh.Status is "Running" or "Paused";
+        var verifyActive  = fresh.VerificationStatus is "Running" or "Paused";
+        var populateActive = fresh.PopulateStatus == "Running";
+        if (!migActive && !verifyActive && !populateActive)
             StopAutoRefresh();
         // Refrescar también la salud de conexión (usa caché por nodo, sin C-ECHO extra)
         // para que el panel no se quede congelado en un valor antiguo.
-        if (_detail is not null)
+        if (_detail is not null && _detail.Id == fresh.Id)
         {
-            try { _health = await HealthSvc.GetHealthAsync(_detail.Id); } catch { /* no crítico */ }
+            try { _health = await HealthSvc.GetHealthAsync(fresh.Id); } catch { /* no crítico */ }
         }
         await InvokeAsync(StateHasChanged);
     }
@@ -1246,10 +1304,29 @@ else
     {
         StopAutoRefresh();
         _refreshTimer = new System.Threading.Timer(
-            async _ => await RefreshDetailAsync(),
+            _state => _ = OnTimerTickAsync(),
             null,
             TimeSpan.FromSeconds(3),
             TimeSpan.FromSeconds(3));
+    }
+
+    // Ver la nota extensa en DiscoveryPage: el callback pasa por InvokeAsync (corre en
+    // el dispatcher del componente, serializado con el resto de manejadores) y va
+    // envuelto en try/catch para que un tick puntual que falle no tumbe el proceso.
+    private async Task OnTimerTickAsync()
+    {
+        try
+        {
+            await InvokeAsync(RefreshDetailAsync);
+        }
+        catch (ObjectDisposedException)
+        {
+            // Componente ya desechado (navegación). Nada que hacer.
+        }
+        catch (Exception ex)
+        {
+            Logger.LogDebug(ex, "Auto-refresco del detalle de migración falló (tick transitorio, se ignora).");
+        }
     }
 
     void StopAutoRefresh()

@@ -308,6 +308,47 @@
         </p>
     </HelpSection>
 
+    <HelpSection Title="Ventana de ejecución — dos tramos horarios" Color="var(--yellow)">
+        <p style="margin:0 0 10px 0;color:var(--text-dim);font-size:13px;line-height:1.6">
+            En la pestaña <strong>Ventana</strong> de cada migración puedes limitar a qué horas se ejecuta,
+            por ejemplo para concentrar el tráfico pesado en horario valle. Se definen <strong>dos tramos
+            independientes</strong> (Tramo 1 y Tramo 2). La migración está <strong>abierta</strong> —los workers trabajan—
+            si lo está <strong>cualquiera</strong> de los dos tramos.
+        </p>
+        <p style="margin:0 0 10px 0;color:var(--text-dim);font-size:13px;line-height:1.6">
+            Cada tramo se configura por separado y tiene:
+        </p>
+        <ul style="margin:0 0 10px 0;padding-left:20px;color:var(--text-dim);font-size:13px;line-height:1.8">
+            <li><strong>Activo</strong> — si no está activo, ese tramo no cuenta.</li>
+            <li><strong>Sus propios días</strong> de la semana. Por defecto se proponen lunes-viernes en el Tramo 1
+                y sábado-domingo en el Tramo 2, pero <strong>puedes elegir los que quieras</strong>: los tramos pueden
+                solaparse (el resultado es la unión) o dejar días sin cubrir.</li>
+            <li><strong>Su horario</strong> (hora de inicio y de fin) <strong>o</strong> la casilla <strong>24 horas</strong>,
+                que cubre el día natural completo e ignora las horas.</li>
+        </ul>
+        <p style="margin:0 0 10px 0;color:var(--text-dim);font-size:13px;line-height:1.6">
+            La <strong>zona horaria</strong> es común a los dos tramos. El servicio comprueba cada minuto si hay
+            algún tramo abierto: si se cierra, <strong>pausa</strong> automáticamente migración y verificación
+            (evento <code>WINDOW_CLOSE</code> en el log de auditoría); cuando se vuelve a abrir, <strong>reanuda</strong>
+            (evento <code>WINDOW_OPEN</code>). <strong>Sin ningún tramo activo no hay restricción horaria.</strong>
+        </p>
+        <div style="padding:10px 12px;background:var(--bg);border:1px solid var(--yellow);border-radius:8px;margin-bottom:6px">
+            <div style="font-weight:600;font-size:12px;color:var(--yellow);margin-bottom:4px">⏱ Cómo funciona el cruce de medianoche</div>
+            <p style="margin:0;color:var(--text-dim);font-size:12.5px;line-height:1.6">
+                Un tramo cuyo horario cruza medianoche (p. ej. <code>22:00 → 06:00</code>) pertenece al día en que
+                <strong>arranca</strong>. Un tramo de lunes a viernes de 22:00 a 06:00 son <strong>las cinco noches de
+                lunes a viernes</strong>, cada una prolongándose hasta las 06:00 del día siguiente: la migración de la
+                noche del viernes <strong>sí continúa</strong> en la madrugada del sábado, mientras que la madrugada
+                del lunes (que es la noche del domingo) <strong>no</strong> entra. Un tramo marcado como <strong>24 h</strong>
+                cubre solo el día natural y no se prolonga: sábado-domingo a 24 h termina el domingo a las 23:59.
+            </p>
+        </div>
+        <p style="margin:0;color:var(--text-muted);font-size:11px">
+            La ventana de ejecución solo aplica a la <strong>migración y la verificación</strong>. El
+            <strong>descubrimiento no tiene ventana horaria</strong>.
+        </p>
+    </HelpSection>
+
     <HelpSection Title="Acciones sobre una migración" Color="var(--orange)">
         <p style="margin:0 0 12px 0;color:var(--text-dim);font-size:13px;line-height:1.6">
             Migración y verificación tienen <strong>cada una su propio juego de botones</strong> (Iniciar/Reanudar, Pausar, Parar),
@@ -409,6 +450,107 @@
                 <tr><td class="mono">404</td><td>QIDO/WADO en ruta incorrecta</td><td>Verificar Base URL (ej. <code>/dicom-web</code> para Orthanc con plugin DICOMweb).</td></tr>
             </tbody>
         </table>
+    </HelpSection>
+}
+
+@* ════════════════════════════════════════
+   LOGS Y DIAGNÓSTICO
+   ════════════════════════════════════════ *@
+@if (_tab == "logs")
+{
+    <HelpSection Title="Dos registros distintos: log de aplicación y log de auditoría" Color="var(--accent)">
+        <p style="margin:0 0 10px 0;color:var(--text-dim);font-size:13px;line-height:1.6">
+            No confundir. La aplicación mantiene <strong>dos registros con propósitos diferentes</strong>:
+        </p>
+        <table class="data-table" style="width:100%;font-size:12px">
+            <thead><tr><th></th><th>Log de aplicación</th><th>Log de auditoría</th></tr></thead>
+            <tbody>
+                <tr><td><strong>Qué es</strong></td><td>Traza técnica del funcionamiento interno (Serilog).</td><td>Historial de negocio por migración: qué se hizo con cada estudio.</td></tr>
+                <tr><td><strong>Dónde</strong></td><td>Ficheros en <code>logs/</code>.</td><td>Tabla en PostgreSQL; se ve en la pestaña <strong>Logs</strong> de cada migración.</td></tr>
+                <tr><td><strong>Nivel</strong></td><td><strong>Configurable</strong> (esta pantalla / <code>/logs</code>).</td><td><strong>Fijo</strong>, no configurable (INFO / WARN / ERROR / STUDY).</td></tr>
+                <tr><td><strong>Retención</strong></td><td>30 ficheros, 50 MB cada uno, rotación diaria.</td><td>Purga a 90 días (solo las entradas INFO).</td></tr>
+            </tbody>
+        </table>
+        <p style="margin:10px 0 0 0;color:var(--text-muted);font-size:11px">
+            Cambiar el nivel del log de aplicación <strong>no afecta</strong> a la auditoría: bajarlo no deja de
+            auditar y subirlo no añade entradas de auditoría.
+        </p>
+    </HelpSection>
+
+    <HelpSection Title="Los seis niveles: qué se ve con cada uno" Color="var(--purple)">
+        <p style="margin:0 0 10px 0;color:var(--text-dim);font-size:13px;line-height:1.6">
+            El nivel es un <strong>mínimo</strong>, no un filtro exclusivo: se escribe el nivel elegido y
+            <strong>todos los más graves</strong>. De menos a más grave:
+            <code>Verbose → Debug → Information → Warning → Error → Fatal</code>.
+            Por eso <strong>poner el nivel en Fatal deja el log casi vacío</strong> (solo cazaría una caída total
+            de la aplicación), no muestra «solo lo importante».
+        </p>
+        <table class="data-table" style="width:100%;font-size:12px">
+            <thead><tr><th>Nivel</th><th>Qué añade sobre el anterior</th></tr></thead>
+            <tbody>
+                <tr><td><span class="status-badge">Verbose</span></td><td>Máximo detalle. Hoy el código propio no emite en este nivel; útil sobre todo para las categorías de diagnóstico (más abajo).</td></tr>
+                <tr><td><span class="status-badge">Debug</span></td><td>Detalle fino de decisiones internas (qué protocolo se eligió, sondeos). Es el nivel de las <strong>categorías de diagnóstico</strong>.</td></tr>
+                <tr><td><span class="status-badge">Information</span></td><td><strong>Recomendado para diagnosticar.</strong> Ciclo de vida de jobs y migraciones, cada C-MOVE, cada partición, cada consulta C-FIND/QIDO.</td></tr>
+                <tr><td><span class="status-badge" style="color:var(--yellow);border:1px solid var(--yellow)">Warning</span></td><td><strong>Valor por defecto.</strong> Anomalías no fatales: truncamientos, pérdidas de conexión con reintento, accesos fallidos, licencia inválida.</td></tr>
+                <tr><td><span class="status-badge s-Failed">Error</span></td><td>Fallos reales: excepciones en workers, agotamiento de reintentos, auto-pausa por conexión, migración bloqueada por licencia.</td></tr>
+                <tr><td><span class="status-badge s-Failed">Fatal</span></td><td>Solo una caída inesperada de toda la aplicación.</td></tr>
+            </tbody>
+        </table>
+        <p style="margin:10px 0 0 0;color:var(--text-muted);font-size:11px">
+            El nivel general se cambia <strong>en caliente</strong> desde <code>/logs</code>: tiene efecto al
+            instante, sin reiniciar el servicio.
+        </p>
+    </HelpSection>
+
+    <HelpSection Title="Diagnóstico avanzado: tres categorías tapadas aparte" Color="var(--yellow)">
+        <p style="margin:0 0 10px 0;color:var(--text-dim);font-size:13px;line-height:1.6">
+            El ruido de infraestructura (ASP.NET, EF Core, HTTP, la propia librería DICOM) va <strong>capado a
+            Warning por separado</strong>, para que subir el nivel general no inunde el log. Tres de esas
+            categorías tienen su <strong>propio interruptor</strong> en <code>/logs</code>, pensado para
+            activarlas <strong>solo mientras se diagnostica</strong> y devolverlas luego a Warning:
+        </p>
+        <table class="data-table" style="width:100%;font-size:12px">
+            <thead><tr><th>Interruptor</th><th>Qué revela al bajarlo a Debug</th><th>Útil para</th></tr></thead>
+            <tbody>
+                <tr><td><strong>SQL de EF Core</strong></td><td>Cada consulta a la base de datos, con parámetros y tiempos.</td><td>Lentitud sospechosa de BD.</td></tr>
+                <tr><td><strong>HTTP saliente</strong></td><td>Las llamadas QIDO-RS / WADO-RS, con la URL exacta.</td><td>Un descubrimiento por QIDO que no cuadra.</td></tr>
+                <tr><td><strong>Diálogo DIMSE</strong></td><td>Negociación de asociación, presentation contexts y cada C-STORE recibido.</td><td>Un C-MOVE que falla o no entrega.</td></tr>
+            </tbody>
+        </table>
+        <p style="margin:10px 0 0 0;color:var(--text-dim);font-size:13px;line-height:1.6">
+            Estos tres interruptores también se cambian <strong>en caliente</strong>. Solo los ve el rol
+            <strong>Administrador</strong>.
+        </p>
+    </HelpSection>
+
+    <HelpSection Title="Qué se cambia en caliente y qué exige reiniciar" Color="var(--green)">
+        <table class="data-table" style="width:100%;font-size:12px">
+            <thead><tr><th>Ajuste</th><th>Dónde</th><th>¿En caliente?</th></tr></thead>
+            <tbody>
+                <tr><td>Nivel general del log</td><td class="mono">/logs</td><td style="color:var(--green)">✓ Sí, al instante</td></tr>
+                <tr><td>Categorías SQL / HTTP / DIMSE</td><td class="mono">/logs</td><td style="color:var(--green)">✓ Sí, al instante</td></tr>
+                <tr><td>Nivel inicial de arranque</td><td class="mono">appsettings.json → Serilog / Diagnostics</td><td style="color:var(--yellow)">Solo al arrancar</td></tr>
+                <tr><td>Volcado de PDUs (<code>DicomPduLogging</code>)</td><td class="mono">appsettings.json → Diagnostics</td><td style="color:var(--red)">✗ Requiere reiniciar</td></tr>
+                <tr><td>Volcado de datasets (<code>DicomDatasetLogging</code>)</td><td class="mono">appsettings.json → Diagnostics</td><td style="color:var(--red)">✗ Requiere reiniciar</td></tr>
+            </tbody>
+        </table>
+        <p style="margin:10px 0 0 0;color:var(--text-dim);font-size:13px;line-height:1.6">
+            Los dos <strong>volcados DIMSE</strong> no son niveles de log sino opciones de la librería fo-dicom,
+            por eso solo se activan desde el fichero y exigen reiniciar el servicio.
+        </p>
+        <div style="padding:10px 12px;background:var(--bg);border:1px solid var(--red);border-radius:8px;margin-top:10px">
+            <div style="font-weight:600;font-size:12px;color:var(--red);margin-bottom:4px">⚠ Dos avisos</div>
+            <p style="margin:0 0 6px 0;color:var(--text-dim);font-size:12.5px;line-height:1.6">
+                <strong>Volumen:</strong> el nivel Information ya escribe dos líneas por estudio migrado. Cualquier
+                categoría en Debug durante una migración grande llena los 50 MB de rotación en minutos y, con 30
+                ficheros de retención, puedes perder el histórico. Actívalo para diagnosticar y vuelve a Warning.
+            </p>
+            <p style="margin:0;color:var(--text-dim);font-size:12.5px;line-height:1.6">
+                <strong>Datos de paciente:</strong> <code>DicomDatasetLogging</code> vuelca los datasets completos,
+                con datos clínicos. Actívalo <strong>solo en pruebas</strong>, nunca de forma permanente en producción.
+                Las demás categorías se quedan en metadatos y UIDs.
+            </p>
+        </div>
     </HelpSection>
 }
 
@@ -730,6 +872,7 @@
         new("migration",  "⇄ Migración"),
         new("states",     "Estados del estudio"),
         new("retry",      "Reintentos y errores"),
+        new("logs",       "📋 Logs y diagnóstico"),
         new("access",     "🔐 Usuarios y acceso"),
         new("pacs",       "⚙ Config. PACS"),
         new("files",      "📄 Config. por fichero"),

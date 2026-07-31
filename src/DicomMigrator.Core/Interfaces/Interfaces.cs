@@ -31,12 +31,34 @@ public interface IMigrationRepository
     /// <summary>All migrations currently auto-paused (migration or verification) due to
     /// connection errors, with origin/dest nodes loaded — for the auto-resume watcher.</summary>
     Task<List<Migration>> GetAutoPausedAsync();
+    // ── Poblado desde inventario en segundo plano (v225) ─────────────────────
+    /// <summary>Marca el inicio del poblado: PopulateStatus=Running, total y job de origen.</summary>
+    Task SetPopulateRunningAsync(int id, int total, int sourceJobId);
+    /// <summary>Actualiza el nº de estudios ya poblados (para la barra de progreso).</summary>
+    Task UpdatePopulateProgressAsync(int id, int done);
+    /// <summary>Finaliza el poblado con Completed o Failed (+ mensaje opcional de error).</summary>
+    Task FinishPopulateAsync(int id, string status, string? error = null);
+    /// <summary>Migraciones con PopulateStatus=Running (para reanudar huérfanas al arrancar).</summary>
+    Task<List<Migration>> GetPopulatingAsync();
     /// <summary>Reemplaza POR COMPLETO los tramos horarios de una migración. Pasar una
     /// lista vacía elimina toda restricción horaria. Es la vía explícita para editar
     /// ventanas: UpdateAsync nunca las borra, para que un guardado de otros campos no
     /// se lleve por delante la configuración horaria.</summary>
     Task SetWindowsAsync(int migrationId, IReadOnlyList<ExecutionWindow> windows);
     Task DeleteAsync(int id);
+}
+
+/// <summary>Poblado de una migración desde el inventario de un Discovery Job, en segundo
+/// plano y con progreso (v225). Evita bloquear la petición al insertar estudios y copiar
+/// UIDs Nivel 2 de inventarios grandes.</summary>
+public interface IMigrationPopulateService
+{
+    /// <summary>Arranca el poblado en background. Vuelve de inmediato; el avance se
+    /// consulta por las columnas Populate* de la migración.</summary>
+    Task StartAsync(int migrationId, int sourceJobId, CancellationToken ct = default);
+
+    /// <summary>True si esa migración tiene un poblado en marcha en esta instancia.</summary>
+    bool IsRunning(int migrationId);
 }
 
 /// <summary>Servicio de captura de UIDs de ORIGEN (Nivel 2 de verificación).</summary>
@@ -106,8 +128,11 @@ public interface IStudyRepository
 
     /// <summary>Bulk-insert discovered studies (ignores existing UIDs).</summary>
     Task<int> BulkInsertAsync(int migrationId, IEnumerable<MigrationStudy> studies);
-    /// <summary>Import studies from the Discovery inventory into a migration, applying optional filter.</summary>
-    Task<int> ImportFromInventoryAsync(int migrationId, DiscoveredStudyFilter filter);
+    /// <summary>Import studies from the Discovery inventory into a migration, applying optional
+    /// filter. Works in batches, reporting progress via <paramref name="onProgress"/>
+    /// (studies done, total) and honouring cancellation. Idempotent (skips existing).</summary>
+    Task<int> ImportFromInventoryAsync(int migrationId, DiscoveredStudyFilter filter,
+        Func<int, int, Task>? onProgress = null, CancellationToken ct = default);
 
     /// <summary>Pick next pending study for a worker (atomic lock).</summary>
     Task<MigrationStudy?> AcquireNextPendingAsync(int migrationId, string workerId,

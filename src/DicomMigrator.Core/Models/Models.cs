@@ -110,6 +110,23 @@ public class Migration
     /// (destination unreachable).</summary>
     public bool     VerificationAutoPaused { get; set; }
 
+    // ── Poblado desde inventario en segundo plano (v225) ─────────────────────
+    // Al crear una migración desde un inventario, la inserción de estudios y la copia
+    // de UIDs Nivel 2 pueden mover millones de filas. En vez de bloquear la petición
+    // (y agotar el timeout), el poblado corre en un proceso de fondo y su avance se
+    // refleja en estas columnas, que la pantalla de migraciones lee en cada refresco.
+    /// <summary>Idle | Running | Completed | Failed.</summary>
+    public string   PopulateStatus     { get; set; } = "Idle";
+    /// <summary>Total de estudios a importar (se fija al arrancar el poblado).</summary>
+    public int      PopulateTotal      { get; set; }
+    /// <summary>Estudios ya procesados (insertados + UIDs copiados).</summary>
+    public int      PopulateDone       { get; set; }
+    /// <summary>Mensaje de error si el poblado terminó en Failed.</summary>
+    public string?  PopulateError      { get; set; }
+    /// <summary>Discovery Job de origen del poblado. Permite reanudarlo (idempotente)
+    /// si el servicio se reinicia a mitad.</summary>
+    public int?     PopulateSourceJobId { get; set; }
+
     public string   CreatedBy  { get; set; } = string.Empty;
     public DateTime CreatedAt  { get; set; } = DateTime.UtcNow;
     public DateTime UpdatedAt  { get; set; } = DateTime.UtcNow;

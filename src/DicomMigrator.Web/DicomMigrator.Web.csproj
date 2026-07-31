@@ -7,21 +7,22 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Design"  Version="9.0.0">
+    <!-- Versiones centralizadas en Directory.Packages.props (raíz de la solución) -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
     <!-- Mismas dependencias de logging que el Tester -->
-    <PackageReference Include="Serilog.AspNetCore"              Version="8.0.3" />
-    <PackageReference Include="Serilog.Sinks.File"              Version="6.0.0" />
-    <PackageReference Include="Serilog.Sinks.Console"           Version="6.0.0" />
-    <PackageReference Include="Serilog.Settings.Configuration"  Version="8.0.4" />
-    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="9.0.0" />
-    <PackageReference Include="ClosedXML" Version="0.104.2" />
+    <PackageReference Include="Serilog.AspNetCore" />
+    <PackageReference Include="Serilog.Sinks.File" />
+    <PackageReference Include="Serilog.Sinks.Console" />
+    <PackageReference Include="Serilog.Settings.Configuration" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" />
+    <PackageReference Include="ClosedXML" />
     <!-- Web usa tipos de fo-dicom directamente desde v218 (AddFellowOakDicom,
          DicomSetupBuilder, DicomServiceOptions en Program.cs). Antes llegaba por
          transitividad desde Infrastructure; declararlo explícito evita depender de eso. -->
-    <PackageReference Include="fo-dicom" Version="5.2.2" />
+    <PackageReference Include="fo-dicom" />
   </ItemGroup>
 
   <ItemGroup>

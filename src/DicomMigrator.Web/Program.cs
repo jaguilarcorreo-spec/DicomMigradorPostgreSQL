@@ -201,6 +201,7 @@ try
     builder.Services.AddScoped<IDiscoveryService,    DiscoveryService>();
     builder.Services.AddScoped<IVerificationService, VerificationService>();
     builder.Services.AddScoped<IInstanceCaptureService, DicomMigrator.Infrastructure.Services.Migration.InstanceCaptureService>();
+    builder.Services.AddScoped<IMigrationPopulateService, DicomMigrator.Infrastructure.Services.Migration.MigrationPopulateService>();
     builder.Services.AddScoped<IConnectionHealthService, DicomMigrator.Infrastructure.Services.Migration.ConnectionHealthService>();
     builder.Services.AddSingleton<IMigrationWorker,  MigrationWorker>();
     builder.Services.AddSingleton<IWindowScheduler,  WindowScheduler>();
@@ -329,6 +330,25 @@ try
                 var worker  = scope.ServiceProvider.GetRequiredService<IMigrationWorker>();
                 var verSvc  = scope.ServiceProvider.GetRequiredService<IVerificationService>();
                 var capSvc  = scope.ServiceProvider.GetRequiredService<IInstanceCaptureService>();
+                var popSvc  = scope.ServiceProvider.GetRequiredService<IMigrationPopulateService>();
+
+                // Reanudar poblados desde inventario (v225) huérfanos: quedaron en
+                // Running al cortarse el servicio. El import es idempotente (salta lo ya
+                // insertado), así que basta con relanzarlo con el job de origen guardado.
+                foreach (var m in await migRepo.GetPopulatingAsync())
+                {
+                    if (m.PopulateSourceJobId is int jobId)
+                    {
+                        logger.LogInformation("Reanudando poblado huérfano · migración {Id} ('{Name}') tras reinicio.", m.Id, m.Name);
+                        await popSvc.StartAsync(m.Id, jobId);
+                    }
+                    else
+                    {
+                        // Sin job de origen no se puede reanudar: marcarlo Failed para que
+                        // no quede eternamente "poblando" en la UI.
+                        await migRepo.FinishPopulateAsync(m.Id, "Failed", "Interrumpido por reinicio (sin job de origen para reanudar).");
+                    }
+                }
 
                 var all = await migRepo.GetAllAsync();
                 foreach (var m in all)

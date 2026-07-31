@@ -167,6 +167,45 @@ public class MigrationRepository(IDbContextFactory<AppDbContext> factory) : IMig
         return rows > 0;
     }
 
+    // ── Poblado desde inventario en segundo plano (v225) ─────────────────────
+    public async Task SetPopulateRunningAsync(int id, int total, int sourceJobId)
+    {
+        await using var db = factory.CreateDbContext();
+        await db.Migrations.Where(m => m.Id == id)
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(m => m.PopulateStatus, "Running")
+                .SetProperty(m => m.PopulateTotal, total)
+                .SetProperty(m => m.PopulateDone, 0)
+                .SetProperty(m => m.PopulateError, (string?)null)
+                .SetProperty(m => m.PopulateSourceJobId, sourceJobId)
+                .SetProperty(m => m.UpdatedAt, DateTime.UtcNow));
+    }
+
+    public async Task UpdatePopulateProgressAsync(int id, int done)
+    {
+        await using var db = factory.CreateDbContext();
+        await db.Migrations.Where(m => m.Id == id)
+            .ExecuteUpdateAsync(s => s.SetProperty(m => m.PopulateDone, done));
+    }
+
+    public async Task FinishPopulateAsync(int id, string status, string? error = null)
+    {
+        await using var db = factory.CreateDbContext();
+        await db.Migrations.Where(m => m.Id == id)
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(m => m.PopulateStatus, status)
+                .SetProperty(m => m.PopulateError, error)
+                .SetProperty(m => m.UpdatedAt, DateTime.UtcNow));
+    }
+
+    public async Task<List<Migration>> GetPopulatingAsync()
+    {
+        await using var db = factory.CreateDbContext();
+        return await db.Migrations
+            .Where(m => m.PopulateStatus == "Running")
+            .ToListAsync();
+    }
+
     public async Task SetMigrationAutoPausedAsync(int id, bool autoPaused)
     {
         await using var db = factory.CreateDbContext();
@@ -399,9 +438,25 @@ public class StudyRepository(IDbContextFactory<AppDbContext> factory) : IStudyRe
         return toInsert.Count;
     }
 
-    public async Task<int> ImportFromInventoryAsync(int migrationId, DiscoveredStudyFilter filter)
+    // Tamaño de lote del poblado. Cada lote inserta sus estudios y copia sus UIDs, y
+    // reporta avance. Suficientemente grande para no encarecer con ida-y-vuelta por
+    // estudio, y suficientemente pequeño para que la barra de progreso se mueva.
+    private const int InventoryBatchSize = 500;
+
+    /// <summary>Puebla una migración desde el inventario: inserta los MigrationStudy y
+    /// copia sus UIDs Nivel 2 (Opción A). Trabaja POR LOTES, reportando avance por
+    /// <paramref name="onProgress"/> (estudios procesados, total) y respetando la
+    /// cancelación. Idempotente: salta estudios y UIDs ya presentes, así que se puede
+    /// reanudar tras un corte. Devuelve el nº de estudios insertados.</summary>
+    public async Task<int> ImportFromInventoryAsync(int migrationId, DiscoveredStudyFilter filter,
+        Func<int, int, Task>? onProgress = null, CancellationToken ct = default)
     {
         await using var db = factory.CreateDbContext();
+
+        // El copiado puede mover MILLONES de filas; el timeout por defecto (30 s) cortaba
+        // el INSERT masivo. Lo subimos SOLO para este contexto. Aun así ahora va por
+        // lotes, con lo que cada comando individual es mucho más corto.
+        db.Database.SetCommandTimeout(TimeSpan.FromMinutes(10));
 
         // Build the inventory query from the filter
         var q = db.DiscoveredStudies.AsQueryable();
@@ -413,16 +468,31 @@ public class StudyRepository(IDbContextFactory<AppDbContext> factory) : IStudyRe
         if (!string.IsNullOrWhiteSpace(filter.StudyDateTo))     q = q.Where(s => string.Compare(s.StudyDate, filter.StudyDateTo) <= 0);
         if (!string.IsNullOrWhiteSpace(filter.Modality))        q = q.Where(s => s.ModalitiesInStudy!.Contains(filter.Modality));
 
-        var inventory = await q.ToListAsync();
+        var inventory = await q.ToListAsync(ct);
 
         var existingUids = await db.MigrationStudies
             .Where(s => s.MigrationId == migrationId)
             .Select(s => s.StudyInstanceUid)
-            .ToHashSetAsync();
+            .ToHashSetAsync(ct);
 
         var toInsert = inventory
             .Where(d => !existingUids.Contains(d.StudyInstanceUid))
-            .Select(d => new MigrationStudy
+            .ToList();
+
+        var total = toInsert.Count;
+        if (onProgress is not null) await onProgress(0, total);
+        if (total == 0) return 0;
+
+        var done = 0;
+        for (var offset = 0; offset < total; offset += InventoryBatchSize)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            var slice = toInsert.Skip(offset).Take(InventoryBatchSize).ToList();
+
+            // 1) Insertar los estudios del lote. Contexto limpio por lote para no
+            //    acumular entidades rastreadas con inventarios enormes.
+            db.MigrationStudies.AddRange(slice.Select(d => new MigrationStudy
             {
                 MigrationId         = migrationId,
                 StudyInstanceUid    = d.StudyInstanceUid,
@@ -434,28 +504,29 @@ public class StudyRepository(IDbContextFactory<AppDbContext> factory) : IStudyRe
                 SourceInstanceCount = d.NumberOfStudyRelatedInstances,
                 MigrationStatus     = "Pending",
                 DiscoveryDate       = DateTime.UtcNow,
-            })
-            .ToList();
+            }));
+            await db.SaveChangesAsync(ct);
+            db.ChangeTracker.Clear();
 
-        if (toInsert.Count == 0) return 0;
-        db.MigrationStudies.AddRange(toInsert);
-        await db.SaveChangesAsync();
-
-        // Nivel 2 (Opción A): copiar los UIDs de origen ya capturados en el
-        // descubrimiento (DiscoveredInstance) a MigrationInstance, emparejando por
-        // StudyInstanceUid dentro de esta migración. Set-based (sin cargar filas).
-        // NOT EXISTS evita colisión con el índice único en reimportaciones.
-        await db.Database.ExecuteSqlInterpolatedAsync($@"
+            // 2) Copiar los UIDs Nivel 2 SOLO de los estudios de este lote. Set-based.
+            //    NOT EXISTS evita colisión con el índice único al reanudar.
+            var batchUids = slice.Select(d => d.StudyInstanceUid).ToArray();
+            await db.Database.ExecuteSqlInterpolatedAsync($@"
 INSERT INTO ""MigrationInstances"" (""MigrationStudyId"", ""SeriesInstanceUid"", ""SopInstanceUid"")
 SELECT ms.""Id"", di.""SeriesInstanceUid"", di.""SopInstanceUid""
 FROM ""DiscoveredInstances"" di
 JOIN ""DiscoveredStudies"" ds ON ds.""Id"" = di.""DiscoveredStudyId""
 JOIN ""MigrationStudies"" ms ON ms.""StudyInstanceUid"" = ds.""StudyInstanceUid""
 WHERE ms.""MigrationId"" = {migrationId}
+  AND ds.""StudyInstanceUid"" = ANY({batchUids})
   AND NOT EXISTS (SELECT 1 FROM ""MigrationInstances"" mi
-                  WHERE mi.""MigrationStudyId"" = ms.""Id"" AND mi.""SopInstanceUid"" = di.""SopInstanceUid"")");
+                  WHERE mi.""MigrationStudyId"" = ms.""Id"" AND mi.""SopInstanceUid"" = di.""SopInstanceUid"")", ct);
 
-        return toInsert.Count;
+            done += slice.Count;
+            if (onProgress is not null) await onProgress(done, total);
+        }
+
+        return total;
     }
 
     public async Task<MigrationStudy?> AcquireNextPendingAsync(int migrationId, string workerId,

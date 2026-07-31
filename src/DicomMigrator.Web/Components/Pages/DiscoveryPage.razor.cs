@@ -45,8 +45,34 @@ public partial class DiscoveryPage
     {
         StopAutoRefresh();
         _timer = new System.Threading.Timer(
-            async _ => await RefreshDetailAsync(),
+            _state => _ = OnTimerTickAsync(),
             null, TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(2));
+    }
+
+    // El Timer dispara en un hilo del pool cada 2 s. Antes el callback era
+    // 'async _ => await RefreshDetailAsync()', es decir async void sin protección:
+    //   · si el usuario volvía a la lista o se borraba el job, _detail pasaba a null
+    //     mientras un tick ya estaba en vuelo → NullReferenceException;
+    //   · al ser un hilo suelto, esa excepción NO la capturaba Blazor y tumbaba el
+    //     proceso (rompía en el depurador).
+    // Ahora se ejecuta a través de InvokeAsync, con lo que corre en el dispatcher del
+    // componente y queda SERIALIZADO con el resto de manejadores (volver a la lista,
+    // borrar, iniciar…): ya no puede solaparse con ellos. Y va envuelto en try/catch:
+    // un tick puntual que falle se registra y se ignora, el siguiente lo reintenta.
+    private async Task OnTimerTickAsync()
+    {
+        try
+        {
+            await InvokeAsync(RefreshDetailAsync);
+        }
+        catch (ObjectDisposedException)
+        {
+            // El componente ya se desechó (navegación). Nada que hacer.
+        }
+        catch (Exception ex)
+        {
+            Logger.LogDebug(ex, "Auto-refresco del detalle de descubrimiento falló (tick transitorio, se ignora).");
+        }
     }
 
     private void StopAutoRefresh()

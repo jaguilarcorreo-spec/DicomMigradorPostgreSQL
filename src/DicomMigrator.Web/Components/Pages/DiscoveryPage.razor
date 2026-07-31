@@ -10,7 +10,9 @@
 @inject IDiscoveryEngine Engine
 @inject IInstanceCaptureService CaptureSvc
 @inject IDiscoveredInstanceRepository DiscInstanceRepo
+@inject IMigrationPopulateService PopulateSvc
 @inject AuthenticationStateProvider AuthState
+@inject ILogger<DiscoveryPage> Logger
 @inject IJSRuntime JS
 @inject NavigationManager Nav
 @implements IDisposable
@@ -92,7 +94,8 @@
         }
         else
         {
-            <span style="margin-left:auto;font-size:11px;color:var(--text-muted)">@StatusText.Es(_detail.Status)</span>
+            @* Estado de DESCUBRIR en su propio tono (azul), para distinguirlo del de ENUMERAR *@
+            <span style="margin-left:auto;font-size:11px;font-weight:600;color:var(--accent)">@StatusText.Es(_detail.Status)</span>
         }
     </div>
     </AuthorizeView>
@@ -140,7 +143,8 @@
             }
             else
             {
-                <span style="margin-left:auto;font-size:11px;color:var(--text-muted)">@StatusText.Es(_detail.CaptureStatus)</span>
+                @* Estado de ENUMERAR en su propio tono (morado), para distinguirlo del de DESCUBRIR *@
+                <span style="margin-left:auto;font-size:11px;font-weight:600;color:#a78bfa">@StatusText.Es(_detail.CaptureStatus)</span>
             }
         </div>
     </AuthorizeView>
@@ -636,9 +640,19 @@ else
                 <div class="card" style="cursor:pointer" @onclick="@(() => OpenDetail(j))">
                     <div class="card-body" style="display:flex;align-items:center;gap:16px">
                         <div style="flex:1">
-                            <div style="display:flex;align-items:center;gap:10px">
+                            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
                                 <span style="font-weight:600">@j.Name</span>
-                                <StatusBadge Status="@j.Status" />
+                                @* Dos estados por ficha: DESCUBRIR (azul) y ENUMERAR (morado),
+                                   cada proceso con su propio color. El punto del badge hereda
+                                   el color del texto (currentColor), así que basta con fijar color. *@
+                                <span class="status-badge" title="Estado del descubrimiento"
+                                      style="color:var(--accent);background:rgba(0,180,216,0.10);border:1px solid rgba(0,180,216,0.28)">
+                                    <span class="status-dot"></span>Descubrir · @StatusText.Es(j.Status)
+                                </span>
+                                <span class="status-badge" title="Estado de la enumeración de UIDs"
+                                      style="color:#a78bfa;background:rgba(167,139,250,0.10);border:1px solid rgba(167,139,250,0.28)">
+                                    <span class="status-dot"></span>Enumerar · @StatusText.Es(j.CaptureStatus)
+                                </span>
                                 <span class="tag mono">@j.QueryMethod</span>
                                 <span class="tag">@j.DiscoveryType</span>
                             </div>
@@ -825,23 +839,47 @@ else
 
     async Task RefreshDetailAsync()
     {
-        if (_detail is null) return;
-        _detail     = await JobRepo.GetByIdAsync(_detail.Id);
-        _stats      = await JobRepo.GetStatsAsync(_detail!.Id);
-        _capturedStudies = await DiscInstanceRepo.CountCapturedStudiesForJobAsync(_detail.Id);
-        _capturedInstances = await DiscInstanceRepo.CountInstancesForJobAsync(_detail.Id);
-        var (items, total) = await JobRepo.GetPartitionsPagedAsync(_detail.Id, _partPage, PartPageSize);
-        _partitions      = items;
-        _partStats       = await StudyRepo.GetPartitionUidStatsAsync(_detail.Id);
-        _partTotal       = total;
-        _partTotalPages  = total == 0 ? 1 : (int)Math.Ceiling(total / (double)PartPageSize);
+        // Trabajamos sobre una copia local ('job'/'fresh') en vez de releer el campo
+        // compartido _detail después de cada await. Ese era el origen del
+        // NullReferenceException: el auto-refresco y la navegación (volver a la lista
+        // pone _detail = null) podían entrelazarse y dejar _detail null a mitad de
+        // método. Con la copia local, aunque _detail cambie, aquí no reventamos.
+        var job = _detail;
+        if (job is null) return;
+
+        var fresh = await JobRepo.GetByIdAsync(job.Id);
+        if (fresh is null)
+        {
+            // El job ya no existe (borrado mientras se refrescaba): cortar el ciclo.
+            StopAutoRefresh();
+            return;
+        }
+
+        // Si mientras esperábamos a la BD el usuario cambió de job o volvió a la lista,
+        // abandonar sin pisar el estado de la vista nueva.
+        if (_detail is null || _detail.Id != fresh.Id) return;
+        _detail = fresh;
+
+        _stats             = await JobRepo.GetStatsAsync(fresh.Id);
+        _capturedStudies   = await DiscInstanceRepo.CountCapturedStudiesForJobAsync(fresh.Id);
+        _capturedInstances = await DiscInstanceRepo.CountInstancesForJobAsync(fresh.Id);
+        var (items, total) = await JobRepo.GetPartitionsPagedAsync(fresh.Id, _partPage, PartPageSize);
+        _partitions        = items;
+        _partStats         = await StudyRepo.GetPartitionUidStatsAsync(fresh.Id);
+        _partTotal         = total;
+        _partTotalPages    = total == 0 ? 1 : (int)Math.Ceiling(total / (double)PartPageSize);
         if (_partPage > _partTotalPages) { _partPage = _partTotalPages; }
-        if (_detail.Status is not "Running" && _detail.CaptureStatus is not ("Running" or "Paused")) StopAutoRefresh();
+
+        if (fresh.Status is not "Running" && fresh.CaptureStatus is not ("Running" or "Paused")) StopAutoRefresh();
+
         // For CSV jobs, compute date range from inventory (no StartDate/EndDate on the job itself)
-        if (_detail.DiscoveryType == "CSV")
-            (_invDateFrom, _invDateTo) = await StudyRepo.GetStudyDateRangeAsync(_detail.Id);
+        if (fresh.DiscoveryType == "CSV")
+            (_invDateFrom, _invDateTo) = await StudyRepo.GetStudyDateRangeAsync(fresh.Id);
         else
             (_invDateFrom, _invDateTo) = (null, null);
+
+        // Ya corremos dentro del dispatcher (OnTimerTickAsync usa InvokeAsync), pero
+        // dejar el StateHasChanged aquí cubre también las llamadas directas.
         await InvokeAsync(StateHasChanged);
     }
 
@@ -977,10 +1015,11 @@ else
                 InventoryDateFrom = dateFrom,
                 InventoryDateTo   = dateTo,
             });
-            var imported = await MigStudyRepo.ImportFromInventoryAsync(
-                migration.Id,
-                new DiscoveredStudyFilter { DiscoveryJobId = _detail.Id });
-            _actionMsg = $"Migracion creada con {imported} estudios.";
+            // El poblado (insertar estudios + copiar UIDs Nivel 2) puede mover millones
+            // de filas, así que ya NO se hace aquí de forma síncrona: se lanza en segundo
+            // plano y su avance se ve en la pantalla de migraciones (barra "Poblando").
+            await PopulateSvc.StartAsync(migration.Id, _detail.Id);
+            _actionMsg = "Migración creada. Poblando desde el inventario en segundo plano…";
             _showCreateMigration = false;
             Nav.NavigateTo("/migraciones");
         }
