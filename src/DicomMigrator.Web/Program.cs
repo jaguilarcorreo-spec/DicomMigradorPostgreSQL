@@ -82,6 +82,18 @@ try
            // "Dicom." y "DicomMigrator.Infrastructure…" no empieza por ahí.
            .MinimumLevel.Override("FellowOakDicom",                LogLevelService.DicomSwitch)
            .MinimumLevel.Override("Dicom",                         LogLevelService.DicomSwitch)
+           // fo-dicom registra a nivel ERROR, con stack trace completo, CADA intento de
+           // conexión fallido de su DicomClient ("An error occurred while sending DICOM
+           // requests" → SocketException 10060/10061). Son los fallos de conexión
+           // transitorios que la app YA clasifica y maneja (no consumen reintentos,
+           // auto-pausa + auto-reanudación) y sobre los que además escribe sus propios
+           // mensajes concisos, así que ese volcado es puro ruido. Se silencia SOLO esa
+           // sub-categoría subiéndola a Fatal; por prefijo más largo gana a los overrides
+           // de "FellowOakDicom"/"Dicom" de arriba sin afectar al resto del diálogo DICOM.
+           // Se ponen los dos nombres por la misma razón que el bloque anterior (5.x usa
+           // "FellowOakDicom.Network.Client"; ramas antiguas, "Dicom.Network.Client").
+           .MinimumLevel.Override("FellowOakDicom.Network.Client", LogEventLevel.Fatal)
+           .MinimumLevel.Override("Dicom.Network.Client",          LogEventLevel.Fatal)
            .WriteTo.File(
                logPath,
                rollingInterval: Serilog.RollingInterval.Day,

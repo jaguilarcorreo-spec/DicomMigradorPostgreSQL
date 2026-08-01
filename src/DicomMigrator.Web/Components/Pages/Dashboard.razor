@@ -118,8 +118,8 @@ else
                             <th style="color:var(--purple)">Verif.</th>
                             <th style="color:var(--red)">Fallido</th>
                             <th style="color:#f97316">Reint.</th>
-                            <th style="color:var(--accent)">Migración</th>
-                            <th style="color:var(--purple)">Verificación</th>
+                            <th style="color:var(--accent);text-align:right">Migración</th>
+                            <th style="color:var(--purple);text-align:right">Verificación</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -135,21 +135,11 @@ else
                                 <td class="mono" style="color:var(--purple)">@Fmt(s.Verified)</td>
                                 <td class="mono" style="color:var(--red)">@Fmt(s.Failed)</td>
                                 <td class="mono" style="color:#f97316">@Fmt(s.RetryPending)</td>
-                                <td style="min-width:140px">
-                                    <div style="display:flex;align-items:center;gap:6px">
-                                        <div class="progress-track" style="flex:1">
-                                            <div class="progress-fill" style="width:@s.ProgressPercent%;background:var(--accent)"></div>
-                                        </div>
-                                        <span class="mono" style="font-size:10px;color:var(--accent);min-width:38px;text-align:right">@s.ProgressPercent%</span>
-                                    </div>
+                                <td class="mono" style="color:var(--accent);text-align:right;font-weight:700">
+                                    @s.ProgressPercent.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)%
                                 </td>
-                                <td style="min-width:140px">
-                                    <div style="display:flex;align-items:center;gap:6px">
-                                        <div class="progress-track" style="flex:1">
-                                            <div class="progress-fill" style="width:@s.VerificationPercent%;background:var(--purple)"></div>
-                                        </div>
-                                        <span class="mono" style="font-size:10px;color:var(--purple);min-width:38px;text-align:right">@s.VerificationPercent%</span>
-                                    </div>
+                                <td class="mono" style="color:var(--purple);text-align:right;font-weight:700">
+                                    @s.VerificationPercent.ToString("F1", System.Globalization.CultureInfo.InvariantCulture)%
                                 </td>
                             </tr>
                         }

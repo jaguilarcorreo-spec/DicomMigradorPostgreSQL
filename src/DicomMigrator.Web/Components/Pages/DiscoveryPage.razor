@@ -637,8 +637,10 @@ else
         <div style="display:flex;flex-direction:column;gap:10px">
             @foreach (var j in _jobs)
             {
+                var jc = _jobCards.GetValueOrDefault(j.Id);
+                var hasBody = jc is not null && jc.Stats.TotalPartitions > 0;
                 <div class="card" style="cursor:pointer" @onclick="@(() => OpenDetail(j))">
-                    <div class="card-body" style="display:flex;align-items:center;gap:16px">
+                    <div style="padding:12px 16px;display:flex;align-items:center;gap:16px;@(hasBody ? "border-bottom:1px solid var(--border)" : "")">
                         <div style="flex:1">
                             <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
                                 <span style="font-weight:600">@j.Name</span>
@@ -666,6 +668,50 @@ else
                         </div>
                         <span class="btn btn-ghost btn-sm">Abrir →</span>
                     </div>
+
+                    @if (hasBody)
+                    {
+                        var enumPct = jc!.Stats.StudiesDiscovered > 0
+                            ? Math.Round(jc.CapturedStudies * 100.0 / jc.Stats.StudiesDiscovered, 1)
+                            : 0;
+                        var ci = System.Globalization.CultureInfo.InvariantCulture;
+                        <div style="padding:12px 16px">
+                            <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:10px">
+                                @foreach (var c in new (string Label, int Value, string Color)[]
+                                {
+                                    ("Estudios",    jc.Stats.StudiesDiscovered, "var(--text)"),
+                                    ("Nuevos",      jc.Stats.StudiesNew,        "var(--green)"),
+                                    ("Particiones", jc.Stats.TotalPartitions,   "var(--text)"),
+                                    ("Fallidas",    jc.Stats.FailedPartitions,  "var(--red)"),
+                                    ("Instancias",  jc.CapturedInstances,       "var(--purple)"),
+                                })
+                                {
+                                    <div style="text-align:center">
+                                        <div style="font-size:10px;color:var(--text-muted)">@c.Label</div>
+                                        <div class="mono" style="font-size:15px;font-weight:700;color:@c.Color">@c.Value.ToString("N0")</div>
+                                    </div>
+                                }
+                            </div>
+                            <div style="display:flex;flex-direction:column;gap:6px">
+                                @* ── Barra de DESCUBRIR (azul, % de particiones procesadas) ── *@
+                                <div style="display:flex;align-items:center;gap:8px">
+                                    <span style="font-size:10px;color:var(--text-muted);min-width:82px;text-transform:uppercase;letter-spacing:0.06em">Descubrir</span>
+                                    <div class="progress-track" style="flex:1">
+                                        <div class="progress-fill" style="width:@(jc.Stats.ProgressPercent.ToString("F1", ci))%;background:var(--accent)"></div>
+                                    </div>
+                                    <span class="mono" style="color:var(--accent);font-size:12px;min-width:46px;text-align:right">@(jc.Stats.ProgressPercent.ToString("F1", ci))%</span>
+                                </div>
+                                @* ── Barra de ENUMERAR (morado, estudios enumerados / descubiertos) ── *@
+                                <div style="display:flex;align-items:center;gap:8px">
+                                    <span style="font-size:10px;color:var(--text-muted);min-width:82px;text-transform:uppercase;letter-spacing:0.06em">Enumerar</span>
+                                    <div class="progress-track" style="flex:1">
+                                        <div class="progress-fill" style="width:@(enumPct.ToString("F1", ci))%;background:#a78bfa"></div>
+                                    </div>
+                                    <span class="mono" style="color:#a78bfa;font-size:12px;min-width:46px;text-align:right">@(enumPct.ToString("F1", ci))%</span>
+                                </div>
+                            </div>
+                        </div>
+                    }
                 </div>
             }
         </div>
@@ -674,6 +720,10 @@ else
 
 @code {
     private List<DiscoveryJob>  _jobs = [];
+    // Stats por job para las fichas de la lista (contadores + barras). Se cargan en
+    // LoadJobsAsync, igual que la lista de Migraciones carga su _statsList.
+    private sealed record JobCard(DiscoveryStats Stats, int CapturedStudies, int CapturedInstances);
+    private Dictionary<int, JobCard> _jobCards = new();
     private List<DicomNode>     _nodes = [];
     private DiscoveryJob?       _detail;
     private DiscoveryStats      _stats = new();
@@ -745,6 +795,17 @@ else
     async Task LoadJobsAsync()
     {
         _jobs = await JobRepo.GetAllAsync();
+        // Stats por job para las fichas (contadores + barras). Una consulta de stats y
+        // dos conteos de enumeración por job, como hace la lista de Migraciones.
+        var cards = new Dictionary<int, JobCard>();
+        foreach (var j in _jobs)
+        {
+            var st   = await JobRepo.GetStatsAsync(j.Id);
+            var cap  = await DiscInstanceRepo.CountCapturedStudiesForJobAsync(j.Id);
+            var inst = await DiscInstanceRepo.CountInstancesForJobAsync(j.Id);
+            cards[j.Id] = new JobCard(st, cap, inst);
+        }
+        _jobCards = cards;
         StateHasChanged();
     }
 

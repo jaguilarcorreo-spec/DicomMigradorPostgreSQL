@@ -96,44 +96,69 @@ public class DiscoveryEngine(
     // ── Lifecycle ───────────────────────────────────────────────────────────
     public async Task StartAsync(int jobId, CancellationToken ct = default)
     {
-        using var scope = scopeFactory.CreateScope();
-        var jobRepo = scope.ServiceProvider.GetRequiredService<IDiscoveryJobRepository>();
-
-        var job = await jobRepo.GetByIdAsync(jobId)
-            ?? throw new InvalidOperationException($"Discovery Job {jobId} no encontrado");
-
-        // Ensure partitions match the job's CURRENT date range. For Temporal jobs,
-        // if the existing partitions fall outside [StartDate, EndDate] (e.g. the job
-        // was edited with a new range, or they're stale from a previous config),
-        // delete and regenerate them. This prevents orphan partitions from a prior
-        // configuration lingering in the table.
-        if (job.DiscoveryType == "Temporal")
+        // Guardia de arranque ATÓMICA: reserva el slot en _running antes de hacer nada.
+        // Como ResumeAsync es un alias de StartAsync, una segunda llamada estando ya en
+        // marcha (doble clic, o UI + auto-reanudación al arrancar el servicio) NO debe
+        // sobrescribir el CTS anterior — eso dejaría a los workers viejos con un token que
+        // ya nadie puede cancelar (fuga de CTS) y lanzaría un segundo juego de workers.
+        // TryAdd hace el "comprobar y reservar" en un solo paso, sin ventana de carrera.
+        var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        if (!_running.TryAdd(jobId, cts))
         {
-            var partitions = await jobRepo.GetPartitionsAsync(jobId);
-            var rangeMismatch = job.StartDate is not null && job.EndDate is not null &&
-                partitions.Any(p =>
-                    p.StartDate is null || p.EndDate is null ||
-                    p.StartDate < job.StartDate || p.EndDate > job.EndDate);
-
-            if (partitions.Count == 0 || rangeMismatch)
-            {
-                if (rangeMismatch)
-                {
-                    logger.LogInformation(
-                        "Las particiones del job {Id} no coinciden con el rango {Start}–{End}; regenerando.",
-                        jobId, job.StartDate, job.EndDate);
-                    await jobRepo.DeletePartitionsAsync(jobId);
-                }
-                await GeneratePartitionsAsync(jobId, ct);
-            }
+            cts.Dispose();
+            logger.LogWarning("Discovery Job {Id} ya está en marcha; se ignora el arranque duplicado", jobId);
+            return;
         }
 
-        await jobRepo.UpdateStatusAsync(jobId, "Running");
-        var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        _running[jobId] = cts;
+        try
+        {
+            using var scope = scopeFactory.CreateScope();
+            var jobRepo = scope.ServiceProvider.GetRequiredService<IDiscoveryJobRepository>();
 
-        // Fire-and-forget background processing
-        _ = Task.Run(() => RunWorkersAsync(jobId, job.WorkerThreads, cts.Token), cts.Token);
+            var job = await jobRepo.GetByIdAsync(jobId)
+                ?? throw new InvalidOperationException($"Discovery Job {jobId} no encontrado");
+
+            // Ensure partitions match the job's CURRENT date range. For Temporal jobs,
+            // if the existing partitions fall outside [StartDate, EndDate] (e.g. the job
+            // was edited with a new range, or they're stale from a previous config),
+            // delete and regenerate them. This prevents orphan partitions from a prior
+            // configuration lingering in the table.
+            if (job.DiscoveryType == "Temporal")
+            {
+                var partitions = await jobRepo.GetPartitionsAsync(jobId);
+                var rangeMismatch = job.StartDate is not null && job.EndDate is not null &&
+                    partitions.Any(p =>
+                        p.StartDate is null || p.EndDate is null ||
+                        p.StartDate < job.StartDate || p.EndDate > job.EndDate);
+
+                if (partitions.Count == 0 || rangeMismatch)
+                {
+                    if (rangeMismatch)
+                    {
+                        logger.LogInformation(
+                            "Las particiones del job {Id} no coinciden con el rango {Start}–{End}; regenerando.",
+                            jobId, job.StartDate, job.EndDate);
+                        await jobRepo.DeletePartitionsAsync(jobId);
+                    }
+                    await GeneratePartitionsAsync(jobId, ct);
+                }
+            }
+
+            await jobRepo.UpdateStatusAsync(jobId, "Running");
+
+            // Fire-and-forget background processing. A partir de aquí, la propiedad del CTS
+            // pasa a RunWorkersAsync, cuyo bloque finally lo retira de _running y lo libera.
+            _ = Task.Run(() => RunWorkersAsync(jobId, job.WorkerThreads, cts.Token), cts.Token);
+        }
+        catch
+        {
+            // El arranque falló ANTES de lanzar los workers (job inexistente, error al
+            // generar particiones…). Liberar el slot reservado para no dejar el job
+            // bloqueado: el finally de RunWorkersAsync no llegará a ejecutarse.
+            if (_running.TryRemove(jobId, out var reserved))
+                reserved.Dispose();
+            throw;
+        }
     }
 
     public Task PauseAsync(int jobId)
@@ -361,6 +386,35 @@ public class DiscoveryEngine(
 
             logger.LogInformation("[{Worker}] Partición {Date} {Mod}: {Found} encontrados, {Ins} nuevos, {Upd} actualizados",
                 workerId, dateStr, partition.Modality ?? "*", studies.Count, inserted, updated);
+        }
+        catch (OperationCanceledException)
+        {
+            // Pausa/parada: NO es un fallo de la partición. Debe ir ANTES del catch
+            // genérico, que si no la marcaría "Failed" (AttemptCount++), y como
+            // AcquireNextPendingPartitionAsync solo toma 'Pending', esa partición no se
+            // reintentaría al reanudar y quedaría perdida. La devolvemos a 'Pending' y
+            // liberamos el lock, sin consumir intento (deshaciendo el AttemptCount++ de
+            // arriba: una pausa no debe penalizar). UpdatePartitionAsync abre su propio
+            // DbContext y no observa el token ya cancelado.
+            sw.Stop();
+            partition.AttemptCount--;
+            partition.Status         = "Pending";
+            partition.LockedByWorker = null;
+            partition.LockDate       = null;
+            try
+            {
+                await jobRepo.UpdatePartitionAsync(partition);
+            }
+            catch (Exception relEx)
+            {
+                // Caso raro (p. ej. BD caída justo al pausar): la partición se queda en
+                // 'Running' con lock. No hay caducidad automática de lock para particiones,
+                // así que habría que reanudar/regenerar el job para reprocesarla.
+                logger.LogWarning(relEx,
+                    "[{Worker}] No se pudo devolver a 'Pending' la partición {Id} tras la " +
+                    "cancelación; requerirá reanudar el job para reprocesarla", workerId, partition.Id);
+            }
+            throw;   // propaga la cancelación (esperada al pausar; RunWorkersAsync la trata)
         }
         catch (Exception ex)
         {
