@@ -4,6 +4,7 @@
 @inject IMigrationRepository MigrationRepo
 @inject IStudyRepository StudyRepo
 @inject INodeRepository NodeRepo
+@inject ILogger<Dashboard> Logger
 
 <PageTitle>Dashboard — MOVE</PageTitle>
 
@@ -195,17 +196,42 @@ else
         bool hasActive = _migrations.Any(m => m.Status is "Running" or "Paused");
         if (hasActive && _timer is null)
         {
-            _timer = new System.Threading.Timer(async _ =>
-            {
-                await LoadAsync();
-                // If no migration is active anymore, stop the timer
-                if (!_migrations.Any(m => m.Status is "Running" or "Paused"))
-                    StopAutoRefresh();
-            }, null, TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(3));
+            _timer = new System.Threading.Timer(
+                _ => _ = OnTimerTickAsync(),
+                null, TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(3));
         }
         else if (!hasActive && _timer is not null)
         {
             StopAutoRefresh();
+        }
+    }
+
+    // El Timer dispara en un hilo del pool cada 3 s. El callback NO debe ser un
+    // 'async _ => await LoadAsync()' (async void sin protección): LoadAsync ejecuta EF
+    // y muta las listas que lee el render, así que fuera del dispatcher se producen
+    // carreras y, si el tick lanza, la excepción no la captura Blazor y tumba el
+    // circuito/proceso. Se ejecuta vía InvokeAsync (serializado con el resto de
+    // manejadores del componente) y envuelto en try/catch: un tick puntual que falle
+    // se registra y se ignora; el siguiente lo reintenta.
+    async Task OnTimerTickAsync()
+    {
+        try
+        {
+            await InvokeAsync(async () =>
+            {
+                await LoadAsync();
+                // Si ya no queda ninguna migración activa, parar el timer.
+                if (!_migrations.Any(m => m.Status is "Running" or "Paused"))
+                    StopAutoRefresh();
+            });
+        }
+        catch (ObjectDisposedException)
+        {
+            // El componente ya se desechó (navegación). Nada que hacer.
+        }
+        catch (Exception ex)
+        {
+            Logger.LogDebug(ex, "Auto-refresco del dashboard falló (tick transitorio, se ignora).");
         }
     }
 
