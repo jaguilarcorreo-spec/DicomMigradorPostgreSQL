@@ -232,8 +232,10 @@ public class DiscoveryJobRepository(IDbContextFactory<AppDbContext> factory) : I
         await using var db = factory.CreateDbContext();
         foreach (var s in batch)
         {
+            // Inventario POR JOB (igual que UpsertAsync): buscar solo dentro de este job;
+            // el mismo UID en otro job es una fila independiente y NO se reasigna.
             var existing = await db.DiscoveredStudies
-                .Where(x => x.StudyInstanceUid == s.StudyInstanceUid)
+                .Where(x => x.DiscoveryJobId == s.DiscoveryJobId && x.StudyInstanceUid == s.StudyInstanceUid)
                 .OrderBy(x => x.Id)
                 .FirstOrDefaultAsync(ct);
             if (existing is null)
@@ -250,7 +252,7 @@ public class DiscoveryJobRepository(IDbContextFactory<AppDbContext> factory) : I
                 existing.StudyTime        ??= s.StudyTime;
                 existing.ModalitiesInStudy ??= s.ModalitiesInStudy;
                 existing.StudyDescription ??= s.StudyDescription;
-                existing.DiscoveryJobId   = s.DiscoveryJobId;
+                // Ya NO se reasigna DiscoveryJobId (la fila es de este mismo job).
                 existing.LastUpdatedDate  = s.LastUpdatedDate;
                 upd++;
             }
@@ -408,9 +410,9 @@ public class DiscoveryJobRepository(IDbContextFactory<AppDbContext> factory) : I
             }
         }
 
-        // Study counts from the actual inventory.
-        // DiscoveryJobId is always updated on upsert so this correctly reflects
-        // all studies found by this job (including those already in the inventory).
+        // Study counts from the actual inventory. Inventario POR JOB: cada job tiene sus
+        // propias filas de DiscoveredStudy, así que contar por DiscoveryJobId es exacto y no
+        // se solapa con otros jobs (aunque compartan StudyInstanceUID).
         stats.StudiesDiscovered = await db.DiscoveredStudies
             .CountAsync(s => s.DiscoveryJobId == jobId);
 
@@ -509,7 +511,13 @@ public class DiscoveredStudyRepository(IDbContextFactory<AppDbContext> factory) 
     public async Task<long> CountBySourceAsync(int sourcePacsId)
     {
         await using var db = factory.CreateDbContext();
-        return await db.DiscoveredStudies.Where(s => s.SourcePacsId == sourcePacsId).LongCountAsync();
+        // UIDs DISTINTOS: con el inventario por job, el mismo estudio puede estar en varios
+        // jobs del mismo PACS; contamos estudios únicos para no multiplicar por nº de jobs.
+        return await db.DiscoveredStudies
+            .Where(s => s.SourcePacsId == sourcePacsId)
+            .Select(s => s.StudyInstanceUid)
+            .Distinct()
+            .LongCountAsync();
     }
 
     public async Task<List<DiscoveredStudy>> GetAllForExportAsync(DiscoveredStudyFilter f)
@@ -571,8 +579,11 @@ public class DiscoveredStudyRepository(IDbContextFactory<AppDbContext> factory) 
         {
             if (string.IsNullOrEmpty(s.StudyInstanceUid)) continue;
 
+            // Búsqueda POR JOB: el inventario ya no es global. Un mismo StudyInstanceUID en
+            // otro job es una fila independiente; solo se actualiza si ya existe EN ESTE job
+            // (p. ej. al reanudar o re-descubrir el mismo job).
             var existing = await db.DiscoveredStudies
-                .Where(x => x.StudyInstanceUid == s.StudyInstanceUid)
+                .Where(x => x.DiscoveryJobId == s.DiscoveryJobId && x.StudyInstanceUid == s.StudyInstanceUid)
                 .OrderBy(x => x.Id)
                 .FirstOrDefaultAsync();
 
@@ -600,9 +611,9 @@ public class DiscoveredStudyRepository(IDbContextFactory<AppDbContext> factory) 
                 existing.PatientBirthDate  ??= s.PatientBirthDate;
                 existing.PatientSex        ??= s.PatientSex;
                 existing.IssuerOfPatientId ??= s.IssuerOfPatientId;
-                // Always update job reference so stats count correctly for the current job
-                existing.DiscoveryJobId  = s.DiscoveryJobId;
-                // Atribuir a la partición que lo (re)descubrió; rellena inventario antiguo.
+                // Ya NO se reasigna DiscoveryJobId: la fila existente pertenece a este mismo
+                // job (la búsqueda ya filtra por DiscoveryJobId). Sin robo de estudios entre jobs.
+                // Atribuir a la partición que lo (re)descubrió dentro de este job.
                 existing.PartitionId     = s.PartitionId ?? existing.PartitionId;
                 existing.LastUpdatedDate = DateTime.UtcNow;
                 updated++;

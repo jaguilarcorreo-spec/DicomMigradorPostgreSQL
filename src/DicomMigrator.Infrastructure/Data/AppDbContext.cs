@@ -227,8 +227,11 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
         {
             e.HasKey(x => x.Id);
             e.Property(x => x.StudyInstanceUid).IsRequired().HasMaxLength(64);
-            // Unique inventory key — same study not duplicated across the inventory
-            e.HasIndex(x => x.StudyInstanceUid).IsUnique();
+            // Clave única POR JOB (no global): cada descubrimiento es independiente, así que
+            // el mismo StudyInstanceUID (con sus series e instancias) puede existir en varios
+            // jobs a la vez. La clave lidera por DiscoveryJobId, con lo que también sirve de
+            // índice para las consultas por job (que son la mayoría).
+            e.HasIndex(x => new { x.DiscoveryJobId, x.StudyInstanceUid }).IsUnique();
             e.HasIndex(x => new { x.SourcePacsId, x.StudyDate });
             e.HasIndex(x => x.ModalitiesInStudy);
             e.HasIndex(x => x.PartitionId);

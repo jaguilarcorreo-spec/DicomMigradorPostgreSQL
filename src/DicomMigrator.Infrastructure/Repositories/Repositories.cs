@@ -475,8 +475,13 @@ public class StudyRepository(IDbContextFactory<AppDbContext> factory) : IStudyRe
             .Select(s => s.StudyInstanceUid)
             .ToHashSetAsync(ct);
 
+        // DistinctBy por StudyInstanceUID: con el inventario POR JOB, un mismo estudio puede
+        // aparecer en varios jobs. Si un filtro llegara a abarcar más de uno (p. ej. por PACS
+        // o por fecha sin acotar el job), el inventario traería el UID repetido; nos quedamos
+        // con una sola copia para no violar el índice único (MigrationId, StudyInstanceUid).
         var toInsert = inventory
             .Where(d => !existingUids.Contains(d.StudyInstanceUid))
+            .DistinctBy(d => d.StudyInstanceUid)
             .ToList();
 
         var total = toInsert.Count;
@@ -508,17 +513,19 @@ public class StudyRepository(IDbContextFactory<AppDbContext> factory) : IStudyRe
             await db.SaveChangesAsync(ct);
             db.ChangeTracker.Clear();
 
-            // 2) Copiar los UIDs Nivel 2 SOLO de los estudios de este lote. Set-based.
-            //    NOT EXISTS evita colisión con el índice único al reanudar.
-            var batchUids = slice.Select(d => d.StudyInstanceUid).ToArray();
+            // 2) Copiar los UIDs Nivel 2 SOLO de los estudios de este lote. Se atan por la
+            //    FILA de DiscoveredStudy exacta (DiscoveredStudyId), no por UID: con el
+            //    inventario POR JOB el mismo UID puede existir en otros jobs, y unir por UID
+            //    arrastraría instancias ajenas. Set-based; NOT EXISTS evita colisión con el
+            //    índice único al reanudar.
+            var batchStudyIds = slice.Select(d => d.Id).ToArray();
             await db.Database.ExecuteSqlInterpolatedAsync($@"
 INSERT INTO ""MigrationInstances"" (""MigrationStudyId"", ""SeriesInstanceUid"", ""SopInstanceUid"")
 SELECT ms.""Id"", di.""SeriesInstanceUid"", di.""SopInstanceUid""
 FROM ""DiscoveredInstances"" di
 JOIN ""DiscoveredStudies"" ds ON ds.""Id"" = di.""DiscoveredStudyId""
-JOIN ""MigrationStudies"" ms ON ms.""StudyInstanceUid"" = ds.""StudyInstanceUid""
-WHERE ms.""MigrationId"" = {migrationId}
-  AND ds.""StudyInstanceUid"" = ANY({batchUids})
+JOIN ""MigrationStudies"" ms ON ms.""StudyInstanceUid"" = ds.""StudyInstanceUid"" AND ms.""MigrationId"" = {migrationId}
+WHERE di.""DiscoveredStudyId"" = ANY({batchStudyIds})
   AND NOT EXISTS (SELECT 1 FROM ""MigrationInstances"" mi
                   WHERE mi.""MigrationStudyId"" = ms.""Id"" AND mi.""SopInstanceUid"" = di.""SopInstanceUid"")", ct);
 
