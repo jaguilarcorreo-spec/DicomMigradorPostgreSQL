@@ -115,11 +115,19 @@
         </table>
     </HelpSection>
 
-    <HelpSection Title="Inventario y migración derivada" Color="#3B82F6">
+    <HelpSection Title="Inventario por job y migración derivada" Color="#3B82F6">
+        <p style="margin:0 0 10px 0;color:var(--text-dim);font-size:13px;line-height:1.6">
+            <strong>Cada descubrimiento es independiente.</strong> Los estudios que cataloga un job —con sus series e
+            instancias— forman el inventario <strong>propio de ese job</strong>: la clave es única por
+            <code>(job + StudyInstanceUID)</code>. Un mismo <code>StudyInstanceUID</code> puede, por tanto, existir en
+            <strong>varios jobs a la vez</strong>, cada uno con su copia; <strong>dentro de un mismo job nunca se
+            duplica</strong> (al re-descubrir o reanudar, se actualiza). Así cada job se enumera, se limpia y se borra
+            por su cuenta, sin afectar a los demás aunque compartan estudios.
+        </p>
         <p style="margin:0;color:var(--text-dim);font-size:13px;line-height:1.6">
-            Los estudios descubiertos se almacenan en una tabla de inventario con upsert por <code>StudyInstanceUID</code> — un mismo estudio nunca se duplica.
-            Desde la pantalla de detalle del job puedes <strong>exportar el inventario</strong> a CSV o <strong>crear una migración desde el inventario</strong>
-            que usa esos estudios como origen sin volver a consultar al PACS, ganando tiempo y reduciendo carga sobre el origen.
+            Desde la pantalla de detalle del job puedes <strong>exportar el inventario</strong> a CSV o
+            <strong>crear una migración desde el inventario</strong>, que usa esos estudios como origen sin volver a
+            consultar al PACS, ganando tiempo y reduciendo carga sobre el origen.
         </p>
     </HelpSection>
 
@@ -140,7 +148,8 @@
         <p style="margin:0;color:var(--text-dim);font-size:13px;line-height:1.6">
             Al <strong>crear una migración</strong> desde un inventario ya enumerado, esos UIDs se copian a la migración
             automáticamente y ésta queda marcada como <strong>Nivel 2</strong> (su verificación comparará conjuntos, no conteos).
-            La enumeración es <strong>idempotente</strong>: reejecutarla solo procesa los estudios que aún no tienen UIDs.
+            La enumeración es <strong>idempotente</strong> y <strong>por job</strong>: reejecutarla solo procesa los estudios
+            de ese job que aún no tienen UIDs, y enumerar un job <strong>no afecta</strong> a otro que comparta el mismo estudio.
         </p>
     </HelpSection>
 
@@ -174,7 +183,8 @@
         </table>
         <p style="margin:10px 0 0 0;color:var(--text-muted);font-size:11px">
             Los UIDs duplicados dentro del mismo fichero se omiten (solo se inserta el primero).
-            Un estudio ya existente en el inventario se actualiza, no se duplica.
+            Un estudio ya existente <strong>en este job</strong> se actualiza; el mismo estudio en otro job es una copia
+            independiente (inventario por job).
             Las columnas opcionales ausentes se importan como vacías.
         </p>
     </HelpSection>
@@ -913,7 +923,7 @@
         new("4", "Nivel 2 — DayModality",         "var(--purple)", "Genera una partición hija por modalidad: una lista base amplia de códigos DICOM (~45) MÁS las modalidades que realmente aparecen en la respuesta de ese día, de modo que ninguna modalidad (por rara que sea) se quede sin cubrir. La partición original pasa a Subdivided."),
         new("5", "Nivel 3 — DayModalityTime",     "var(--green)",  "Si una DayModality sigue truncándose, se subdivide por hora (StudyTime): primero en 4 tramos de 6 h (00-05, 06-11, 12-17, 18-23) y, si alguno aún se trunca, se biseca su ventana recursivamente (la mitad cada vez) hasta bajar del límite o llegar a un suelo de ~5 min. El filtro de hora se aplica de verdad en C-FIND y QIDO."),
         new("6", "Estado terminal PossiblyTruncated", "var(--orange)", "Si una franja horaria ya en el suelo (~5 min) todavía roza el límite, queda como PossiblyTruncated y no se reintenta. Señala una densidad de estudios extraordinaria en ese tramo o un límite demasiado bajo."),
-        new("7", "Upsert al inventario",          "var(--red)",    "Cada estudio descubierto se inserta o actualiza por StudyInstanceUID. Un mismo estudio nunca se duplica, aunque distintas particiones lo devuelvan."),
+        new("7", "Upsert al inventario del job",  "var(--red)",    "Cada estudio descubierto se inserta o actualiza por (job + StudyInstanceUID). Dentro del mismo job nunca se duplica, aunque varias particiones lo devuelvan; en otro job distinto es una copia independiente (inventario por job)."),
     ];
 
     // ── Migration steps ─────────────────────────────────────────────────────
