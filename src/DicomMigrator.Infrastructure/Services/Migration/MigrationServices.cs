@@ -595,6 +595,33 @@ public class VerificationService(
                 await migR.SetVerificationAutoPausedAsync(migrationId, false);
                 logger.LogInformation("Verificación completada · migración {Id}", migrationId);
 
+                var mig = await migR.GetByIdAsync(migrationId);
+                var st  = scope.ServiceProvider.GetRequiredService<IStudyRepository>();
+                var s   = await st.GetStatsAsync(migrationId);
+
+                // ── Notificación por correo (v228): fin del proceso de verificación ──
+                // Si hubo algún fallo de verificación se manda el evento "con fallos";
+                // si no, el de "completada". Encolar nunca rompe la finalización.
+                try
+                {
+                    var kind = s.VerifyFailed > 0
+                        ? NotificationEvents.VerificationFailed
+                        : NotificationEvents.VerificationCompleted;
+                    await scope.ServiceProvider.GetRequiredService<INotificationService>()
+                        .RaiseAsync(kind, mig?.Name ?? $"#{migrationId}", new (string, string)[]
+                        {
+                            ("Origen → Destino", $"{mig?.OriginNode?.Alias ?? "?"} → {mig?.DestNode?.Alias ?? "?"}"),
+                        },
+                        migrationId, "migration",
+                        kpis: new (string, string)[]
+                        {
+                            ("Verificados OK", s.Verified.ToString("N0")),
+                            ("Con fallos",     s.VerifyFailed.ToString("N0")),
+                            ("Total",          s.Total.ToString("N0")),
+                        });
+                }
+                catch (Exception nex) { logger.LogWarning(nex, "Notificación de fin de verificación (migración {Id}) falló (no crítico).", migrationId); }
+
                 // Promover el estado global de la migración a "Completed" solo si:
                 //  - la migración ya terminó de migrar (estado "Migrated", sin fallos), y
                 //  - no queda ningún estudio por migrar ni por verificar.
@@ -602,11 +629,8 @@ public class VerificationService(
                 // "migrado, pendiente de verificar". Si aún queda trabajo de migración
                 // (p. ej. la migración sigue activa y la verificación solo vació una tanda),
                 // no se promueve: la verificación se relanzará y volverá a evaluar al acabar.
-                var mig = await migR.GetByIdAsync(migrationId);
                 if (mig is not null && mig.Status == "Migrated")
                 {
-                    var st = scope.ServiceProvider.GetRequiredService<IStudyRepository>();
-                    var s = await st.GetStatsAsync(migrationId);
                     var pendingWork = s.Pending + s.Queued + s.Migrating
                                     + s.Migrated + s.VerificationPending
                                     + s.RetryPending + s.VerifyRetryPending;
@@ -737,6 +761,18 @@ public class VerificationService(
                                     "Pausando verificación de la migración {Id} (se reanudará sola).", connErrors, migrationId);
                                 await migR.UpdateVerificationStatusAsync(migrationId, "Paused");
                                 await migR.SetVerificationAutoPausedAsync(migrationId, true);
+                                try
+                                {
+                                    await scope.ServiceProvider.GetRequiredService<INotificationService>()
+                                        .RaiseAsync(NotificationEvents.AutoPaused, migration.Name, new (string, string)[]
+                                        {
+                                            ("Origen → Destino", $"{migration.OriginNode?.Alias ?? "?"} → {migration.DestNode?.Alias ?? "?"}"),
+                                            ("Proceso", "Verificación"),
+                                            ("Motivo",  $"{connErrors} errores de conexión con el destino"),
+                                            ("Nodo",    migration.DestNode?.Alias ?? "destino"),
+                                        }, migrationId, "migration");
+                                }
+                                catch (Exception nex) { logger.LogWarning(nex, "Notificación de auto-pausa (verificación {Id}) falló.", migrationId); }
                             }
                             // Cancelar el token compartido: detiene a los demás workers de
                             // inmediato y hace que el handler de finalización NO marque
@@ -926,6 +962,28 @@ public class MigrationWorker(
                     $"Migrados={stats.Migrated} Verificados={stats.Verified} Fallidos={stats.Failed}"
             });
             logger.LogInformation("Migration {Id} finished with status {Status}", migrationId, finalStatus);
+
+            // ── Notificación por correo (v227) ──
+            try
+            {
+                var mig = await MigrationRepo(scope).GetByIdAsync(migrationId);
+                var notif = scope.ServiceProvider.GetRequiredService<INotificationService>();
+                var kind = finalStatus == "Failed"
+                    ? NotificationEvents.MigrationFailed
+                    : NotificationEvents.MigrationCompleted;
+                await notif.RaiseAsync(kind, mig?.Name ?? $"#{migrationId}", new (string, string)[]
+                {
+                    ("Origen → Destino",    $"{mig?.OriginNode?.Alias ?? "?"} → {mig?.DestNode?.Alias ?? "?"}"),
+                }, migrationId, "migration",
+                kpis: new (string, string)[]
+                {
+                    ("Estudios",    stats.Total.ToString("N0")),
+                    ("Migrados",    stats.Migrated.ToString("N0")),
+                    ("Verificados", stats.Verified.ToString("N0")),
+                    ("Fallidos",    stats.Failed.ToString("N0")),
+                });
+            }
+            catch (Exception nex) { logger.LogWarning(nex, "Notificación de fin de migración {Id} falló (no crítico).", migrationId); }
         }, TaskScheduler.Default);
     }
 
@@ -997,6 +1055,18 @@ public class MigrationWorker(
                                 "Pausando migración {Id} (se reanudará sola al recuperarse la conexión).",
                                 connErrors, migration.Id);
                             await MigrationRepo(scope).UpdateStatusAsync(migration.Id, "Paused");
+                            try
+                            {
+                                await scope.ServiceProvider.GetRequiredService<INotificationService>()
+                                    .RaiseAsync(NotificationEvents.AutoPaused, migration.Name, new (string, string)[]
+                                    {
+                                        ("Origen → Destino", $"{migration.OriginNode?.Alias ?? "?"} → {migration.DestNode?.Alias ?? "?"}"),
+                                        ("Proceso", "Migración"),
+                                        ("Motivo",  $"{connErrors} errores de conexión con el origen"),
+                                        ("Nodo",    migration.OriginNode?.Alias ?? "origen"),
+                                    }, migration.Id, "migration");
+                            }
+                            catch (Exception nex) { logger.LogWarning(nex, "Notificación de auto-pausa (migración {Id}) falló.", migration.Id); }
                             await MigrationRepo(scope).SetMigrationAutoPausedAsync(migration.Id, true);
                         }
                         // Cancelar el token compartido: detiene a los demás workers de

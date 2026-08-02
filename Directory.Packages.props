@@ -40,8 +40,12 @@
     <PackageVersion Include="ClosedXML" Version="0.104.2" />
     <PackageVersion Include="CsvHelper" Version="33.0.1" />
 
+    <!-- Notificaciones por correo (v227; 4.16.0 corrige GHSA-9j88-vvj5-vhgr) -->
+    <PackageVersion Include="MailKit" Version="4.16.0" />
+
     <!-- Licencias (Ed25519 + fingerprint por firmware) -->
-    <PackageVersion Include="BouncyCastle.Cryptography" Version="2.4.0" />
+    <!-- 2.6.2: mínimo que exige MimeKit 4.16.0 (evita NU1605); Ed25519 sin cambios de API -->
+    <PackageVersion Include="BouncyCastle.Cryptography" Version="2.6.2" />
     <PackageVersion Include="System.Management" Version="9.0.0" />
     <PackageVersion Include="Microsoft.Win32.Registry" Version="5.0.0" />
   </ItemGroup>

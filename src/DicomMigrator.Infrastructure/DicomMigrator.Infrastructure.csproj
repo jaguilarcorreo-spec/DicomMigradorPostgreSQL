@@ -18,6 +18,8 @@
     </PackageReference>
     <!-- CSV parsing -->
     <PackageReference Include="CsvHelper" />
+    <!-- Notificaciones por correo (v227): envío SMTP moderno -->
+    <PackageReference Include="MailKit" />
     <!-- Licencias: verificación de firma Ed25519 (pura gestionada, sin dependencias nativas) -->
     <PackageReference Include="BouncyCastle.Cryptography" />
     <!-- Licencias: fingerprint anclado a firmware (UUID SMBIOS + serie de placa) vía WMI -->

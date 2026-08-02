@@ -1,0 +1,163 @@
+@page "/notificaciones"
+@rendermode InteractiveServer
+@using DicomMigrator.Core.Interfaces
+@using DicomMigrator.Core.Models
+@attribute [Authorize(Roles = AppRoles.Administrador)]
+@inject INotificationRepository NotifRepo
+@inject INotificationService NotifSvc
+
+<PageTitle>Notificaciones — MOVE</PageTitle>
+
+<div class="page-header">
+    <div>
+        <h1 class="page-title">Notificaciones por correo</h1>
+        <p class="page-sub">Avisos por email de eventos de migración y descubrimiento. Configuración en base de datos.</p>
+    </div>
+</div>
+
+@if (_s is null)
+{
+    <div class="loading-msg">Cargando...</div>
+}
+else
+{
+    @if (!string.IsNullOrEmpty(_msg))
+    {
+        <div class="@(_msgOk ? "alert-success" : "alert-error") mb2">@_msg</div>
+    }
+
+    <div class="card mb2" style="max-width:820px">
+        <div class="card-header">
+            <span class="card-title">General</span>
+            <label style="margin-left:auto;display:flex;align-items:center;gap:8px;cursor:pointer">
+                <input type="checkbox" @bind="_s.Enabled" />
+                <span style="font-size:12px;color:var(--text-dim)">Notificaciones activadas</span>
+            </label>
+        </div>
+        <div class="card-body">
+            <div class="form-section">Servidor SMTP</div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label class="form-label">Host</label>
+                    <input class="form-input mono" @bind="_s.SmtpHost" placeholder="smtp.hospital.org" />
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Puerto</label>
+                    <input class="form-input mono" type="number" @bind="_s.SmtpPort" placeholder="587" />
+                </div>
+            </div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label class="form-label">Usuario (vacío = sin autenticación)</label>
+                    <input class="form-input mono" @bind="_s.SmtpUser" />
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Contraseña</label>
+                    <input class="form-input mono" type="password" @bind="_s.SmtpPassword" />
+                </div>
+            </div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label class="form-label">Remitente (From)</label>
+                    <input class="form-input mono" @bind="_s.FromAddress" placeholder="move@hospital.org" />
+                </div>
+                <div class="form-group" style="justify-content:flex-end">
+                    <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:6px">
+                        <input type="checkbox" @bind="_s.SmtpUseStartTls" />
+                        <span style="font-size:12px">Usar STARTTLS</span>
+                    </label>
+                </div>
+            </div>
+
+            <div class="form-section" style="margin-top:8px">Destinatarios</div>
+            <div class="form-group">
+                <label class="form-label">Uno por línea o separados por coma/espacio</label>
+                <textarea class="form-input mono" rows="2" @bind="_s.Recipients"
+                          placeholder="ops@hospital.org, jefatura.ti@hospital.org"></textarea>
+            </div>
+
+            <div class="form-section" style="margin-top:16px">Opciones</div>
+            <div class="form-group">
+                <label class="form-label">URL base (para los enlaces de los correos)</label>
+                <input class="form-input mono" @bind="_s.BaseUrl" placeholder="https://move.hospital.org:5200" />
+            </div>
+        </div>
+    </div>
+
+    <div class="card mb2" style="max-width:820px">
+        <div class="card-header"><span class="card-title">Eventos que disparan aviso</span></div>
+        <div class="card-body">
+            @foreach (var ev in _events)
+            {
+                <label style="display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid rgba(255,255,255,.03);cursor:pointer">
+                    <input type="checkbox" checked="@ev.Get()" @onchange="@(e => ev.Set((bool)(e.Value ?? false)))" />
+                    <span>
+                        <span style="font-size:12.5px">@ev.Name</span>
+                        <span style="display:block;font-size:10.5px;color:var(--text-muted)">@ev.Desc</span>
+                    </span>
+                </label>
+            }
+        </div>
+    </div>
+
+    <div style="display:flex;gap:8px;align-items:center;max-width:820px">
+        <button class="btn btn-primary" @onclick="SaveAsync" disabled="@_busy">💾 Guardar</button>
+        <button class="btn btn-ghost" @onclick="SaveAndTestAsync" disabled="@_busy">✉ Guardar y enviar prueba</button>
+        @if (_busy) { <span style="font-size:11px;color:var(--text-dim)">Trabajando…</span> }
+    </div>
+    <p class="form-hint" style="margin-top:10px;max-width:820px">
+        Los correos NO incluyen datos de paciente: solo agregados e identificadores del proceso.
+        El envío es en segundo plano con reintentos; «Guardar y enviar prueba» envía uno al instante para validar el SMTP.
+    </p>
+}
+
+@code {
+    private NotificationSettings? _s;
+    private string _msg = "";
+    private bool _msgOk;
+    private bool _busy;
+
+    private sealed record EventToggle(string Name, string Desc, Func<bool> Get, Action<bool> Set);
+    private List<EventToggle> _events = [];
+
+    protected override async Task OnInitializedAsync()
+    {
+        _s = await NotifRepo.GetSettingsAsync();
+        _events =
+        [
+            new("Migración completada",            "al terminar toda la migración",              () => _s!.NotifyMigrationCompleted,    v => _s!.NotifyMigrationCompleted = v),
+            new("Migración con fallos",            "terminó pero con estudios fallidos",         () => _s!.NotifyMigrationFailed,       v => _s!.NotifyMigrationFailed = v),
+            new("Verificación completada",         "al terminar la verificación sin fallos",     () => _s!.NotifyVerificationCompleted, v => _s!.NotifyVerificationCompleted = v),
+            new("Verificación con fallos",         "la verificación terminó con estudios fallidos", () => _s!.NotifyVerificationFailed, v => _s!.NotifyVerificationFailed = v),
+            new("Auto-pausa por conexión",         "migración o verificación (un solo aviso)",    () => _s!.NotifyAutoPaused,            v => _s!.NotifyAutoPaused = v),
+            new("Descubrimiento completado",       "fin del job de descubrimiento",              () => _s!.NotifyDiscoveryCompleted, v => _s!.NotifyDiscoveryCompleted = v),
+            new("Descubrimiento con error",        "el job terminó con excepción",               () => _s!.NotifyDiscoveryFailed,    v => _s!.NotifyDiscoveryFailed = v),
+            new("Enumeración de UIDs terminada",   "captura Nivel 2 completada o fallida",        () => _s!.NotifyCaptureFinished,    v => _s!.NotifyCaptureFinished = v),
+            new("Poblado desde inventario",        "fin del poblado en segundo plano",           () => _s!.NotifyPopulateFinished,   v => _s!.NotifyPopulateFinished = v),
+        ];
+    }
+
+    async Task SaveAsync()
+    {
+        if (_s is null) return;
+        _busy = true; _msg = "";
+        try { await NotifRepo.SaveSettingsAsync(_s); _msg = "Configuración guardada."; _msgOk = true; }
+        catch (Exception ex) { _msg = $"Error: {ex.Message}"; _msgOk = false; }
+        finally { _busy = false; }
+    }
+
+    async Task SaveAndTestAsync()
+    {
+        if (_s is null) return;
+        _busy = true; _msg = "";
+        try
+        {
+            await NotifRepo.SaveSettingsAsync(_s);
+            var (ok, error) = await NotifSvc.SendTestAsync();
+            _msgOk = ok;
+            _msg = ok ? "Configuración guardada y correo de prueba enviado." : $"Guardado, pero la prueba falló: {error}";
+        }
+        catch (Exception ex) { _msg = $"Error: {ex.Message}"; _msgOk = false; }
+        finally { _busy = false; }
+    }
+}

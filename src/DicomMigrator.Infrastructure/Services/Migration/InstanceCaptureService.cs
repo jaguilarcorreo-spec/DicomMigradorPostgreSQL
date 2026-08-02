@@ -75,6 +75,26 @@ public class InstanceCaptureService(
                 var status = t.IsFaulted || t.Result?.ErrorMessage is not null ? "Failed" : "Completed";
                 await jr.FinishCaptureAsync(jobId, status);
                 logger.LogInformation("Captura Nivel 2 {Status} · job {Id}", status, jobId);
+
+                // ── Notificación por correo (v227) ──
+                try
+                {
+                    var job = await jr.GetByIdAsync(jobId);
+                    var r   = t.Result;
+                    await scope.ServiceProvider.GetRequiredService<INotificationService>()
+                        .RaiseAsync(NotificationEvents.CaptureFinished, job?.Name ?? $"#{jobId}", new (string, string)[]
+                        {
+                            ("Origen → Destino", $"{job?.SourcePacs?.Alias ?? "?"} → Inventario MOVE"),
+                        }, jobId, "discovery",
+                        kpis: new (string, string)[]
+                        {
+                            ("Capturados", (r?.StudiesCaptured ?? 0).ToString("N0")),
+                            ("Saltados",   (r?.StudiesSkipped ?? 0).ToString("N0")),
+                            ("Fallidos",   (r?.StudiesFailed ?? 0).ToString("N0")),
+                            ("Instancias", (r?.InstancesCaptured ?? 0).ToString("N0")),
+                        });
+                }
+                catch (Exception nex) { logger.LogWarning(nex, "Notificación de fin de captura (job {Id}) falló (no crítico).", jobId); }
             }
             catch (Exception ex)
             {

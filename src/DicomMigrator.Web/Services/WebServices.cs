@@ -294,6 +294,40 @@ public class DatabaseMaintenanceHostedService(
 //   tamaño de lote, lo que ocurra antes.
 // - Flush final garantizado al apagar la aplicación (StopAsync), para no perder
 //   las entradas que queden en cola.
+// ══════════════════════════════════════════════════════════════════════════════
+//  NotificationDispatcherHostedService — vacía el outbox de correos (v227)
+// ══════════════════════════════════════════════════════════════════════════════
+//
+// Cada 15 s pide al INotificationService que procese el outbox: envía los correos
+// pendientes por SMTP con reintentos y backoff. Si las notificaciones están
+// desactivadas o el SMTP no está configurado, ProcessOutboxAsync no hace nada.
+public sealed class NotificationDispatcherHostedService(
+    IServiceScopeFactory scopeFactory,
+    ILogger<NotificationDispatcherHostedService> logger) : BackgroundService
+{
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        logger.LogInformation("NotificationDispatcherHostedService started · cada 15 s");
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            try { await Task.Delay(TimeSpan.FromSeconds(15), stoppingToken); }
+            catch (OperationCanceledException) { break; }
+
+            try
+            {
+                using var scope = scopeFactory.CreateScope();
+                var notif = scope.ServiceProvider
+                    .GetRequiredService<DicomMigrator.Core.Interfaces.INotificationService>();
+                await notif.ProcessOutboxAsync(stoppingToken);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Ciclo de envío de notificaciones falló (no crítico, se reintentará).");
+            }
+        }
+    }
+}
+
 public sealed class AuditLogFlushService(
     AuditLogBuffer buffer,
     ILogger<AuditLogFlushService> logger) : BackgroundService

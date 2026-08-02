@@ -89,6 +89,23 @@ public class MigrationPopulateService(
 
             await migRepo.FinishPopulateAsync(migrationId, "Completed");
             logger.LogInformation("Poblado completado · migración {Id} · {N} estudios", migrationId, imported);
+
+            // ── Notificación por correo (v227) ──
+            try
+            {
+                var mig = await migRepo.GetByIdAsync(migrationId);
+                await scope.ServiceProvider.GetRequiredService<INotificationService>()
+                    .RaiseAsync(NotificationEvents.PopulateFinished, mig?.Name ?? $"#{migrationId}", new (string, string)[]
+                    {
+                        ("Origen → Destino", $"{mig?.OriginNode?.Alias ?? "?"} → {mig?.DestNode?.Alias ?? "?"}"),
+                        ("Inventario",       $"job de descubrimiento #{sourceJobId}"),
+                    }, migrationId, "migration",
+                    kpis: new (string, string)[]
+                    {
+                        ("Estudios importados", imported.ToString("N0")),
+                    });
+            }
+            catch (Exception nex) { logger.LogWarning(nex, "Notificación de fin de poblado (migración {Id}) falló (no crítico).", migrationId); }
         }
         catch (OperationCanceledException)
         {

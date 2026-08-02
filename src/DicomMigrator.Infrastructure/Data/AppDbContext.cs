@@ -14,6 +14,8 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<MigrationAuditLog> AuditLogs        => Set<MigrationAuditLog>();
     public DbSet<AppUser>           AppUsers         => Set<AppUser>();
     public DbSet<LicenseState>      LicenseStates    => Set<LicenseState>();
+    public DbSet<NotificationSettings> NotificationSettings => Set<NotificationSettings>();
+    public DbSet<NotificationOutbox>   NotificationOutbox   => Set<NotificationOutbox>();
     public DbSet<LocalConfiguration> LocalConfigurations => Set<LocalConfiguration>();
 
     // ── Discovery Engine (RF-020) ──────────────────────────────────────────────
@@ -155,6 +157,23 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             e.Property(x => x.Id).ValueGeneratedNever();
             e.Property(x => x.Token).HasColumnType("text");
             e.Property(x => x.LicId).HasMaxLength(64);
+        });
+
+        // ── NotificationSettings (fila única, Id=1) ──────────────────────────
+        mb.Entity<NotificationSettings>(e =>
+        {
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Id).ValueGeneratedNever();
+        });
+
+        // ── NotificationOutbox ───────────────────────────────────────────────
+        mb.Entity<NotificationOutbox>(e =>
+        {
+            e.HasKey(x => x.Id);
+            e.Property(x => x.EventKind).HasMaxLength(40);
+            e.Property(x => x.Status).HasMaxLength(20);
+            // El dispatcher consulta por estado → índice para no escanear la tabla.
+            e.HasIndex(x => new { x.Status, x.Id });
         });
 
         mb.Entity<MigrationAuditLog>(e =>

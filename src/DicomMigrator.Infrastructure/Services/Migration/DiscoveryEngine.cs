@@ -197,12 +197,47 @@ public class DiscoveryEngine(
                 var jobRepo = scope.ServiceProvider.GetRequiredService<IDiscoveryJobRepository>();
                 await jobRepo.UpdateStatusAsync(jobId, "Completed");
                 logger.LogInformation("Discovery Job {Id} completado", jobId);
+
+                // ── Notificación por correo (v227) ──
+                try
+                {
+                    var job   = await jobRepo.GetByIdAsync(jobId);
+                    var stats = await jobRepo.GetStatsAsync(jobId);
+                    await scope.ServiceProvider.GetRequiredService<INotificationService>()
+                        .RaiseAsync(NotificationEvents.DiscoveryCompleted, job?.Name ?? $"#{jobId}", new (string, string)[]
+                        {
+                            ("Origen → Destino", $"{job?.SourcePacs?.Alias ?? "?"} → Inventario MOVE"),
+                        },
+                        jobId, "discovery",
+                        kpis: new (string, string)[]
+                        {
+                            ("Estudios",    stats.StudiesDiscovered.ToString("N0")),
+                            ("Nuevos",      stats.StudiesNew.ToString("N0")),
+                            ("Particiones", stats.TotalPartitions.ToString("N0")),
+                            ("Fallidas",    stats.FailedPartitions.ToString("N0")),
+                        });
+                }
+                catch (Exception nex) { logger.LogWarning(nex, "Notificación de fin de descubrimiento {Id} falló (no crítico).", jobId); }
             }
         }
         catch (OperationCanceledException) { /* expected on Pause */ }
         catch (Exception ex)
         {
             logger.LogError(ex, "Discovery Job {Id} terminó con excepción no controlada", jobId);
+
+            // ── Notificación por correo (v227) ──
+            try
+            {
+                using var nscope = scopeFactory.CreateScope();
+                var job = await nscope.ServiceProvider.GetRequiredService<IDiscoveryJobRepository>().GetByIdAsync(jobId);
+                await nscope.ServiceProvider.GetRequiredService<INotificationService>()
+                    .RaiseAsync(NotificationEvents.DiscoveryFailed, job?.Name ?? $"#{jobId}", new (string, string)[]
+                    {
+                        ("Origen → Destino", $"{job?.SourcePacs?.Alias ?? "?"} → Inventario MOVE"),
+                        ("Error", ex.Message),
+                    }, jobId, "discovery");
+            }
+            catch (Exception nex) { logger.LogWarning(nex, "Notificación de fallo de descubrimiento {Id} falló (no crítico).", jobId); }
         }
         finally
         {

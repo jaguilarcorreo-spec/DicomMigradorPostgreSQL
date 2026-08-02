@@ -188,6 +188,9 @@ try
         DicomMigrator.Infrastructure.Services.Licensing.LicenseService>();
     builder.Services.AddScoped<IDiscoveredInstanceRepository, DiscoveredInstanceRepository>();
     builder.Services.AddScoped<IAuditLogRepository,    AuditLogRepository>();
+    builder.Services.AddScoped<INotificationRepository, NotificationRepository>();
+    builder.Services.AddScoped<INotificationService,
+        DicomMigrator.Infrastructure.Services.Notifications.NotificationService>();
     builder.Services.AddSingleton<DicomMigrator.Infrastructure.Data.AuditLogBuffer>();
     builder.Services.AddScoped<ILocalConfigRepository, LocalConfigRepository>();
 
@@ -256,6 +259,7 @@ try
     // ── Auto-reanudación tras auto-pausa por errores de conexión ─────────────
     builder.Services.AddHostedService<AutoResumeHostedService>();
     builder.Services.AddHostedService<DicomMigrator.Web.Services.AuditLogFlushService>();
+    builder.Services.AddHostedService<DicomMigrator.Web.Services.NotificationDispatcherHostedService>();
 
     var app = builder.Build();
 

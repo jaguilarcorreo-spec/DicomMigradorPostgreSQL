@@ -15,6 +15,38 @@ public interface INodeRepository
     Task DeleteAsync(int id);
 }
 
+// ── Notificaciones por correo (v227) ────────────────────────────────────────
+public interface INotificationRepository
+{
+    /// <summary>Config (fila única). Devuelve valores por defecto si aún no se ha guardado.</summary>
+    Task<NotificationSettings> GetSettingsAsync();
+    Task SaveSettingsAsync(NotificationSettings settings);
+    Task AddToOutboxAsync(NotificationOutbox item);
+    /// <summary>Correos pendientes con intentos por debajo del máximo, más antiguos primero.</summary>
+    Task<List<NotificationOutbox>> GetPendingAsync(int maxAttempts, int take = 50);
+    Task MarkSentAsync(long id);
+    Task MarkAttemptAsync(long id, int attempts, string error, bool giveUp);
+}
+
+/// <summary>Servicio de notificaciones: encola eventos, procesa el outbox y envía pruebas.</summary>
+public interface INotificationService
+{
+    /// <summary>Encola un correo para un evento SI está activado en la config. No lanza:
+    /// una notificación nunca debe romper el proceso que la origina.</summary>
+    Task RaiseAsync(string eventKind, string entityName,
+        IReadOnlyList<(string Label, string Value)> facts,
+        int? refId = null, string? refType = null,
+        IReadOnlyList<(string Label, string Value)>? kpis = null,
+        CancellationToken ct = default);
+
+    /// <summary>Envía un correo de prueba con la config actual. Devuelve (ok, error).</summary>
+    Task<(bool ok, string? error)> SendTestAsync(CancellationToken ct = default);
+
+    /// <summary>Vacía el outbox: envía los pendientes por SMTP con reintentos. Lo llama el
+    /// servicio de fondo periódicamente.</summary>
+    Task ProcessOutboxAsync(CancellationToken ct = default);
+}
+
 public interface IMigrationRepository
 {
     Task<List<Migration>> GetAllAsync();
