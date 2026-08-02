@@ -355,8 +355,11 @@
         </div>
     }
 
-    @* ── Barra de progreso de ENUMERACIÓN (Nivel 2) ── *@
-    @if (_stats.StudiesDiscovered > 0)
+    @* ── Barra de progreso de ENUMERACIÓN (Nivel 2) ──
+       Solo se pinta como progreso si la enumeración se ha iniciado para ESTE job. Si está
+       en Idle y aun así hay UIDs, son heredados del inventario global (Opción A): se avisa,
+       no se muestra una barra al 100% que parezca enumeración en vivo. ── *@
+    @if (_stats.StudiesDiscovered > 0 && EnumStarted)
     {
         <div class="card mb2">
             <div class="card-body" style="padding:14px 16px">
@@ -379,6 +382,21 @@
                 <div class="progress-track" style="height:8px">
                     <div class="progress-fill" style="width:@(EnumerationPercent().ToString("F1", System.Globalization.CultureInfo.InvariantCulture))%;background:var(--purple)"></div>
                 </div>
+            </div>
+        </div>
+    }
+    else if (_stats.StudiesDiscovered > 0 && _capturedInstances > 0)
+    {
+        @* Idle + hay UIDs → heredados del inventario, NO progreso de esta ejecución. *@
+        <div class="card mb2">
+            <div class="card-body" style="padding:12px 16px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+                <span style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.08em">Enumeración</span>
+                <span style="font-size:12px;color:var(--text-dim)">
+                    Sin enumerar en este job. Hay
+                    <strong style="color:var(--purple)">@_capturedInstances.ToString("N0")</strong>
+                    UIDs de instancia en el inventario de una enumeración previa (se reutilizan por
+                    inventario global). Pulsa <strong>Enumerar</strong> para capturarlos de nuevo desde el origen.
+                </span>
             </div>
         </div>
     }
@@ -701,14 +719,28 @@ else
                                     </div>
                                     <span class="mono" style="color:var(--accent);font-size:12px;min-width:46px;text-align:right">@(jc.Stats.ProgressPercent.ToString("F1", ci))%</span>
                                 </div>
-                                @* ── Barra de ENUMERAR (morado, estudios enumerados / descubiertos) ── *@
-                                <div style="display:flex;align-items:center;gap:8px">
-                                    <span style="font-size:10px;color:var(--text-muted);min-width:82px;text-transform:uppercase;letter-spacing:0.06em">Enumerar</span>
-                                    <div class="progress-track" style="flex:1">
-                                        <div class="progress-fill" style="width:@(enumPct.ToString("F1", ci))%;background:#a78bfa"></div>
+                                @* ── Barra de ENUMERAR (morado). Solo es progreso real si la
+                                   enumeración se ha iniciado para este job; si está en Idle, los
+                                   UIDs que haya son heredados del inventario (Opción A) y se avisa
+                                   en vez de pintar una barra al 100%. ── *@
+                                @{ var enumStarted = j.CaptureStartedDate is not null || j.CaptureStatus is not "Idle"; }
+                                @if (enumStarted)
+                                {
+                                    <div style="display:flex;align-items:center;gap:8px">
+                                        <span style="font-size:10px;color:var(--text-muted);min-width:82px;text-transform:uppercase;letter-spacing:0.06em">Enumerar</span>
+                                        <div class="progress-track" style="flex:1">
+                                            <div class="progress-fill" style="width:@(enumPct.ToString("F1", ci))%;background:#a78bfa"></div>
+                                        </div>
+                                        <span class="mono" style="color:#a78bfa;font-size:12px;min-width:46px;text-align:right">@(enumPct.ToString("F1", ci))%</span>
                                     </div>
-                                    <span class="mono" style="color:#a78bfa;font-size:12px;min-width:46px;text-align:right">@(enumPct.ToString("F1", ci))%</span>
-                                </div>
+                                }
+                                else if (jc.CapturedInstances > 0)
+                                {
+                                    <div style="display:flex;align-items:center;gap:8px">
+                                        <span style="font-size:10px;color:var(--text-muted);min-width:82px;text-transform:uppercase;letter-spacing:0.06em">Enumerar</span>
+                                        <span style="font-size:10px;color:var(--text-dim)">Sin enumerar · @jc.CapturedInstances.ToString("N0") UIDs en inventario (previo)</span>
+                                    </div>
+                                }
                             </div>
                         </div>
                     }
@@ -744,6 +776,15 @@ else
 
     double EnumerationPercent()
         => _stats.StudiesDiscovered > 0 ? _capturedStudies * 100.0 / _stats.StudiesDiscovered : 0;
+
+    // ¿La enumeración se ha iniciado ALGUNA VEZ para este job? Solo entonces la barra de
+    // enumeración es progreso real. Con CaptureStatus="Idle" y sin CaptureStartedDate, los
+    // UIDs que pueda haber son HEREDADOS del inventario global (Opción A: el redescubrimiento
+    // reasigna DiscoveryJobId a estudios ya enumerados por otra ejecución/job) y no deben
+    // pintarse como una barra al 100% que aparente enumeración en vivo.
+    private bool EnumStarted =>
+        _detail is not null &&
+        (_detail.CaptureStartedDate is not null || _detail.CaptureStatus is not "Idle");
 
     double CaptureElapsedSeconds()
     {
