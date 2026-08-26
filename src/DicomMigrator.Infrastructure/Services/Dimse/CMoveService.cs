@@ -40,8 +40,15 @@ public sealed class StorageScpServer : IDisposable
     }
 
     // ── Per-study registration ─────────────────────────────────────────────
-    // Key: StudyInstanceUID  Value: (downloadDir, onFileReceived callback)
-    private readonly ConcurrentDictionary<string, (string Dir, Action<string> Callback)> _registrations = new();
+    // Key: token opaco por-llamada (NO el StudyInstanceUID). La arquitectura permite
+    // que el mismo StudyInstanceUID esté siendo migrado por dos jobs en paralelo; si la
+    // clave fuera el UID, el Unregister de un job borraría silenciosamente el registro
+    // todavía activo del otro (y un Register posterior lo pisaría). Las instancias que
+    // llegan se correlacionan por StudyUid contra TODOS los registros activos: si hay
+    // más de uno para el mismo estudio, se entregan a todos — la asociación DICOM no
+    // trae ninguna identidad de job con la que desambiguar más.
+    private sealed record Registration(string StudyUid, string LocalAet, string Dir, Action<string> Callback);
+    private readonly ConcurrentDictionary<string, Registration> _registrations = new();
 
     // ── Server state ───────────────────────────────────────────────────────
     private IDicomServer? _server;
@@ -58,19 +65,28 @@ public sealed class StorageScpServer : IDisposable
         SharedScpHandler.Server = this;
     }
 
-    // Called by CMoveService before issuing C-MOVE
-    public void RegisterStudy(string studyUid, string downloadDir, Action<string> onFileReceived)
+    // Called by CMoveService before issuing C-MOVE. Returns a token to pass to UnregisterStudy.
+    public string RegisterStudy(string studyUid, string localAet, string downloadDir, Action<string> onFileReceived)
     {
         Directory.CreateDirectory(downloadDir);
-        _registrations[studyUid] = (downloadDir, onFileReceived);
+        var token = Guid.NewGuid().ToString("N");
+        _registrations[token] = new Registration(studyUid, localAet, downloadDir, onFileReceived);
         EnsureStarted();
         Interlocked.Increment(ref _activeWorkers);
+        return token;
     }
 
+    // Called by SharedScpHandler on every incoming association: solo se acepta si el AE
+    // Title llamado coincide con el configurado en alguno de los C-MOVE activos ahora
+    // mismo. Antes se aceptaba CUALQUIER asociación entrante sin comprobar nada, así que
+    // cualquier host que alcanzara el puerto podía empujar ficheros arbitrarios al SCP.
+    internal bool IsCalledAetAllowed(string calledAe) =>
+        _registrations.Values.Any(r => string.Equals(r.LocalAet, calledAe, StringComparison.OrdinalIgnoreCase));
+
     // Called by CMoveService after C-MOVE completes (success or fail)
-    public void UnregisterStudy(string studyUid)
+    public void UnregisterStudy(string token)
     {
-        _registrations.TryRemove(studyUid, out _);
+        _registrations.TryRemove(token, out _);
         if (Interlocked.Decrement(ref _activeWorkers) <= 0)
             StopServer();
     }
@@ -78,22 +94,34 @@ public sealed class StorageScpServer : IDisposable
     // Called from handler when a C-STORE arrives
     internal void OnInstanceReceived(string studyUid, string sopUid, DicomFile file)
     {
-        if (!_registrations.TryGetValue(studyUid, out var reg))
+        var matches = _registrations.Values.Where(r => r.StudyUid == studyUid).ToList();
+        if (matches.Count == 0)
         {
             // Study not registered — store in a fallback folder
             _logger.LogWarning("SCP recibió instancia de estudio no registrado: {Uid}", studyUid);
-            reg = (Path.Combine(Path.GetTempPath(), "dicommigrator", "unregistered"), _ => { });
-            Directory.CreateDirectory(reg.Dir);
+            var fallbackDir = Path.Combine(Path.GetTempPath(), "dicommigrator", "unregistered");
+            Directory.CreateDirectory(fallbackDir);
+            matches.Add(new Registration(studyUid, string.Empty, fallbackDir, _ => { }));
         }
-        try
+        else if (matches.Count > 1)
         {
-            var path = Path.Combine(reg.Dir, $"{sopUid}.dcm");
-            file.Save(path);
-            reg.Callback(path);
+            _logger.LogWarning(
+                "SCP recibió instancia de estudio {Uid} con {Count} registros activos simultáneos (migrado por varios jobs a la vez); se entrega a todos",
+                studyUid, matches.Count);
         }
-        catch (Exception ex)
+
+        foreach (var reg in matches)
         {
-            _logger.LogError(ex, "Error almacenando instancia {Sop}", sopUid);
+            try
+            {
+                var path = Path.Combine(reg.Dir, $"{sopUid}.dcm");
+                file.Save(path);
+                reg.Callback(path);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error almacenando instancia {Sop}", sopUid);
+            }
         }
     }
 
@@ -142,12 +170,26 @@ public class SharedScpHandler : DicomService, IDicomServiceProvider, IDicomCStor
 {
     internal static StorageScpServer? Server;
 
+    private readonly ILogger _log;
+
     public SharedScpHandler(INetworkStream stream, Encoding fallbackEncoding,
         ILogger log, DicomServiceDependencies deps)
-        : base(stream, fallbackEncoding, log, deps) { }
+        : base(stream, fallbackEncoding, log, deps) => _log = log;
 
     public Task OnReceiveAssociationRequestAsync(DicomAssociation association)
     {
+        // Solo se acepta si el AE Title llamado coincide con el configurado en algún
+        // C-MOVE activo ahora mismo — evita que cualquier host que alcance el puerto
+        // pueda empujar ficheros arbitrarios haciéndose pasar por el origen esperado.
+        if (Server is null || !Server.IsCalledAetAllowed(association.CalledAE))
+        {
+            _log.LogWarning(
+                "SCP rechazó asociación: CalledAE={Called} CallingAE={Calling} Host={Host} (no coincide con ningún C-MOVE activo)",
+                association.CalledAE, association.CallingAE, association.RemoteHost);
+            return SendAssociationRejectAsync(DicomRejectResult.Permanent,
+                DicomRejectSource.ServiceUser, DicomRejectReason.CalledAENotRecognized);
+        }
+
         foreach (var pc in association.PresentationContexts)
             pc.SetResult(DicomPresentationContextResult.Accept);
         return SendAssociationAcceptAsync(association);
@@ -164,7 +206,13 @@ public class SharedScpHandler : DicomService, IDicomServiceProvider, IDicomCStor
             var sopUid   = request.Dataset.GetSingleValueOrDefault(DicomTag.SOPInstanceUID,   Guid.NewGuid().ToString());
             Server?.OnInstanceReceived(studyUid, sopUid, request.File);
         }
-        catch { }
+        catch (Exception ex)
+        {
+            // Antes se ignoraba en silencio: un dataset corrupto o cualquier fallo aquí
+            // quedaba invisible y el SCU seguía recibiendo Success como si la instancia
+            // se hubiera guardado correctamente.
+            _log.LogError(ex, "Error procesando C-STORE entrante");
+        }
         return new DicomCStoreResponse(request, DicomStatus.Success);
     }
     public Task OnCStoreRequestExceptionAsync(string tempFileName, Exception e) => Task.CompletedTask;
@@ -193,19 +241,18 @@ public class CMoveService(ILogger<CMoveService> logger)
 
         // El SCP compartido se obtiene/arranca con el primer estudio activo.
         var scp = StorageScpServer.GetOrCreate(config.LocalPort, logger);
-        bool registered = false;
+        string? registrationToken = null;
 
         try
         {
             // RegisterStudy puede fallar (CreateDirectory, EnsureStarted con puerto ocupado).
-            // El flag 'registered' asegura que UnregisterStudy solo se llama si efectivamente
-            // se hizo el Register — evita Decrement spurios sobre _activeWorkers.
-            scp.RegisterStudy(request.StudyInstanceUid, downloadDir, path =>
+            // El token solo se asigna si efectivamente se hizo el Register — evita
+            // Decrement spurios sobre _activeWorkers en el finally.
+            registrationToken = scp.RegisterStudy(request.StudyInstanceUid, config.LocalAet, downloadDir, path =>
             {
                 received.Add(path);
                 result.Logs.Add($"[INFO] Recibido: {Path.GetFileName(path)}");
             });
-            registered = true;
 
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             cts.CancelAfter(TimeSpan.FromSeconds(config.ResponseTimeoutSeconds + 60));
@@ -254,10 +301,27 @@ public class CMoveService(ILogger<CMoveService> logger)
                               || result.DicomStatus == 0xFF00
                               || result.DicomStatus == 0xFF01);
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // Cancelación real (pausa/parada del usuario), no el timeout interno de
+            // 'cts' (que también deriva de OperationCanceledException): propagarla tal
+            // cual para que el llamador la trate como cancelación — no como fallo de
+            // conexión — y no penalice el estudio ni dispare una auto-pausa espuria.
+            throw;
+        }
         catch (OperationCanceledException)
         {
             result.ErrorMessage = "Timeout esperando respuesta C-MOVE.";
             result.Logs.Add($"[WARN] {result.ErrorMessage}");
+        }
+        catch (DicomAssociationRejectedException ex)
+        {
+            // El PACS origen rechazó la asociación (AE Title no autorizado, etc.):
+            // problema de CONFIGURACIÓN permanente, no una caída de red transitoria.
+            result.Success = false;
+            result.AssociationRejected = true;
+            result.ErrorMessage = $"Asociación rechazada: {ex.Message}";
+            result.Logs.Add($"[ERROR] {result.ErrorMessage}");
         }
         catch (Exception ex)
         {
@@ -268,7 +332,7 @@ public class CMoveService(ILogger<CMoveService> logger)
         }
         finally
         {
-            if (registered) scp.UnregisterStudy(request.StudyInstanceUid);
+            if (registrationToken is not null) scp.UnregisterStudy(registrationToken);
             sw.Stop();
             result.DurationMs = sw.ElapsedMilliseconds;
             result.Logs.Add($"[INFO] Finalizado. Recibidos={received.Count} " +

@@ -230,31 +230,41 @@ public class DiscoveryJobRepository(IDbContextFactory<AppDbContext> factory) : I
     {
         int ins = 0, upd = 0;
         await using var db = factory.CreateDbContext();
+
+        // Cargar en UNA sola consulta todas las filas que puedan coincidir con el lote
+        // (mismo job + mismo UID), en vez de un FirstOrDefaultAsync por estudio. Con
+        // inventarios de millones de filas, el N+1 anterior convertía una importación
+        // de horas en días.
+        var jobIds = batch.Select(s => s.DiscoveryJobId).Distinct().ToList();
+        var uids   = batch.Select(s => s.StudyInstanceUid).Distinct().ToList();
+        var existing = await db.DiscoveredStudies
+            .Where(x => jobIds.Contains(x.DiscoveryJobId) && uids.Contains(x.StudyInstanceUid))
+            .ToListAsync(ct);
+        var byKey = existing
+            .GroupBy(x => (x.DiscoveryJobId, x.StudyInstanceUid))
+            .ToDictionary(g => g.Key, g => g.OrderBy(x => x.Id).First());
+
         foreach (var s in batch)
         {
-            // Inventario POR JOB (igual que UpsertAsync): buscar solo dentro de este job;
-            // el mismo UID en otro job es una fila independiente y NO se reasigna.
-            var existing = await db.DiscoveredStudies
-                .Where(x => x.DiscoveryJobId == s.DiscoveryJobId && x.StudyInstanceUid == s.StudyInstanceUid)
-                .OrderBy(x => x.Id)
-                .FirstOrDefaultAsync(ct);
-            if (existing is null)
+            // Inventario POR JOB: buscar solo dentro de este job; el mismo UID en otro
+            // job es una fila independiente y NO se reasigna.
+            if (byKey.TryGetValue((s.DiscoveryJobId, s.StudyInstanceUid), out var match))
             {
-                db.DiscoveredStudies.Add(s);
-                ins++;
+                match.PatientId        ??= s.PatientId;
+                match.PatientName      ??= s.PatientName;
+                match.AccessionNumber  ??= s.AccessionNumber;
+                match.StudyDate        ??= s.StudyDate;
+                match.StudyTime        ??= s.StudyTime;
+                match.ModalitiesInStudy ??= s.ModalitiesInStudy;
+                match.StudyDescription ??= s.StudyDescription;
+                // Ya NO se reasigna DiscoveryJobId (la fila es de este mismo job).
+                match.LastUpdatedDate  = s.LastUpdatedDate;
+                upd++;
             }
             else
             {
-                existing.PatientId        ??= s.PatientId;
-                existing.PatientName      ??= s.PatientName;
-                existing.AccessionNumber  ??= s.AccessionNumber;
-                existing.StudyDate        ??= s.StudyDate;
-                existing.StudyTime        ??= s.StudyTime;
-                existing.ModalitiesInStudy ??= s.ModalitiesInStudy;
-                existing.StudyDescription ??= s.StudyDescription;
-                // Ya NO se reasigna DiscoveryJobId (la fila es de este mismo job).
-                existing.LastUpdatedDate  = s.LastUpdatedDate;
-                upd++;
+                db.DiscoveredStudies.Add(s);
+                ins++;
             }
         }
         await db.SaveChangesAsync(ct);
@@ -575,19 +585,27 @@ public class DiscoveredStudyRepository(IDbContextFactory<AppDbContext> factory) 
         await using var db = factory.CreateDbContext();
         int inserted = 0, updated = 0;
 
-        foreach (var s in studies)
-        {
-            if (string.IsNullOrEmpty(s.StudyInstanceUid)) continue;
+        var list = studies.Where(s => !string.IsNullOrEmpty(s.StudyInstanceUid)).ToList();
+        if (list.Count == 0) return (0, 0);
 
+        // Cargar en UNA sola consulta todas las filas que puedan coincidir (mismo job +
+        // mismo UID), en vez de un FirstOrDefaultAsync por estudio — evita convertir un
+        // descubrimiento de millones de estudios en millones de ida-y-vuelta a la BD.
+        var jobIds = list.Select(s => s.DiscoveryJobId).Distinct().ToList();
+        var uids   = list.Select(s => s.StudyInstanceUid).Distinct().ToList();
+        var existing = await db.DiscoveredStudies
+            .Where(x => jobIds.Contains(x.DiscoveryJobId) && uids.Contains(x.StudyInstanceUid))
+            .ToListAsync();
+        var byKey = existing
+            .GroupBy(x => (x.DiscoveryJobId, x.StudyInstanceUid))
+            .ToDictionary(g => g.Key, g => g.OrderBy(x => x.Id).First());
+
+        foreach (var s in list)
+        {
             // Búsqueda POR JOB: el inventario ya no es global. Un mismo StudyInstanceUID en
             // otro job es una fila independiente; solo se actualiza si ya existe EN ESTE job
             // (p. ej. al reanudar o re-descubrir el mismo job).
-            var existing = await db.DiscoveredStudies
-                .Where(x => x.DiscoveryJobId == s.DiscoveryJobId && x.StudyInstanceUid == s.StudyInstanceUid)
-                .OrderBy(x => x.Id)
-                .FirstOrDefaultAsync();
-
-            if (existing is null)
+            if (!byKey.TryGetValue((s.DiscoveryJobId, s.StudyInstanceUid), out var match))
             {
                 db.DiscoveredStudies.Add(s);
                 inserted++;
@@ -595,27 +613,27 @@ public class DiscoveredStudyRepository(IDbContextFactory<AppDbContext> factory) 
             else
             {
                 // Update metadata fields that were empty — keep traceability
-                existing.PatientId         ??= s.PatientId;
-                existing.PatientName       ??= s.PatientName;
-                existing.AccessionNumber   ??= s.AccessionNumber;
-                existing.StudyDate         ??= s.StudyDate;
-                existing.StudyTime         ??= s.StudyTime;
-                existing.StudyDescription  ??= s.StudyDescription;
-                existing.ModalitiesInStudy ??= s.ModalitiesInStudy;
-                existing.NumberOfStudyRelatedSeries    ??= s.NumberOfStudyRelatedSeries;
-                existing.NumberOfStudyRelatedInstances ??= s.NumberOfStudyRelatedInstances;
-                existing.InstitutionName   ??= s.InstitutionName;
+                match.PatientId         ??= s.PatientId;
+                match.PatientName       ??= s.PatientName;
+                match.AccessionNumber   ??= s.AccessionNumber;
+                match.StudyDate         ??= s.StudyDate;
+                match.StudyTime         ??= s.StudyTime;
+                match.StudyDescription  ??= s.StudyDescription;
+                match.ModalitiesInStudy ??= s.ModalitiesInStudy;
+                match.NumberOfStudyRelatedSeries    ??= s.NumberOfStudyRelatedSeries;
+                match.NumberOfStudyRelatedInstances ??= s.NumberOfStudyRelatedInstances;
+                match.InstitutionName   ??= s.InstitutionName;
                 // v207: faltaban en el refresco, así que el inventario ya existente
                 // nunca se rellenaba aunque el PACS empezara a devolverlas.
-                existing.RetrieveAETitle   ??= s.RetrieveAETitle;
-                existing.PatientBirthDate  ??= s.PatientBirthDate;
-                existing.PatientSex        ??= s.PatientSex;
-                existing.IssuerOfPatientId ??= s.IssuerOfPatientId;
+                match.RetrieveAETitle   ??= s.RetrieveAETitle;
+                match.PatientBirthDate  ??= s.PatientBirthDate;
+                match.PatientSex        ??= s.PatientSex;
+                match.IssuerOfPatientId ??= s.IssuerOfPatientId;
                 // Ya NO se reasigna DiscoveryJobId: la fila existente pertenece a este mismo
                 // job (la búsqueda ya filtra por DiscoveryJobId). Sin robo de estudios entre jobs.
                 // Atribuir a la partición que lo (re)descubrió dentro de este job.
-                existing.PartitionId     = s.PartitionId ?? existing.PartitionId;
-                existing.LastUpdatedDate = DateTime.UtcNow;
+                match.PartitionId     = s.PartitionId ?? match.PartitionId;
+                match.LastUpdatedDate = DateTime.UtcNow;
                 updated++;
             }
         }

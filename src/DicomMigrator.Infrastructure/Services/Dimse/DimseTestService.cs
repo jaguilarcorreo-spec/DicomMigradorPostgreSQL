@@ -65,6 +65,9 @@ public class TesterCFindResult
     public List<TesterStudyDto> Studies { get; set; } = [];
     public string? ErrorMessage { get; set; }
     public List<string> Logs    { get; set; } = [];
+    /// <summary>True si el PACS remoto rechazó la asociación (AE Title no autorizado,
+    /// etc.) — problema de configuración permanente, no una caída transitoria.</summary>
+    public bool    AssociationRejected { get; set; }
 }
 
 public class TesterStudyDto
@@ -101,6 +104,8 @@ public class TesterCMoveResult
     public string  DownloadDirectory { get; set; } = string.Empty;
     public string? ErrorMessage      { get; set; }
     public List<string> Logs         { get; set; } = [];
+    /// <summary>Ver TesterCFindResult.AssociationRejected.</summary>
+    public bool    AssociationRejected { get; set; }
 }
 
 // ── DimseTestService (copiado del Tester) ────────────────────────────────────
@@ -119,6 +124,8 @@ public class TesterCFindInstancesResult
     public string? ErrorMessage { get; set; }
     public List<TesterInstanceDto> Instances { get; set; } = [];
     public List<string> Logs    { get; set; } = [];
+    /// <summary>Ver TesterCFindResult.AssociationRejected.</summary>
+    public bool    AssociationRejected { get; set; }
 }
 
 public class DimseTestService(ILogger<DimseTestService> logger)
@@ -207,6 +214,29 @@ public class DimseTestService(ILogger<DimseTestService> logger)
             sw.Stop();
             result.DurationMs = sw.ElapsedMilliseconds;
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // Cancelación real (pausa/parada del usuario), no el timeout interno de
+            // 'cts': propagarla para que el llamador la trate como cancelación, no
+            // como un C-FIND fallido (ver VerifyStudyAsync).
+            throw;
+        }
+        catch (OperationCanceledException)
+        {
+            sw.Stop(); result.DurationMs = sw.ElapsedMilliseconds; result.Success = false;
+            result.ErrorMessage = $"Timeout tras {config.AssociationTimeoutSeconds}s";
+            result.Logs.Add("[WARN] C-FIND timeout");
+        }
+        catch (DicomAssociationRejectedException ex)
+        {
+            // El PACS destino rechazó la asociación (AE Title no autorizado, etc.):
+            // problema de CONFIGURACIÓN permanente, no una caída de red transitoria —
+            // reintentar en bucle nunca lo arregla solo (ver VerifyStudyAsync).
+            sw.Stop(); result.DurationMs = sw.ElapsedMilliseconds; result.Success = false;
+            result.AssociationRejected = true;
+            result.ErrorMessage = $"Asociación rechazada: {ex.Message}";
+            result.Logs.Add($"[ERROR] {result.ErrorMessage}");
+        }
         catch (Exception ex)
         { sw.Stop(); result.DurationMs = sw.ElapsedMilliseconds; result.Success = false; result.ErrorMessage = ex.Message; result.Logs.Add($"[ERROR] {ex.Message}"); }
         return result;
@@ -257,6 +287,32 @@ public class DimseTestService(ILogger<DimseTestService> logger)
             await client.SendAsync(cts.Token);
             sw.Stop();
             result.DurationMs = sw.ElapsedMilliseconds;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // Cancelación real (pausa/parada del usuario), no el timeout interno de
+            // 'cts': propagarla para que el llamador la trate como cancelación, no
+            // como un C-FIND IMAGE fallido (ver VerifyStudyAsync).
+            throw;
+        }
+        catch (OperationCanceledException)
+        {
+            sw.Stop();
+            result.DurationMs = sw.ElapsedMilliseconds;
+            result.Success = false;
+            result.ErrorMessage = $"Timeout tras {config.AssociationTimeoutSeconds}s";
+            result.Logs.Add("[WARN] C-FIND IMAGE timeout");
+        }
+        catch (DicomAssociationRejectedException ex)
+        {
+            // Ver comentario equivalente en FindAsync: problema de configuración
+            // permanente, no una caída de red transitoria.
+            sw.Stop();
+            result.DurationMs = sw.ElapsedMilliseconds;
+            result.Success = false;
+            result.AssociationRejected = true;
+            result.ErrorMessage = $"Asociación rechazada: {ex.Message}";
+            result.Logs.Add($"[ERROR] {result.ErrorMessage}");
         }
         catch (Exception ex)
         {

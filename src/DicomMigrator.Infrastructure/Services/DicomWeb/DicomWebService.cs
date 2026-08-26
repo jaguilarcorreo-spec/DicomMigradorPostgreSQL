@@ -49,6 +49,9 @@ public class DicomWebService(ILogger<DicomWebService> logger, IHttpClientFactory
             RawJson      = r.RawJson,
             ErrorMessage = r.ErrorMessage,
             RequestUrl   = r.RequestUrl,
+            // HTTP 401/403 = credenciales rechazadas: problema de configuración
+            // permanente, no una caída transitoria del PACS destino.
+            ConfigurationError = !r.Success && r.HttpStatus is 401 or 403,
             ResponseHeaders = r.ResponseHeaders,
             Studies = r.Studies.Select(s => new DicomStudyDto
             {
@@ -87,6 +90,7 @@ public class DicomWebService(ILogger<DicomWebService> logger, IHttpClientFactory
             DicomStatus  = r.HttpStatus,
             DurationMs   = r.DurationMs,
             ErrorMessage = r.ErrorMessage,
+            ConfigurationError = !r.Success && r.HttpStatus is 401 or 403,
             Instances    = r.Instances.Select(i => new DicomInstanceRef
             {
                 SeriesInstanceUid = i.SeriesInstanceUid ?? string.Empty,

@@ -61,6 +61,10 @@ public class CFindResult
     public List<DicomStudyDto> Studies { get; set; } = [];
     public string? ErrorMessage { get; set; }
     public List<string> Logs    { get; set; } = [];
+    /// <summary>True if the query failed because the remote PACS REJECTED the association
+    /// (AE Title no autorizado, etc.) — a permanent configuration problem that will fail
+    /// on every retry, as opposed to a transient network/timeout issue.</summary>
+    public bool    ConfigurationError { get; set; }
 }
 
 /// <summary>Referencia a una instancia DICOM (Nivel 2 de verificación).</summary>
@@ -79,6 +83,8 @@ public class CFindInstancesResult
     public long    DurationMs   { get; set; }
     public string? ErrorMessage { get; set; }
     public List<DicomInstanceRef> Instances { get; set; } = [];
+    /// <summary>Ver CFindResult.ConfigurationError.</summary>
+    public bool    ConfigurationError { get; set; }
 }
 
 /// <summary>Resumen de una captura de UIDs de origen (Nivel 2, Fase 1b).</summary>
@@ -150,6 +156,9 @@ public class QidoResult
     public Dictionary<string, string>   ResponseHeaders { get; set; } = [];
     public string? ErrorMessage { get; set; }
     public string  RequestUrl   { get; set; } = string.Empty;
+    /// <summary>True si el fallo fue HTTP 401/403 (credenciales rechazadas) — un problema
+    /// de configuración permanente, no una caída temporal del PACS destino.</summary>
+    public bool    ConfigurationError { get; set; }
 }
 
 /// <summary>Petición de C-MOVE. Idéntico al del Tester.</summary>
@@ -180,6 +189,10 @@ public class CMoveResult
     /// is genuinely missing. Such studies should be retried as a transient error, not
     /// counted as a permanent migration failure.</summary>
     public bool    ConnectionError   { get; set; }
+    /// <summary>True if the SOURCE PACS rejected the association (AE Title no autorizado,
+    /// etc.) — a permanent configuration problem, distinct from ConnectionError (which
+    /// covers genuinely transient network/timeout failures).</summary>
+    public bool    ConfigurationError { get; set; }
     public List<string> Logs         { get; set; } = [];
 }
 
@@ -224,6 +237,10 @@ public class VerificationResult
     /// absent or mismatched. In this case the study should NOT be marked VerifyFailed;
     /// it stays verifiable and is retried (the destination couldn't be reached).</summary>
     public bool    ConnectionError       { get; set; }
+    /// <summary>True if ConnectionError is due to a PERMANENT configuration problem
+    /// (association/credenciales rechazadas por el destino) rather than a genuinely
+    /// transient network issue — no tiene sentido esperar a que se "recupere" solo.</summary>
+    public bool    ConfigurationError    { get; set; }
     // ── Nivel 2 (comparación de conjuntos de UIDs) ──
     public bool    Level2Checked         { get; set; }
     /// <summary>Comprobación realmente aplicada: UidSet | Counts | ExistenceOnly.</summary>

@@ -158,6 +158,13 @@ public class DicomWebTestService
                 if (ownedHandler is not null) { client.Dispose(); ownedHandler.Dispose(); }
             }
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // Cancelación real (pausa/parada del usuario), no el timeout de HttpClient:
+            // propagarla para que el llamador la trate como cancelación, no como fallo
+            // de conexión (ver VerifyStudyAsync/CMoveService.MoveAsync).
+            throw;
+        }
         catch (TaskCanceledException)
         { sw.Stop(); result.DurationMs = sw.ElapsedMilliseconds; result.Success = false; result.ErrorMessage = $"Timeout tras {config.HttpTimeoutSeconds}s"; }
         catch (Exception ex)
@@ -217,6 +224,10 @@ public class DicomWebTestService
             {
                 if (ownedHandler is not null) { client.Dispose(); ownedHandler.Dispose(); }
             }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
         }
         catch (TaskCanceledException)
         { sw.Stop(); result.DurationMs = sw.ElapsedMilliseconds; result.Success = false; result.ErrorMessage = $"Timeout tras {config.HttpTimeoutSeconds}s"; }

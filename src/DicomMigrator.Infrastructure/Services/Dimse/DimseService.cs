@@ -18,7 +18,7 @@ namespace DicomMigrator.Infrastructure.Services.Dimse;
 /// Implementa IDimseService adaptando DicomNode al formato que espera
 /// el DimseTestService del Tester (copiado en la subcarpeta /Tester/).
 /// </summary>
-public class DimseService(ILogger<DimseService> logger) : IDimseService
+public class DimseService(ILogger<DimseService> logger, ILocalConfigRepository localConfigRepo) : IDimseService
 {
     // Reutiliza el DimseTestService del Tester directamente
     private readonly TesterDimseTestService _inner = new(
@@ -27,7 +27,7 @@ public class DimseService(ILogger<DimseService> logger) : IDimseService
     public async Task<EchoResult> EchoAsync(DicomNode node, CancellationToken ct = default)
     {
         logger.LogInformation("C-ECHO → {Alias} ({Aet}@{Host}:{Port})", node.Alias, node.RemoteAet, node.RemoteHost, node.RemotePort);
-        var result = await _inner.EchoAsync(ToTesterConfig(node), ct);
+        var result = await _inner.EchoAsync(await ToTesterConfigAsync(node), ct);
         return new EchoResult
         {
             Success      = result.Success,
@@ -49,13 +49,14 @@ public class DimseService(ILogger<DimseService> logger) : IDimseService
             "sin filtro";
         logger.LogInformation("C-FIND {Level} {Criterion} → {Alias}", query.Level, criterion, node.Alias);
         var testerQuery = ToTesterQuery(query);
-        var result = await _inner.FindAsync(ToTesterConfig(node), testerQuery, ct);
+        var result = await _inner.FindAsync(await ToTesterConfigAsync(node), testerQuery, ct);
         return new CFindResult
         {
             Success      = result.Success,
             DicomStatus  = result.DicomStatus,
             DurationMs   = result.DurationMs,
             ErrorMessage = result.ErrorMessage,
+            ConfigurationError = result.AssociationRejected,
             Logs         = result.Logs,
             Studies      = result.Studies.Select(s => new DicomStudyDto
             {
@@ -81,13 +82,14 @@ public class DimseService(ILogger<DimseService> logger) : IDimseService
     public async Task<CFindInstancesResult> EnumerateInstancesAsync(DicomNode node, string studyInstanceUid, CancellationToken ct = default)
     {
         logger.LogInformation("C-FIND IMAGE (enumeración) StudyUID={Uid} → {Alias}", studyInstanceUid, node.Alias);
-        var r = await _inner.EnumerateInstancesAsync(ToTesterConfig(node), studyInstanceUid, ct);
+        var r = await _inner.EnumerateInstancesAsync(await ToTesterConfigAsync(node), studyInstanceUid, ct);
         return new CFindInstancesResult
         {
             Success      = r.Success,
             DicomStatus  = r.DicomStatus,
             DurationMs   = r.DurationMs,
             ErrorMessage = r.ErrorMessage,
+            ConfigurationError = r.AssociationRejected,
             Instances    = r.Instances.Select(i => new DicomInstanceRef
             {
                 SeriesInstanceUid = i.SeriesInstanceUid ?? string.Empty,
@@ -108,24 +110,24 @@ public class DimseService(ILogger<DimseService> logger) : IDimseService
             SopInstanceUid    = request.SopInstanceUid,
             DestinationAet    = request.DestinationAet,
         };
-        var result = await _inner.MoveAsync(ToTesterConfig(node), testerRequest, downloadDir, 60, ct);
+        var result = await _inner.MoveAsync(await ToTesterConfigAsync(node), testerRequest, downloadDir, 60, ct);
 
-        // Distinguir un fallo de CONEXIÓN del origen (asociación rechazada, conexión
-        // perdida, timeout) de un fallo real del estudio. Señales de conexión:
-        //  - No hubo respuesta DICOM (DicomStatus == null): fue un fallo de transporte.
-        //  - El mensaje de error menciona conexión/asociación/timeout.
+        // Distinguir un fallo de CONEXIÓN del origen (conexión perdida, timeout) de un
+        // fallo real del estudio. La asociación RECHAZADA (AE Title no autorizado, etc.)
+        // ya no cuenta como "conexión" — result.AssociationRejected la señala de forma
+        // explícita (ver CMoveService.MoveAsync) en vez de adivinarlo por substring del
+        // mensaje, que antes clasificaba un rechazo permanente ("Association rejected…")
+        // igual que una caída transitoria de red porque ambos mencionan "asociación".
         var msg = result.ErrorMessage ?? string.Empty;
         var looksLikeConnection =
             msg.Contains("connection", StringComparison.OrdinalIgnoreCase) ||
             msg.Contains("conexión", StringComparison.OrdinalIgnoreCase) ||
-            msg.Contains("association", StringComparison.OrdinalIgnoreCase) ||
-            msg.Contains("asociación", StringComparison.OrdinalIgnoreCase) ||
             msg.Contains("timed out", StringComparison.OrdinalIgnoreCase) ||
             msg.Contains("timeout", StringComparison.OrdinalIgnoreCase) ||
-            msg.Contains("denegó", StringComparison.OrdinalIgnoreCase) ||
             msg.Contains("refused", StringComparison.OrdinalIgnoreCase) ||
             msg.Contains("unreachable", StringComparison.OrdinalIgnoreCase);
-        var connectionError = !result.Success
+        var connectionError = !result.AssociationRejected
+            && !result.Success
             && result.Completed == 0
             && (result.DicomStatus is null || looksLikeConnection);
 
@@ -142,23 +144,31 @@ public class DimseService(ILogger<DimseService> logger) : IDimseService
             DownloadDirectory = result.DownloadDirectory,
             ErrorMessage = result.ErrorMessage,
             ConnectionError = connectionError,
+            ConfigurationError = result.AssociationRejected,
             Logs         = result.Logs,
         };
     }
 
     // ── Adapters ──────────────────────────────────────────────────────────────
 
-    private static TesterDimseConfig ToTesterConfig(DicomNode n) => new()
+    private async Task<TesterDimseConfig> ToTesterConfigAsync(DicomNode n)
     {
-        RemoteAet                = n.RemoteAet,
-        RemoteHost               = n.RemoteHost,
-        RemotePort               = n.RemotePort,
-        LocalAet                 = n.LocalAet,
-        LocalPort                = 11113,   // from LocalConfiguration; injected in real impl
-        UseTls                   = n.UseTls,
-        AssociationTimeoutSeconds = n.AssociationTimeoutSeconds,
-        ResponseTimeoutSeconds   = n.OperationTimeoutSeconds,
-    };
+        // El puerto local del SCP/SCU es el configurado en LocalConfigPage, no un valor
+        // fijo — de lo contrario un puerto distinto al 11113 elegido por el administrador
+        // (p. ej. por choque con otro proceso o exigencia de firewall) no tenía efecto real.
+        var local = await localConfigRepo.GetAsync();
+        return new TesterDimseConfig
+        {
+            RemoteAet                = n.RemoteAet,
+            RemoteHost               = n.RemoteHost,
+            RemotePort               = n.RemotePort,
+            LocalAet                 = n.LocalAet,
+            LocalPort                = local.LocalPort,
+            UseTls                   = n.UseTls,
+            AssociationTimeoutSeconds = n.AssociationTimeoutSeconds,
+            ResponseTimeoutSeconds   = n.OperationTimeoutSeconds,
+        };
+    }
 
     private static TesterCFindQuery ToTesterQuery(CFindQuery q) => new()
     {

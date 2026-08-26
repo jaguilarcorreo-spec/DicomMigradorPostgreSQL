@@ -434,8 +434,31 @@ public class StudyRepository(IDbContextFactory<AppDbContext> factory) : IStudyRe
         if (toInsert.Count == 0) return 0;
 
         db.MigrationStudies.AddRange(toInsert);
-        await db.SaveChangesAsync();
-        return toInsert.Count;
+        try
+        {
+            await db.SaveChangesAsync();
+            return toInsert.Count;
+        }
+        catch (DbUpdateException)
+        {
+            // Otro proceso insertó alguno de estos mismos UIDs entre la comprobación de
+            // existentes (arriba) y este guardado — p. ej. un poblado manual solapado con
+            // la reanudación automática tras un corte sobre la misma migración. En vez de
+            // abortar el lote completo por la violación del índice único (MigrationId,
+            // StudyInstanceUid), reintentamos quitando del lote los que ya existen ahora:
+            // el método es idempotente por contrato.
+            db.ChangeTracker.Clear();
+            var stillMissing = await db.MigrationStudies
+                .Where(s => s.MigrationId == migrationId)
+                .Select(s => s.StudyInstanceUid)
+                .ToHashSetAsync();
+            var retry = toInsert.Where(s => !stillMissing.Contains(s.StudyInstanceUid)).ToList();
+            if (retry.Count == 0) return 0;
+
+            db.MigrationStudies.AddRange(retry);
+            await db.SaveChangesAsync();
+            return retry.Count;
+        }
     }
 
     // Tamaño de lote del poblado. Cada lote inserta sus estudios y copia sus UIDs, y
@@ -497,7 +520,7 @@ public class StudyRepository(IDbContextFactory<AppDbContext> factory) : IStudyRe
 
             // 1) Insertar los estudios del lote. Contexto limpio por lote para no
             //    acumular entidades rastreadas con inventarios enormes.
-            db.MigrationStudies.AddRange(slice.Select(d => new MigrationStudy
+            var newStudies = slice.Select(d => new MigrationStudy
             {
                 MigrationId         = migrationId,
                 StudyInstanceUid    = d.StudyInstanceUid,
@@ -509,8 +532,32 @@ public class StudyRepository(IDbContextFactory<AppDbContext> factory) : IStudyRe
                 SourceInstanceCount = d.NumberOfStudyRelatedInstances,
                 MigrationStatus     = "Pending",
                 DiscoveryDate       = DateTime.UtcNow,
-            }));
-            await db.SaveChangesAsync(ct);
+            }).ToList();
+            db.MigrationStudies.AddRange(newStudies);
+            try
+            {
+                await db.SaveChangesAsync(ct);
+            }
+            catch (DbUpdateException)
+            {
+                // Otro proceso insertó alguno de estos mismos UIDs entre la comprobación de
+                // existentes (antes del bucle) y este guardado — p. ej. un poblado manual
+                // solapado con la reanudación automática tras un corte sobre la misma
+                // migración. En vez de abortar el poblado completo por la violación del
+                // índice único (MigrationId, StudyInstanceUid), reintentamos quitando del
+                // lote los que ya existen ahora: el método es idempotente por contrato.
+                db.ChangeTracker.Clear();
+                var stillMissing = await db.MigrationStudies
+                    .Where(s => s.MigrationId == migrationId)
+                    .Select(s => s.StudyInstanceUid)
+                    .ToHashSetAsync(ct);
+                var retry = newStudies.Where(s => !stillMissing.Contains(s.StudyInstanceUid)).ToList();
+                if (retry.Count > 0)
+                {
+                    db.MigrationStudies.AddRange(retry);
+                    await db.SaveChangesAsync(ct);
+                }
+            }
             db.ChangeTracker.Clear();
 
             // 2) Copiar los UIDs Nivel 2 SOLO de los estudios de este lote. Se atan por la
@@ -558,7 +605,12 @@ WHERE di.""DiscoveredStudyId"" = ANY({batchStudyIds})
         // RetryPending must wait at least RetryDelaySeconds since last attempt
         var retryCutoff = DateTime.UtcNow.AddSeconds(-retryDelaySeconds);
 
-        // Convert DateOnly to string for SQLite TEXT comparison (YYYYMMDD format)
+        // StudyDate se guarda como string en formato DICOM DA (YYYYMMDD, 8 caracteres
+        // fijos) — no como fecha nativa — así que la comparación lexicográfica de
+        // cadenas de PostgreSQL da el mismo orden que la comparación cronológica. Esto
+        // asume que el valor SIEMPRE tiene ese formato exacto; un StudyDate vacío o mal
+        // formado devuelto por un PACS no conforme rompería el filtro/orden en
+        // silencio, pero está fuera de alcance arreglarlo aquí sin migrar la columna.
         var startDateStr = startFromDate?.ToString("yyyyMMdd");
 
         var query = db.MigrationStudies
@@ -893,6 +945,13 @@ WHERE di.""DiscoveredStudyId"" = ANY({batchStudyIds})
     public async Task<MigrationStats> GetStatsAsync(int migrationId)
     {
         await using var db = factory.CreateDbContext();
+        // RepeatableRead: las dos consultas de abajo (conteos por estado y timings) ven
+        // el mismo snapshot de datos aunque haya workers escribiendo concurrentemente.
+        // Sin esto, el Total de la primera consulta podía no cuadrar exactamente con
+        // los timings de la segunda si un estudio cambiaba de estado entre ambas —
+        // solo afecta al dashboard (cosmético), no a la migración en sí.
+        await using var tx = await db.Database.BeginTransactionAsync(System.Data.IsolationLevel.RepeatableRead);
+
         var groups = await db.MigrationStudies
             .Where(s => s.MigrationId == migrationId)
             .GroupBy(s => s.MigrationStatus)
@@ -953,8 +1012,17 @@ WHERE di.""DiscoveredStudyId"" = ANY({batchStudyIds})
             stats.WallVerificationSeconds = (verDone.Max(s => s.VerificationDate!.Value)
                                            - verDone.Min(s => s.VerificationStartDate!.Value)).TotalSeconds;
 
+        await tx.CommitAsync();
         return stats;
     }
+
+    // RFC 4180: envolver siempre entre comillas y duplicar las comillas internas ("").
+    // Los valores de texto (PatientId, AccessionNumber, ModalitiesInStudy, LastError…)
+    // vienen de PACS externos y no se puede asumir que no contengan comillas, comas o
+    // saltos de línea — sin este escapado, un solo valor así desplaza todas las columnas
+    // siguientes de esa fila sin que el usuario lo note.
+    private static string CsvField(string? value) =>
+        "\"" + (value ?? string.Empty).Replace("\"", "\"\"") + "\"";
 
     public async Task ExportToCsvAsync(int migrationId, StudyFilter filter, Stream output)
     {
@@ -966,15 +1034,22 @@ WHERE di.""DiscoveredStudyId"" = ANY({batchStudyIds})
         await using var writer = new StreamWriter(output, Encoding.UTF8, leaveOpen: true);
         await writer.WriteLineAsync("StudyInstanceUID,PatientID,AccessionNumber,StudyDate,Modality,Status,SrcSeries,SrcInstances,TgtSeries,TgtInstances,Retries,LastError,DiscoveryDate,MigrationDate,VerificationDate");
         foreach (var s in studies)
-            await writer.WriteLineAsync(
-                $"\"{s.StudyInstanceUid}\",\"{s.PatientId}\",\"{s.AccessionNumber}\"," +
-                $"\"{s.StudyDate}\",\"{s.ModalitiesInStudy}\",\"{s.MigrationStatus}\"," +
-                $"{s.SourceSeriesCount},{s.SourceInstanceCount}," +
-                $"{s.TargetSeriesCount},{s.TargetInstanceCount}," +
-                $"{s.RetryCount},\"{s.LastError?.Replace("\"", "'")}\"," +
-                $"\"{s.DiscoveryDate:yyyy-MM-dd HH:mm:ss}\"," +
-                $"\"{s.MigrationDate:yyyy-MM-dd HH:mm:ss}\"," +
-                $"\"{s.VerificationDate:yyyy-MM-dd HH:mm:ss}\"");
+            await writer.WriteLineAsync(string.Join(",",
+                CsvField(s.StudyInstanceUid),
+                CsvField(s.PatientId),
+                CsvField(s.AccessionNumber),
+                CsvField(s.StudyDate),
+                CsvField(s.ModalitiesInStudy),
+                CsvField(s.MigrationStatus),
+                s.SourceSeriesCount?.ToString() ?? "",
+                s.SourceInstanceCount?.ToString() ?? "",
+                s.TargetSeriesCount?.ToString() ?? "",
+                s.TargetInstanceCount?.ToString() ?? "",
+                s.RetryCount.ToString(),
+                CsvField(s.LastError),
+                CsvField(s.DiscoveryDate.ToString("yyyy-MM-dd HH:mm:ss")),
+                CsvField(s.MigrationDate?.ToString("yyyy-MM-dd HH:mm:ss")),
+                CsvField(s.VerificationDate?.ToString("yyyy-MM-dd HH:mm:ss"))));
     }
 
     public async IAsyncEnumerable<MigrationStudy> StreamForExportAsync(

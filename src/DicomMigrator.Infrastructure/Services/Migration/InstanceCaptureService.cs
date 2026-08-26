@@ -34,25 +34,46 @@ public class InstanceCaptureService(
     // ── Proceso gobernado (por job) ───────────────────────────────────────────
     public async Task StartCaptureAsync(int jobId, CancellationToken ct = default)
     {
-        if (_captureCts.TryGetValue(jobId, out var existing))
+        // Guardia de arranque ATÓMICA (mismo patrón que DiscoveryEngine/MigrationWorker/
+        // VerificationService): reserva el slot en _captureCts en un solo paso. Antes había
+        // una ventana entre "comprobar" (TryGetValue) y "reservar" (asignación) en la que dos
+        // StartCaptureAsync concurrentes podían lanzar dos juegos de workers para el mismo job.
+        var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        while (!_captureCts.TryAdd(jobId, linkedCts))
         {
+            if (!_captureCts.TryGetValue(jobId, out var existing))
+                continue; // el registro desapareció justo ahora (otra sesión terminó) — reintentar
+
             if (!existing.IsCancellationRequested)
             {
+                linkedCts.Dispose();
                 logger.LogWarning("La captura del job {Id} ya está en marcha", jobId);
                 return;
             }
-            _captureCts.TryRemove(jobId, out var stale);
-            stale?.Dispose();
-        }
 
-        var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        _captureCts[jobId] = linkedCts;
+            // Entrada de una sesión ya cancelada (pausada/parada) cuyo handler aún no ha
+            // limpiado: la reemplazamos atómicamente. Si cambió entretanto, reintentamos.
+            if (_captureCts.TryUpdate(jobId, linkedCts, existing))
+                break;
+        }
         var token = linkedCts.Token;
 
-        // Reanudar (estado previo "Paused") conserva el cronómetro; un inicio nuevo lo reinicia.
-        var job0 = await jobRepo.GetByIdAsync(jobId);
-        var resume = job0?.CaptureStatus == "Paused";
-        await jobRepo.SetCaptureRunningAsync(jobId, resetTimer: !resume);
+        try
+        {
+            // Reanudar (estado previo "Paused") conserva el cronómetro; un inicio nuevo lo reinicia.
+            var job0 = await jobRepo.GetByIdAsync(jobId);
+            var resume = job0?.CaptureStatus == "Paused";
+            await jobRepo.SetCaptureRunningAsync(jobId, resetTimer: !resume);
+        }
+        catch
+        {
+            // El arranque falló ANTES de lanzar la tarea de captura: liberar el slot
+            // reservado para no dejar el job bloqueado (el continuation de abajo no
+            // llegará a ejecutarse).
+            if (_captureCts.TryRemove(jobId, out var reserved))
+                reserved.Dispose();
+            throw;
+        }
         logger.LogInformation("Captura Nivel 2 iniciada · job {Id}", jobId);
 
         var task = Task.Run(() => CaptureForJobAsync(jobId, false, token), token);

@@ -141,12 +141,24 @@ try
     //   3) Variable de entorno          → para producción, sin tocar ficheros:
     //        ConnectionStrings__Default=Host=...;Username=...;Password=...
     //      (el doble guion bajo "__" es el separador de secciones en .NET)
-    var connStr = builder.Configuration.GetConnectionString("Default")
+    var configuredConnStr = builder.Configuration.GetConnectionString("Default");
+    var connStr = configuredConnStr
         ?? "Host=localhost;Port=5432;Database=dicommigrator;Username=postgres;Password=postgres";
 
+    // Aviso temprano y claro si no hay NINGUNA cadena configurada (ni siquiera en
+    // appsettings.json): se está usando el fallback con credenciales por defecto
+    // (postgres/postgres), pensado solo para un primer arranque local sin configurar
+    // nada. En cualquier despliegue real hay que definir ConnectionStrings:Default.
+    if (configuredConnStr is null)
+    {
+        Console.WriteLine("[AVISO] No hay ConnectionStrings:Default configurada — usando el fallback " +
+            "con credenciales por defecto (postgres/postgres) en localhost. Defínela en " +
+            "appsettings.Development.json (local) o en la variable de entorno " +
+            "ConnectionStrings__Default (producción) antes de exponer la aplicación.");
+    }
     // Aviso temprano y claro si la contraseña quedó vacía (p. ej. se desplegó solo con
     // el appsettings.json del repo sin definir el secreto). Evita un 28P01 críptico.
-    if (System.Text.RegularExpressions.Regex.IsMatch(connStr, @"Password=\s*(;|$)",
+    else if (System.Text.RegularExpressions.Regex.IsMatch(connStr, @"Password=\s*(;|$)",
             System.Text.RegularExpressions.RegexOptions.IgnoreCase))
     {
         Console.WriteLine("[AVISO] La cadena de conexión no tiene contraseña. Defínela en " +
