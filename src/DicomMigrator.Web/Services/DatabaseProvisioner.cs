@@ -22,6 +22,10 @@ public static class DatabaseProvisioner
 
     public static async Task<int> RunAsync()
     {
+        // El instalador captura la salida; en UTF-8 los acentos llegan intactos (con la
+        // página OEM por defecto se ven como '?').
+        Console.OutputEncoding = System.Text.Encoding.UTF8;
+
         var config = new ConfigurationBuilder()
             .SetBasePath(AppContext.BaseDirectory)
             .AddJsonFile("appsettings.json", optional: true)
@@ -44,12 +48,13 @@ public static class DatabaseProvisioner
             return 2;
         }
 
+        var roleExisted = false;
         var adminConnStr = Environment.GetEnvironmentVariable(AdminConnStrVariable);
         if (!string.IsNullOrWhiteSpace(adminConnStr))
         {
             try
             {
-                await ProvisionAsync(adminConnStr, app);
+                roleExisted = await ProvisionAsync(adminConnStr, app);
             }
             catch (Exception ex)
             {
@@ -71,12 +76,17 @@ public static class DatabaseProvisioner
         catch (Exception ex)
         {
             Console.WriteLine($"ERROR al conectar como '{app.Username}' a '{app.Database}' en {app.Host}:{app.Port}: {ex.Message}");
+            if (roleExisted && ex is PostgresException { SqlState: PostgresErrorCodes.InvalidPassword })
+                Console.WriteLine($"El rol '{app.Username}' ya existía y su contraseña no se modifica: indica la " +
+                                  $"contraseña actual, o cámbiala con ALTER ROLE {Ident(app.Username!)} WITH PASSWORD '...'.");
             return 4;
         }
     }
 
-    private static async Task ProvisionAsync(string adminConnStr, NpgsqlConnectionStringBuilder app)
+    /// <returns>true si el rol de aplicación ya existía (su contraseña no se ha tocado).</returns>
+    private static async Task<bool> ProvisionAsync(string adminConnStr, NpgsqlConnectionStringBuilder app)
     {
+        var roleExisted = false;
         if (string.IsNullOrWhiteSpace(app.Username) || string.IsNullOrWhiteSpace(app.Database))
             throw new InvalidOperationException("La cadena de la aplicación debe indicar Username y Database.");
 
@@ -99,6 +109,7 @@ public static class DatabaseProvisioner
             }
             else
             {
+                roleExisted = true;
                 Console.WriteLine($"Rol '{app.Username}' ya existía (no se modifica).");
             }
         }
@@ -118,6 +129,8 @@ public static class DatabaseProvisioner
                 Console.WriteLine($"Base '{app.Database}' ya existía (no se modifica).");
             }
         }
+
+        return roleExisted;
     }
 
     private static string Ident(string s) => "\"" + s.Replace("\"", "\"\"") + "\"";

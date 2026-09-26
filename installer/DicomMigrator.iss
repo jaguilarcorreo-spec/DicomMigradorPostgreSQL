@@ -95,15 +95,18 @@ var
   WebPage: TInputQueryWizardPage;
   NetworkCheck: TNewCheckBox;
   LicensePage: TInputFileWizardPage;
-  ExistingConfig: Boolean;
+  ReconfigPage: TInputOptionWizardPage;
+  KeptConfig: Boolean;   { KeepConfig fijado al empezar a instalar (luego el fichero ya existe). }
   DbSetupOk: Boolean;
   ServiceStarted: Boolean;
 
 { ── Utilidades ─────────────────────────────────────────────────────────────── }
 
+// WizardDirValue y no la constante app: ShouldSkipPage se evalúa también en las páginas
+// previas a la selección de carpeta, cuando esa constante aún no está inicializada.
 function ConfigPath: String;
 begin
-  Result := ExpandConstant('{app}\appsettings.Production.json');
+  Result := AddBackslash(WizardDirValue) + 'appsettings.Production.json';
 end;
 
 function JsonEsc(const S: String): String;
@@ -160,6 +163,13 @@ begin
   Result := 'http://localhost:' + GetPort;
 end;
 
+{ True si hay un appsettings.Production.json y se ha elegido conservarlo (actualización). }
+function KeepConfig: Boolean;
+begin
+  Result := FileExists(ConfigPath) and
+            (not Assigned(ReconfigPage) or (ReconfigPage.SelectedValueIndex = 0));
+end;
+
 function ServiceRunning: Boolean;
 begin
   Result := ServiceStarted;
@@ -169,7 +179,15 @@ end;
 
 procedure InitializeWizard;
 begin
-  DbPage := CreateInputQueryPage(wpSelectTasks,
+  ReconfigPage := CreateInputOptionPage(wpSelectTasks,
+    'Configuración existente',
+    'Ya hay un appsettings.Production.json en la carpeta de instalación.',
+    '¿Qué quieres hacer con él?', True, False);
+  ReconfigPage.Add('Conservarlo (actualizar solo los binarios)');
+  ReconfigPage.Add('Volver a configurar (se sobrescribe con los datos que indiques)');
+  ReconfigPage.SelectedValueIndex := 0;
+
+  DbPage := CreateInputQueryPage(ReconfigPage.ID,
     'Base de datos PostgreSQL',
     'Conexión que usará la aplicación (usuario de aplicación, dueño del esquema).',
     'La aplicación crea las tablas sola al arrancar. Se recomienda un usuario propio ' +
@@ -231,10 +249,11 @@ end;
 function ShouldSkipPage(PageID: Integer): Boolean;
 begin
   Result := False;
-  ExistingConfig := FileExists(ConfigPath);
-  if ExistingConfig and ((PageID = DbPage.ID) or (PageID = ProvisionPage.ID) or
-                         (PageID = WebPage.ID) or (PageID = LicensePage.ID)) then
-    Result := True;
+  if PageID = ReconfigPage.ID then
+    Result := not FileExists(ConfigPath)
+  else if (PageID = DbPage.ID) or (PageID = ProvisionPage.ID) or
+          (PageID = WebPage.ID) or (PageID = LicensePage.ID) then
+    Result := KeepConfig;
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;
@@ -301,7 +320,7 @@ end;
 procedure RegisterPreviousData(PreviousDataKey: Integer);
 begin
   { Solo datos no secretos: sirven de valores por defecto al reinstalar. }
-  if not ExistingConfig then
+  if not KeptConfig then
   begin
     SetPreviousData(PreviousDataKey, 'DbHost', Trim(DbPage.Values[0]));
     SetPreviousData(PreviousDataKey, 'DbPort', Trim(DbPage.Values[1]));
@@ -330,7 +349,7 @@ begin
   Result := MemoDirInfo + NewLine + NewLine;
   if MemoTasksInfo <> '' then
     Result := Result + MemoTasksInfo + NewLine + NewLine;
-  if ExistingConfig then
+  if KeepConfig then
     Result := Result + 'Configuración:' + NewLine + Space +
       'Se conserva el appsettings.Production.json existente (actualización).'
   else
@@ -352,7 +371,7 @@ end;
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
   Result := '';
-  ExistingConfig := FileExists(ConfigPath);
+  KeptConfig := KeepConfig;
   { Actualización: liberar los binarios en uso. net stop espera a que se detenga. }
   if ServiceExists then
     RunHidden(ExpandConstant('{sys}\net.exe'), 'stop {#ServiceName}');
@@ -409,7 +428,7 @@ var
   Code, I: Integer;
   Msg: String;
 begin
-  if (not ExistingConfig) and ProvisionCheck.Checked then
+  if (not KeptConfig) and ProvisionCheck.Checked then
     SetEnvironmentVariable('DICOMMIGRATOR_SETUP_ADMIN_CONNSTR',
       'Host=' + ConnVal(Trim(DbPage.Values[0])) + ';Port=' + Trim(DbPage.Values[1]) +
       ';Database=postgres;Username=' + ConnVal(Trim(ProvisionPage.Values[0])) +
@@ -426,9 +445,8 @@ begin
   DbSetupOk := Code = 0;
   Msg := '';
   for I := 0 to GetArrayLength(Output.StdOut) - 1 do
-    if (Pos('ERROR', Output.StdOut[I]) > 0) or (Pos('OK:', Output.StdOut[I]) > 0) or
-       (Pos('creado', Output.StdOut[I]) > 0) or (Pos('creada', Output.StdOut[I]) > 0) or
-       (Pos('existía', Output.StdOut[I]) > 0) then
+    { Todo salvo las líneas del logger de arranque ("[hh:mm:ss INF] ..."). }
+    if Copy(Output.StdOut[I], 1, 1) <> '[' then
       Msg := Msg + Output.StdOut[I] + #13#10;
   Log('--setup-db (código ' + IntToStr(Code) + '):' + #13#10 + Msg);
 
@@ -458,7 +476,7 @@ procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep <> ssPostInstall then Exit;
 
-  if not ExistingConfig then
+  if not KeptConfig then
     WriteConfig;
 
   SetupDatabase;
