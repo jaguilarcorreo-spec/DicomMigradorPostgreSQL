@@ -20,6 +20,32 @@ la propia app aplica las migraciones al arrancar.
 7. Configurar SCU local, nodos DICOM y ventanas (sección 7).
 8. (Red) Configurar HTTPS (sección 9).
 
+## Instalador (atajo para los pasos 1–3 y 8)
+
+`installer\build-installer.ps1` genera `installer\out\DicomMigrator-Setup-<versión>.exe`
+(requiere .NET 9 SDK e Inno Setup 6.3+):
+
+```bash
+powershell -ExecutionPolicy Bypass -File installer\build-installer.ps1 -Version 1.7.1
+```
+
+El instalador (ejecutar como administrador en la máquina destino):
+
+- Copia el ejecutable autónomo a `C:\DicomMigrator` (ruta modificable).
+- Pide servidor/puerto/base/usuario/contraseña de PostgreSQL, puerto HTTP, contraseña
+  inicial de `admin` y, opcionalmente, un fichero `.dmlic`, y escribe
+  `appsettings.Production.json` (con permisos solo para Administradores y SYSTEM).
+- Opcionalmente crea el rol y la base (sección 1) con un superusuario que no se guarda,
+  y comprueba la conexión (`DicomMigrator.Web.exe --setup-db`).
+- Registra y arranca el servicio `DicomMigrator` con reinicio automático ante fallos, y
+  abre el Firewall para el ejecutable (Storage SCP y web).
+- **Actualización:** al reinstalar una versión nueva detiene el servicio, sustituye los
+  binarios y **conserva** `appsettings.Production.json`, la licencia y los logs.
+- **Desinstalación:** elimina el servicio y la regla de firewall; conserva configuración,
+  licencia y logs, y no toca la base de datos.
+
+Tras instalar, continúa en la sección 5 (primer acceso).
+
 ## Requisitos
 
 - **PostgreSQL 16 o superior** (probado en 18).
@@ -375,6 +401,8 @@ El ejecutable admite varios modos que terminan sin levantar el servidor web:
 DicomMigrator.Web.exe --fingerprint        # imprime el fingerprint de la máquina y sale
 DicomMigrator.Web.exe --maintenance        # VACUUM + ANALYZE de la base y sale
 DicomMigrator.Web.exe --maintenance-full   # equivalente a --maintenance
+DicomMigrator.Web.exe --setup-db           # prueba la conexión; con DICOMMIGRATOR_SETUP_ADMIN_CONNSTR
+                                           # (superusuario) crea antes rol y base si faltan
 ```
 
 (En desarrollo, con `dotnet run --project src/DicomMigrator.Web -- --maintenance`.)

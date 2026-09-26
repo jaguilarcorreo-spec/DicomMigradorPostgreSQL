@@ -84,6 +84,15 @@ La interfaz queda disponible en la URL configurada en `Kestrel` dentro de
 dotnet publish src/DicomMigrator.Web -c Release -r win-x64 --self-contained true
 ```
 
+### Instalador de Windows
+
+```bash
+powershell -ExecutionPolicy Bypass -File installer/build-installer.ps1 -Version 1.7.1
+```
+
+Genera `installer/out/DicomMigrator-Setup-1.7.1.exe` (Inno Setup 6.3+), que instala la
+app como servicio y configura PostgreSQL. Ver `DEPLOYMENT.md`.
+
 ## Mantenimiento
 
 El mantenimiento rutinario de espacio en PostgreSQL lo realiza *autovacuum*. Para un

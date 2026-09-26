@@ -34,6 +34,16 @@ try
         return;
     }
 
+    // Modo CLI para el instalador: crea rol y base si faltan (con superusuario en la
+    // variable DICOMMIGRATOR_SETUP_ADMIN_CONNSTR) y prueba la conexión. Ver DatabaseProvisioner.
+    //   DicomMigrator.exe --setup-db
+    if (args.Any(a => string.Equals(a, "--setup-db", StringComparison.OrdinalIgnoreCase)))
+    {
+        Environment.ExitCode = await DatabaseProvisioner.RunAsync();
+        Log.CloseAndFlush();
+        return;
+    }
+
     var builder = WebApplication.CreateBuilder(args);
 
     // Permite ejecutar la app como Servicio de Windows (modo desatendido), integrándose
