@@ -325,7 +325,7 @@ public class DicomWebTestService
                     StudyDate         = GetVal(item, "00080020"),
                     AccessionNumber   = GetVal(item, "00080050"),
                     StudyInstanceUid  = GetVal(item, "0020000D"),
-                    ModalitiesInStudy = GetVal(item, "00080061"),
+                    ModalitiesInStudy = GetMultiVal(item, "00080061"),
                     StudyDescription  = GetVal(item, "00081030"),
                     NumberOfInstances = GetInt(item, "00201208"),  // NumberOfStudyRelatedInstances
                     NumberOfSeries    = GetInt(item, "00201206"),  // NumberOfStudyRelatedSeries
@@ -345,6 +345,17 @@ public class DicomWebTestService
     private static string? GetVal(JsonElement r, string tag) =>
         r.TryGetProperty(tag, out var el) && el.TryGetProperty("Value", out var v) &&
         v.ValueKind == JsonValueKind.Array && v.GetArrayLength() > 0 ? v[0].GetString() : null;
+
+    /// <summary>Atributo multivalor (p. ej. ModalitiesInStudy): todos los valores unidos
+    /// con '\', igual que en DIMSE. GetVal solo devolvería el primero ("CT" de "CT\SR").</summary>
+    private static string? GetMultiVal(JsonElement r, string tag)
+    {
+        if (!r.TryGetProperty(tag, out var el) || !el.TryGetProperty("Value", out var v)) return null;
+        if (v.ValueKind != JsonValueKind.Array || v.GetArrayLength() == 0) return null;
+        return string.Join('\\', v.EnumerateArray()
+            .Where(x => x.ValueKind == JsonValueKind.String)
+            .Select(x => x.GetString()));
+    }
 
     private static int? GetInt(JsonElement r, string tag)
     {

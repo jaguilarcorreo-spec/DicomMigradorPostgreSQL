@@ -374,7 +374,10 @@ public class DimseTestService(ILogger<DimseTestService> logger)
         StudyDate         = ds.GetSingleValueOrDefault(DicomTag.StudyDate,        string.Empty),
         StudyInstanceUid  = ds.GetSingleValueOrDefault(DicomTag.StudyInstanceUID, string.Empty),
         AccessionNumber   = ds.GetSingleValueOrDefault(DicomTag.AccessionNumber,  string.Empty),
-        ModalitiesInStudy = ds.GetSingleValueOrDefault(DicomTag.ModalitiesInStudy, string.Empty),
+        // Multivalor (VM 1-n): un estudio CT con informe llega como "CT\SR".
+        // GetSingleValueOrDefault devuelve vacío si hay más de un valor; TryGetString
+        // los devuelve todos separados por '\' y no lanza si el PACS omite el atributo.
+        ModalitiesInStudy = ds.TryGetString(DicomTag.ModalitiesInStudy, out var mods) ? mods : string.Empty,
         StudyDescription  = ds.GetSingleValueOrDefault(DicomTag.StudyDescription, string.Empty),
         NumberOfInstances = ds.TryGetValue(DicomTag.NumberOfStudyRelatedInstances, 0, out int n) ? n : null,
         NumberOfSeries    = ds.TryGetValue(DicomTag.NumberOfStudyRelatedSeries,    0, out int s) ? s : null,

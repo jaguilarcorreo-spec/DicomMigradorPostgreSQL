@@ -137,6 +137,11 @@ public class NotificationService(
             msg.Body = builder.ToMessageBody();
 
             using var client = new SmtpClient();
+            // MailKit comprueba por defecto la revocación del certificado (CRL/OCSP), que
+            // exige salida a internet: en despliegues on-premise aislados el envío fallaría.
+            // Se mantiene la validación de la cadena; solo se omite la revocación, igual que
+            // en fo-dicom (DICOM TLS) y en el HttpClient de DICOMweb.
+            client.CheckCertificateRevocation = false;
             var socketOption = s.SmtpUseStartTls ? SecureSocketOptions.StartTls : SecureSocketOptions.Auto;
             await client.ConnectAsync(s.SmtpHost, s.SmtpPort, socketOption, ct);
             if (!string.IsNullOrWhiteSpace(s.SmtpUser))

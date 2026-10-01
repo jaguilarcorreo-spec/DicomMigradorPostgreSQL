@@ -35,6 +35,19 @@ public sealed class StorageScpServer : IDisposable
         {
             if (_instance is null || _instance._disposed)
                 _instance = new StorageScpServer(port, logger);
+            else if (_instance._port != port)
+            {
+                // El singleton nunca se desecha (StopServer solo cierra el listener), así que
+                // el puerto de la primera C-MOVE quedaba fijo hasta reiniciar el servicio aunque
+                // se cambiara en LocalConfigPage. Con el listener parado se adopta el nuevo;
+                // si está en uso por otros C-MOVE, se aplicará cuando éstos terminen.
+                if (_instance._server is null)
+                    _instance._port = port;
+                else
+                    logger.LogWarning(
+                        "SCP Storage sigue escuchando en :{Old}; el nuevo puerto :{New} se aplicará cuando terminen los C-MOVE activos",
+                        _instance._port, port);
+            }
             return _instance;
         }
     }

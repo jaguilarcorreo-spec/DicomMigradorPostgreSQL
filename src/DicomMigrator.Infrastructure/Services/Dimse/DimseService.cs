@@ -156,13 +156,16 @@ public class DimseService(ILogger<DimseService> logger, ILocalConfigRepository l
         // El puerto local del SCP/SCU es el configurado en LocalConfigPage, no un valor
         // fijo — de lo contrario un puerto distinto al 11113 elegido por el administrador
         // (p. ej. por choque con otro proceso o exigencia de firewall) no tenía efecto real.
+        // Lo mismo para el AE Title local: DicomNode.LocalAet es una copia tomada al guardar
+        // el nodo, así que si luego se cambiaba el AET en LocalConfigPage los nodos antiguos
+        // seguían llamando con el AET viejo (rechazo "CallingAENotRecognized" en el remoto).
         var local = await localConfigRepo.GetAsync();
         return new TesterDimseConfig
         {
             RemoteAet                = n.RemoteAet,
             RemoteHost               = n.RemoteHost,
             RemotePort               = n.RemotePort,
-            LocalAet                 = n.LocalAet,
+            LocalAet                 = local.LocalAet,
             LocalPort                = local.LocalPort,
             UseTls                   = n.UseTls,
             AssociationTimeoutSeconds = n.AssociationTimeoutSeconds,
