@@ -8,7 +8,6 @@
 @inject IVerificationService VerificationSvc
 @inject IInstanceRepository InstanceRepo
 @inject IConnectionHealthService HealthSvc
-@inject IServiceScopeFactory ScopeFactory
 @using Microsoft.Extensions.DependencyInjection
 @inject IMigrationWorker Worker
 @inject NavigationManager Nav
@@ -1625,22 +1624,9 @@ else
         var id = _detail.Id;
         try
         {
+            // Borrar una migración libera muchas filas (estudios, instancias, auditoría):
+            // el propio repositorio encola un VACUUM en segundo plano (DeferredVacuum).
             await MigrationRepo.DeleteAsync(id);
-
-            // Borrar una migración libera muchas filas (estudios + auditoría). Recuperar
-            // ese espacio del fichero con un vacuum incremental, en segundo plano para
-            // no bloquear la navegación.
-            _ = Task.Run(async () =>
-            {
-                try
-                {
-                    using var scope = ScopeFactory.CreateScope();
-                    var maintenance = scope.ServiceProvider
-                        .GetRequiredService<DicomMigrator.Infrastructure.Data.DatabaseMaintenance>();
-                    await maintenance.IncrementalVacuumAsync();
-                }
-                catch { /* no crítico */ }
-            });
 
             _delStep = 0;
             BackToList();

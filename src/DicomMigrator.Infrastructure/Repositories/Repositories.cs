@@ -56,7 +56,7 @@ public class NodeRepository(IDbContextFactory<AppDbContext> factory) : INodeRepo
 // MIGRATION REPOSITORY
 // ══════════════════════════════════════════════════════════════════════════════
 
-public class MigrationRepository(IDbContextFactory<AppDbContext> factory) : IMigrationRepository
+public class MigrationRepository(IDbContextFactory<AppDbContext> factory, DeferredVacuum vacuum) : IMigrationRepository
 {
     public async Task<List<Migration>> GetAllAsync()
     {
@@ -239,6 +239,9 @@ public class MigrationRepository(IDbContextFactory<AppDbContext> factory) : IMig
         await using var db = factory.CreateDbContext();
         var m = await db.Migrations.FindAsync(id);
         if (m is not null) { db.Migrations.Remove(m); await db.SaveChangesAsync(); }
+        // El borrado arrastra en cascada estudios, instancias y auditoría: VACUUM en
+        // segundo plano para que una nueva migración reutilice las páginas de índice.
+        vacuum.Request("MigrationStudies", "MigrationInstances", "AuditLogs");
     }
 }
 
@@ -361,8 +364,17 @@ public class InstanceRepository(IDbContextFactory<AppDbContext> factory) : IInst
     }
 }
 
-public class StudyRepository(IDbContextFactory<AppDbContext> factory) : IStudyRepository
+public class StudyRepository(IDbContextFactory<AppDbContext> factory, DeferredVacuum vacuum) : IStudyRepository
 {
+    /// <summary>Cada cuánto renueva el worker el LockDate de un estudio 'Migrating'
+    /// mientras dura su C-MOVE (un estudio grande puede tardar muchos minutos).</summary>
+    public static readonly TimeSpan MigratingHeartbeat = TimeSpan.FromMinutes(1);
+
+    /// <summary>Un 'Migrating' cuyo LockDate no se ha renovado en este tiempo se considera
+    /// de un worker muerto. Holgado (15 latidos perdidos) para no rescatar un C-MOVE vivo
+    /// por un fallo puntual de BD al renovar.</summary>
+    public static readonly TimeSpan MigratingStaleAfter = TimeSpan.FromMinutes(15);
+
     public async Task<List<MigrationStudy>> GetPagedAsync(int migrationId, StudyFilter filter)
     {
         await using var db = factory.CreateDbContext();
@@ -602,6 +614,24 @@ WHERE di.""DiscoveredStudyId"" = ANY({batchStudyIds})
                 .SetProperty(s => s.LockedByWorker, (string?)null)
                 .SetProperty(s => s.LockDate, (DateTime?)null));
 
+        // Liberar 'Migrating' caducados: el worker renueva LockDate cada
+        // MigratingHeartbeat mientras dura el C-MOVE, así que un lock sin renovar
+        // durante MigratingStaleAfter es de un worker muerto (caída abrupta, o fallo
+        // de BD al liberar). LockDate NULL = 'Migrating' de versiones anteriores, que
+        // no conservaban el lock: también es huérfano. Vuelve a 'Pending' SIN consumir
+        // reintento (no es culpa del estudio).
+        var migratingCutoff = DateTime.UtcNow - MigratingStaleAfter;
+        await db.MigrationStudies
+            .Where(s => s.MigrationId == migrationId
+                     && s.MigrationStatus == "Migrating"
+                     && (s.LockDate == null || s.LockDate < migratingCutoff))
+            .ExecuteUpdateAsync(u => u
+                .SetProperty(s => s.MigrationStatus, "Pending")
+                .SetProperty(s => s.LockedByWorker, (string?)null)
+                .SetProperty(s => s.LockDate, (DateTime?)null)
+                .SetProperty(s => s.MigrationStartDate, (DateTime?)null)
+                .SetProperty(s => s.LastUpdateDate, DateTime.UtcNow));
+
         // RetryPending must wait at least RetryDelaySeconds since last attempt
         var retryCutoff = DateTime.UtcNow.AddSeconds(-retryDelaySeconds);
 
@@ -787,6 +817,35 @@ WHERE di.""DiscoveredStudyId"" = ANY({batchStudyIds})
                          s.MigrationDate));
     }
 
+    public async Task MarkMigratingAsync(long id, string workerId)
+    {
+        // A diferencia de UpdateStatusAsync, CONSERVA el lock del worker y renueva
+        // LockDate: así un estudio 'Migrating' siempre tiene dueño y fecha, y si el
+        // proceso muere a mitad del C-MOVE la limpieza de caducados / huérfanos lo
+        // puede rescatar (sin lock, quedaría atascado en 'Migrating' para siempre).
+        await using var db = factory.CreateDbContext();
+        await db.MigrationStudies
+            .Where(s => s.Id == id)
+            .ExecuteUpdateAsync(u => u
+                .SetProperty(s => s.MigrationStatus, "Migrating")
+                .SetProperty(s => s.LastError, (string?)null)
+                .SetProperty(s => s.LockedByWorker, workerId)
+                .SetProperty(s => s.LockDate, DateTime.UtcNow)
+                .SetProperty(s => s.LastUpdateDate, DateTime.UtcNow));
+    }
+
+    public async Task<bool> RenewMigrationLockAsync(long id, string workerId)
+    {
+        // Latido durante el C-MOVE: solo si el estudio sigue en 'Migrating' y bloqueado
+        // por ESTE worker (si otro proceso lo rescató, no se lo "robamos" de vuelta).
+        await using var db = factory.CreateDbContext();
+        var rows = await db.MigrationStudies
+            .Where(s => s.Id == id && s.MigrationStatus == "Migrating" && s.LockedByWorker == workerId)
+            .ExecuteUpdateAsync(u => u
+                .SetProperty(s => s.LockDate, DateTime.UtcNow));
+        return rows > 0;
+    }
+
     public async Task UpdateVerificationAsync(long id, string status, int? targetSeries, int? targetInstances)
     {
         await using var db = factory.CreateDbContext();
@@ -847,18 +906,29 @@ WHERE di.""DiscoveredStudyId"" = ANY({batchStudyIds})
             .ToListAsync(ct);
     }
 
-    public async Task ReleaseOrphanLocksAsync(int migrationId)
+    public async Task<int> ReleaseOrphanMigrationLocksAsync(int migrationId)
     {
+        // Migración: estudios atrapados en 'Queued' o 'Migrating' (lock de migración)
+        // → 'Pending', SIN consumir reintento: el C-MOVE se cortó por la caída del
+        // proceso, no por culpa del estudio. Re-enviar un estudio ya entregado en parte
+        // es inocuo (el destino deduplica por SOPInstanceUID).
         await using var db = factory.CreateDbContext();
-
-        // Migración: estudios atrapados en 'Queued' (lock de migración) → 'Pending'.
-        await db.MigrationStudies
-            .Where(s => s.MigrationId == migrationId && s.MigrationStatus == "Queued")
+        return await db.MigrationStudies
+            .Where(s => s.MigrationId == migrationId
+                     && (s.MigrationStatus == "Queued" || s.MigrationStatus == "Migrating"))
             .ExecuteUpdateAsync(u => u
                 .SetProperty(s => s.MigrationStatus, "Pending")
                 .SetProperty(s => s.LockedByWorker, (string?)null)
                 .SetProperty(s => s.LockDate, (DateTime?)null)
-                .SetProperty(s => s.MigrationStartDate, (DateTime?)null));
+                .SetProperty(s => s.MigrationStartDate, (DateTime?)null)
+                .SetProperty(s => s.LastUpdateDate, DateTime.UtcNow));
+    }
+
+    public async Task ReleaseOrphanLocksAsync(int migrationId)
+    {
+        await ReleaseOrphanMigrationLocksAsync(migrationId);
+
+        await using var db = factory.CreateDbContext();
 
         // Verificación: estudios con lock de verificación colgado → liberar el lock,
         // dejándolos de nuevo verificables (su MigrationStatus 'Migrated' no cambia).
@@ -869,15 +939,23 @@ WHERE di.""DiscoveredStudyId"" = ANY({batchStudyIds})
                 .SetProperty(s => s.VerifyLockDate, (DateTime?)null));
     }
 
-    public async Task ReleaseLocksAsync(string workerId)
+    public async Task ReleaseLocksAsync(int migrationId, string workerId)
     {
+        // Filtrado por migración: los nombres de worker ("WORKER-1"…) se repiten entre
+        // migraciones concurrentes. Sin este filtro, el worker que termina en una
+        // migración devolvería a 'Pending' el estudio que su homónimo de OTRA migración
+        // tiene en pleno C-MOVE ('Migrating' conserva ahora el lock).
         await using var db = factory.CreateDbContext();
         await db.MigrationStudies
-            .Where(s => s.LockedByWorker == workerId)
+            .Where(s => s.MigrationId == migrationId
+                     && s.LockedByWorker == workerId
+                     && (s.MigrationStatus == "Queued" || s.MigrationStatus == "Migrating"))
             .ExecuteUpdateAsync(u => u
                 .SetProperty(s => s.MigrationStatus, "Pending")
                 .SetProperty(s => s.LockedByWorker, (string?)null)
-                .SetProperty(s => s.LockDate, (DateTime?)null));
+                .SetProperty(s => s.LockDate, (DateTime?)null)
+                .SetProperty(s => s.MigrationStartDate, (DateTime?)null)
+                .SetProperty(s => s.LastUpdateDate, DateTime.UtcNow));
     }
 
     public async Task ReleaseMigrationLockAsync(long id)
@@ -902,6 +980,7 @@ WHERE di.""DiscoveredStudyId"" = ANY({batchStudyIds})
         await db.MigrationStudies
             .Where(s => s.MigrationId == migrationId)
             .ExecuteDeleteAsync();
+        vacuum.Request("MigrationStudies", "MigrationInstances");
     }
 
     public async Task RetryFailedAsync(int migrationId)

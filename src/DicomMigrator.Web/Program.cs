@@ -188,6 +188,8 @@ try
 
     // ── Repositorios ─────────────────────────────────────────────────────────
     builder.Services.AddScoped<DicomMigrator.Infrastructure.Data.DatabaseMaintenance>();
+    // VACUUM en segundo plano tras borrados masivos (lo piden los repositorios).
+    builder.Services.AddSingleton<DicomMigrator.Infrastructure.Data.DeferredVacuum>();
     builder.Services.AddScoped<INodeRepository,        NodeRepository>();
     builder.Services.AddScoped<IMigrationRepository,   MigrationRepository>();
     builder.Services.AddScoped<IStudyRepository,       StudyRepository>();
@@ -393,8 +395,8 @@ try
                 {
                     if (m.Status == "Running")
                     {
-                        // Liberar locks huérfanos (estudios 'Queued' o con lock de
-                        // verificación) que quedaron de la ejecución anterior, para que
+                        // Liberar locks huérfanos (estudios 'Queued'/'Migrating' o con lock
+                        // de verificación) que quedaron de la ejecución anterior, para que
                         // los workers los vuelvan a tomar de inmediato sin esperar el
                         // timeout de 10 min.
                         await studyRepo.ReleaseOrphanLocksAsync(m.Id);
@@ -461,6 +463,13 @@ try
             // ANALYZE — refresca estadísticas del planificador.
             logger.LogInformation("Ejecutando ANALYZE...");
             await maint.OptimizeAsync();
+
+            // REINDEX de índices inflados — VACUUM no encoge un B-tree; solo REINDEX
+            // devuelve el espacio. Va después de ANALYZE porque la estimación del tamaño
+            // ideal usa pg_stats. CONCURRENTLY: no bloquea al servicio si está en marcha.
+            logger.LogInformation("Reconstruyendo índices inflados (REINDEX CONCURRENTLY)...");
+            var reindexed = await maint.ReindexBloatedAsync();
+            logger.LogInformation("Índices reconstruidos: {N}.", reindexed);
 
             logger.LogInformation("✓ Mantenimiento finalizado correctamente.");
         }

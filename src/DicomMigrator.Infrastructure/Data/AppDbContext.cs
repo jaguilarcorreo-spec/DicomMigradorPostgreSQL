@@ -182,7 +182,8 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             e.Property(x => x.Level).HasMaxLength(10);
             e.Property(x => x.Action).HasMaxLength(40);
             e.Property(x => x.Result).HasMaxLength(10);
-            e.HasIndex(x => x.MigrationId);
+            // Sin índice propio sobre MigrationId: lo cubre (MigrationId, Timestamp), que
+            // sirve también para la FK. Uno más solo encarecía cada INSERT de auditoría.
             // Las consultas de la UI ordenan por Timestamp DESC con LIMIT N.
             // Sin estos índices, con la tabla llena (millones de filas tras una
             // migración masiva) cada consulta hace un escaneo + ordenación completos.

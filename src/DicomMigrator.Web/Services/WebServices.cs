@@ -221,8 +221,9 @@ public class AutoResumeHostedService(
 
 /// <summary>
 /// Background service that periodically purges old INFO audit logs so the
-/// fastest-growing table doesn't grow unbounded. Runs once on startup (optional)
-/// and then on a fixed interval. Reads settings from the "Maintenance" section.
+/// fastest-growing table doesn't grow unbounded, and (Maintenance:IndexMaintenance)
+/// vacuums the high-churn tables and rebuilds bloated indexes. Runs once on startup
+/// (optional) and then on a fixed interval. Reads settings from the "Maintenance" section.
 /// </summary>
 public class DatabaseMaintenanceHostedService(
     IServiceScopeFactory scopeFactory,
@@ -235,30 +236,31 @@ public class DatabaseMaintenanceHostedService(
         var retentionDays = config.GetValue("Maintenance:AuditLogRetentionDays", 90);
         var intervalHours = config.GetValue("Maintenance:PurgeIntervalHours", 24);
         var runOnStartup  = config.GetValue("Maintenance:RunPurgeOnStartup", true);
+        var indexMaint    = config.GetValue("Maintenance:IndexMaintenance", true);
 
         if (intervalHours < 1) intervalHours = 24;
         var interval = TimeSpan.FromHours(intervalHours);
 
-        logger.LogInformation("DatabaseMaintenanceHostedService started · retención={Days}d · intervalo={Hours}h",
-            retentionDays, intervalHours);
+        logger.LogInformation("DatabaseMaintenanceHostedService started · retención={Days}d · intervalo={Hours}h · índices={Idx}",
+            retentionDays, intervalHours, indexMaint);
 
         // Pequeña espera inicial para no competir con la inicialización de la BD.
         try { await Task.Delay(TimeSpan.FromSeconds(30), stoppingToken); }
         catch (OperationCanceledException) { return; }
 
         if (runOnStartup)
-            await PurgeAsync(retentionDays, stoppingToken);
+            await PurgeAsync(retentionDays, indexMaint, stoppingToken);
 
         while (!stoppingToken.IsCancellationRequested)
         {
             try { await Task.Delay(interval, stoppingToken); }
             catch (OperationCanceledException) { break; }
 
-            await PurgeAsync(retentionDays, stoppingToken);
+            await PurgeAsync(retentionDays, indexMaint, stoppingToken);
         }
     }
 
-    private async Task PurgeAsync(int retentionDays, CancellationToken ct)
+    private async Task PurgeAsync(int retentionDays, bool indexMaint, CancellationToken ct)
     {
         try
         {
@@ -268,12 +270,23 @@ public class DatabaseMaintenanceHostedService(
 
             var deleted = await maintenance.PurgeOldAuditLogsAsync(retentionDays, ct);
             if (deleted > 0)
+                logger.LogInformation("Mantenimiento periódico: {Count} logs purgados.", deleted);
+
+            if (indexMaint)
             {
-                // Tras una purga grande, recuperar espacio del fichero.
-                await maintenance.IncrementalVacuumAsync(ct);
-                logger.LogInformation("Mantenimiento periódico: {Count} logs purgados y espacio recuperado.", deleted);
+                // VACUUM (ANALYZE) de las tablas de alto volumen: deja reutilizables las
+                // páginas vaciadas (purga, borrados de migraciones/jobs) y refresca las
+                // estadísticas de las que depende autovacuum, que se pierden tras una
+                // parada no limpia de PostgreSQL. Después, REINDEX CONCURRENTLY solo de los
+                // índices claramente inflados (VACUUM no encoge un B-tree).
+                await maintenance.VacuumTablesAsync(
+                    DicomMigrator.Infrastructure.Data.DatabaseMaintenance.HighChurnTables, ct);
+                var reindexed = await maintenance.ReindexBloatedAsync(ct: ct);
+                if (reindexed > 0)
+                    logger.LogInformation("Mantenimiento periódico: {N} índice(s) inflado(s) reconstruido(s).", reindexed);
             }
         }
+        catch (OperationCanceledException) { /* apagado del servicio */ }
         catch (Exception ex)
         {
             logger.LogWarning(ex, "Mantenimiento periódico falló (no crítico, se reintentará).");

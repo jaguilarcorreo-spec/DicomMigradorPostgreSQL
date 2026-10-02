@@ -20,6 +20,17 @@ public class DiscoveryEngine(
     // Cancellation tokens per running job
     private static readonly ConcurrentDictionary<int, CancellationTokenSource> _running = new();
 
+    // Última ejecución (RunWorkersAsync) lanzada por job. Tras una pausa, _running ya no
+    // tiene entrada pero los workers viejos pueden seguir cerrando su partición: StartAsync
+    // espera a que acaben antes de rescatar particiones 'Running' huérfanas.
+    private static readonly ConcurrentDictionary<int, Task> _runs = new();
+
+    // Tope de espera a que terminen los workers de una ejecución anterior al reanudar.
+    private static readonly TimeSpan PreviousRunWait = TimeSpan.FromSeconds(60);
+
+    // Rondas extra de workers si al terminar quedan particiones 'Running' huérfanas.
+    private const int MaxOrphanRounds = 3;
+
     // Modalidades BASE para subdividir un día truncado. Se amplía en tiempo de
     // ejecución con las modalidades realmente presentes en la respuesta del día
     // (ver Subdivide), de modo que una modalidad poco habitual no se quede sin
@@ -144,11 +155,30 @@ public class DiscoveryEngine(
                 }
             }
 
+            // ── Rescate de particiones huérfanas ──────────────────────────────────
+            // Con el slot reservado no hay workers NUEVOS de este job. Si quedan los de
+            // una ejecución anterior (pausa → reanudar rápido), esperar a que terminen:
+            // ellos mismos devuelven su partición a 'Pending'. Lo que siga en 'Running'
+            // después es huérfano (caída abrupta del proceso o fallo de BD al cerrarla) y
+            // AcquireNextPendingPartitionAsync, que solo toma 'Pending', no lo recogería
+            // nunca: se devuelve a 'Pending' sin consumir AttemptCount.
+            if (_runs.TryGetValue(jobId, out var previousRun) && !previousRun.IsCompleted)
+            {
+                var finished = await Task.WhenAny(previousRun, Task.Delay(PreviousRunWait, ct)) == previousRun;
+                if (!finished)
+                    logger.LogWarning("Discovery Job {Id}: los workers de la ejecución anterior no terminaron en {S}s; " +
+                        "se rescatan igualmente sus particiones.", jobId, PreviousRunWait.TotalSeconds);
+            }
+            var rescued = await jobRepo.ReleaseOrphanPartitionsAsync(jobId);
+            if (rescued > 0)
+                logger.LogWarning("Discovery Job {Id}: {N} partición(es) huérfana(s) en 'Running' devuelta(s) a 'Pending'.",
+                    jobId, rescued);
+
             await jobRepo.UpdateStatusAsync(jobId, "Running");
 
             // Fire-and-forget background processing. A partir de aquí, la propiedad del CTS
             // pasa a RunWorkersAsync, cuyo bloque finally lo retira de _running y lo libera.
-            _ = Task.Run(() => RunWorkersAsync(jobId, job.WorkerThreads, cts.Token), cts.Token);
+            _runs[jobId] = Task.Run(() => RunWorkersAsync(jobId, job.WorkerThreads, cts), cts.Token);
         }
         catch
         {
@@ -177,24 +207,53 @@ public class DiscoveryEngine(
     public Task ResumeAsync(int jobId, CancellationToken ct = default) => StartAsync(jobId, ct);
 
     // ── Worker pool ───────────────────────────────────────────────────────────
-    private async Task RunWorkersAsync(int jobId, int threads, CancellationToken ct)
+    private async Task RunWorkersAsync(int jobId, int threads, CancellationTokenSource runCts)
     {
+        var ct = runCts.Token;
         threads = Math.Max(1, threads);
         logger.LogInformation("Discovery Job {Id} iniciado con {Threads} worker(s)", jobId, threads);
 
         try
         {
-            var workers = Enumerable.Range(1, threads)
-                .Select(i => WorkerLoopAsync(jobId, $"DISC-W{i}", ct))
-                .ToList();
+            for (var round = 1; ; round++)
+            {
+                var workers = Enumerable.Range(1, threads)
+                    .Select(i => WorkerLoopAsync(jobId, $"DISC-W{i}", ct))
+                    .ToList();
 
-            await Task.WhenAll(workers);
+                await Task.WhenAll(workers);
+                if (ct.IsCancellationRequested) break;
+
+                // Todos los workers de este job han salido: cualquier partición que siga
+                // en 'Running' es huérfana (p. ej. falló la BD al cerrarla). Devolverla a
+                // 'Pending' y dar otra ronda, con tope por si el fallo es persistente.
+                using var rscope = scopeFactory.CreateScope();
+                var rescued = await rscope.ServiceProvider.GetRequiredService<IDiscoveryJobRepository>()
+                    .ReleaseOrphanPartitionsAsync(jobId);
+                if (rescued == 0 || round >= MaxOrphanRounds) break;
+                logger.LogWarning("Discovery Job {Id}: {N} partición(es) 'Running' huérfana(s) al terminar la ronda {R}; " +
+                    "devueltas a 'Pending' y relanzando workers.", jobId, rescued, round);
+            }
 
             // Mark job completed if not cancelled
             if (!ct.IsCancellationRequested)
             {
                 using var scope = scopeFactory.CreateScope();
                 var jobRepo = scope.ServiceProvider.GetRequiredService<IDiscoveryJobRepository>();
+
+                // No dar el job por completado si quedan particiones sin consultar
+                // ('Pending'/'Running'): se deja en pausa para reanudarlo (StartAsync
+                // rescata las huérfanas) en vez de cerrar con huecos en el inventario.
+                var left = await jobRepo.GetStatsAsync(jobId);
+                if (left.PendingPartitions > 0 || left.RunningPartitions > 0)
+                {
+                    logger.LogWarning("Discovery Job {Id}: los workers terminaron con {P} partición(es) 'Pending' y " +
+                        "{R} 'Running'. No se marca 'Completed'; queda en 'Paused' para reanudarlo.",
+                        jobId, left.PendingPartitions, left.RunningPartitions);
+                    await jobRepo.UpdateStatusAsync(jobId, "Paused");
+                    return;
+                }
+
                 await jobRepo.UpdateStatusAsync(jobId, "Completed");
                 logger.LogInformation("Discovery Job {Id} completado", jobId);
 
@@ -241,9 +300,11 @@ public class DiscoveryEngine(
         }
         finally
         {
-            // Always release the CTS — guarantees no leak on exceptions, completion or cancellation
-            if (_running.TryRemove(jobId, out var cts))
-                cts.Dispose();
+            // Always release the CTS — guarantees no leak on exceptions, completion or cancellation.
+            // Retirar SOLO el nuestro: si tras una pausa ya se reanudó el job, la entrada de
+            // _running es la de la nueva ejecución y no debemos quitarla ni liberarla.
+            if (_running.TryRemove(new KeyValuePair<int, CancellationTokenSource>(jobId, runCts)))
+                runCts.Dispose();
         }
     }
 
@@ -443,11 +504,11 @@ public class DiscoveryEngine(
             catch (Exception relEx)
             {
                 // Caso raro (p. ej. BD caída justo al pausar): la partición se queda en
-                // 'Running' con lock. No hay caducidad automática de lock para particiones,
-                // así que habría que reanudar/regenerar el job para reprocesarla.
+                // 'Running' con lock. Al reanudar el job, StartAsync la rescata
+                // (ReleaseOrphanPartitionsAsync) y la devuelve a 'Pending'.
                 logger.LogWarning(relEx,
                     "[{Worker}] No se pudo devolver a 'Pending' la partición {Id} tras la " +
-                    "cancelación; requerirá reanudar el job para reprocesarla", workerId, partition.Id);
+                    "cancelación; se rescatará al reanudar el job", workerId, partition.Id);
             }
             throw;   // propaga la cancelación (esperada al pausar; RunWorkersAsync la trata)
         }

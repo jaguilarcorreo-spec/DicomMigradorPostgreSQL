@@ -1,5 +1,6 @@
 using DicomMigrator.Core.Interfaces;
 using DicomMigrator.Core.Models;
+using DicomMigrator.Infrastructure.Repositories;
 using DicomMigrator.Infrastructure.Services.Licensing;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -36,6 +37,14 @@ public class MigrationWorker(
 {
     // Track active CancellationTokenSources per migration (Singleton state — OK)
     private readonly System.Collections.Concurrent.ConcurrentDictionary<int, CancellationTokenSource> _cts = new();
+
+    // Última ejecución lanzada por migración (workers + handler de finalización). Tras una
+    // pausa, _cts ya no tiene entrada pero los workers viejos pueden seguir terminando su
+    // estudio: StartAsync espera a que acaben antes de rescatar locks huérfanos.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<int, Task> _runs = new();
+
+    // Tope de espera a que terminen los workers de una ejecución anterior al reanudar.
+    private static readonly TimeSpan PreviousRunWait = TimeSpan.FromSeconds(60);
 
     /// <summary>Cancela TODOS los workers activos de forma inmediata, sin tocar el estado
     /// en BD. Pensado para el apagado del proceso: los estudios en curso quedan como
@@ -117,6 +126,25 @@ public class MigrationWorker(
             migration = await MigrationRepo(scope).GetByIdAsync(migrationId)
                 ?? throw new InvalidOperationException($"Migración {migrationId} no encontrada");
 
+            // ── Rescate de estudios huérfanos ─────────────────────────────────────
+            // Ya tenemos el slot reservado, así que no hay workers NUEVOS de esta
+            // migración. Si quedan los de una ejecución anterior (pausa → reanudar
+            // rápido), esperar a que terminen: ellos mismos devuelven su estudio a
+            // 'Pending'. Lo que siga en 'Queued'/'Migrating' después es huérfano (caída
+            // abrupta del proceso: corte de luz, kill, parada forzada del servicio) y se
+            // devuelve a 'Pending' sin consumir reintento.
+            if (_runs.TryGetValue(migrationId, out var previousRun) && !previousRun.IsCompleted)
+            {
+                var finished = await Task.WhenAny(previousRun, Task.Delay(PreviousRunWait, ct)) == previousRun;
+                if (!finished)
+                    logger.LogWarning("Migración {Id}: los workers de la ejecución anterior no terminaron en {S}s; " +
+                        "se rescatan igualmente sus estudios.", migrationId, PreviousRunWait.TotalSeconds);
+            }
+            var rescued = await StudyRepo(scope).ReleaseOrphanMigrationLocksAsync(migrationId);
+            if (rescued > 0)
+                logger.LogWarning("Migración {Id}: {N} estudio(s) huérfano(s) en 'Queued'/'Migrating' " +
+                    "devuelto(s) a 'Pending' (sin consumir reintento).", migrationId, rescued);
+
             await MigrationRepo(scope).UpdateStatusAsync(migrationId, "Running");
             // Acción manual: limpiar el flag de auto-pausa por conexión.
             await MigrationRepo(scope).SetMigrationAutoPausedAsync(migrationId, false);
@@ -145,12 +173,14 @@ public class MigrationWorker(
 
         // Fire and forget — completion handler runs when ALL workers exit
         // (either cancelled via Pause/Cancel, or naturally when the queue empties)
-        _ = Task.WhenAll(tasks).ContinueWith(async _ =>
+        _runs[migrationId] = Task.WhenAll(tasks).ContinueWith(async _ =>
         {
             // If the token was cancelled, this was a Pause/Cancel — don't override status
             var wasCancelled = cts.IsCancellationRequested;
-            _cts.TryRemove(migrationId, out CancellationTokenSource? removedCts);
-            removedCts?.Dispose();
+            // Retirar SOLO nuestro CTS: si tras una pausa ya se reanudó la migración, la
+            // entrada de _cts es la de la nueva ejecución y no debemos quitarla ni liberarla.
+            if (_cts.TryRemove(new KeyValuePair<int, CancellationTokenSource>(migrationId, cts)))
+                cts.Dispose();
 
             if (wasCancelled) return;  // Pause/Cancel already set the right status
 
@@ -194,7 +224,7 @@ public class MigrationWorker(
                 });
             }
             catch (Exception nex) { logger.LogWarning(nex, "Notificación de fin de migración {Id} falló (no crítico).", migrationId); }
-        }, TaskScheduler.Default);
+        }, TaskScheduler.Default).Unwrap();
     }
 
     private async Task RunWorkerLoopAsync(MigrationEntity migration, string workerId,
@@ -302,7 +332,7 @@ public class MigrationWorker(
         finally
         {
             using var scope = scopeFactory.CreateScope();
-            await StudyRepo(scope).ReleaseLocksAsync(workerId);
+            await StudyRepo(scope).ReleaseLocksAsync(migration.Id, workerId);
             logger.LogInformation("Worker {Id} stopped", workerId);
         }
     }
@@ -320,8 +350,15 @@ public class MigrationWorker(
         // Reload migration with fresh node data — picks up any config changes made while paused
         var freshMigration = await MigrationRepo(scope).GetByIdAsync(migration.Id) ?? migration;
 
-        await studyRepo.UpdateStatusAsync(study.Id, "Migrating");
+        // 'Migrating' CONSERVA el lock (LockedByWorker + LockDate) y un latido lo renueva
+        // mientras dura el C-MOVE: si el proceso muere a mitad, el estudio es rescatable
+        // (caducidad en AcquireNextPendingAsync, o ReleaseOrphanMigrationLocksAsync al
+        // arrancar) en vez de quedarse en 'Migrating' para siempre.
+        await studyRepo.MarkMigratingAsync(study.Id, workerId);
         logger.LogInformation("[{Worker}] Migrating {Uid}", workerId, study.StudyInstanceUid);
+
+        using var heartbeatCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var heartbeat = MigrationHeartbeatAsync(study.Id, workerId, heartbeatCts.Token);
 
         try
         {
@@ -479,6 +516,37 @@ public class MigrationWorker(
                 workerId, study.StudyInstanceUid);
             return true;
         }
+        finally
+        {
+            heartbeatCts.Cancel();
+            await heartbeat;   // nunca lanza: traga sus propios errores y la cancelación
+        }
+    }
+
+    /// <summary>Renueva periódicamente el LockDate del estudio en 'Migrating' mientras dura
+    /// su C-MOVE, para que la limpieza de caducados no lo rescate estando vivo. Un fallo
+    /// puntual al renovar solo se registra (hay margen de MigratingStaleAfter).</summary>
+    private async Task MigrationHeartbeatAsync(long studyId, string workerId, CancellationToken ct)
+    {
+        try
+        {
+            using var timer = new PeriodicTimer(StudyRepository.MigratingHeartbeat);
+            while (await timer.WaitForNextTickAsync(ct))
+            {
+                try
+                {
+                    using var scope = scopeFactory.CreateScope();
+                    if (!await StudyRepo(scope).RenewMigrationLockAsync(studyId, workerId))
+                        return;   // el estudio ya no es nuestro (terminado o rescatado)
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    logger.LogWarning(ex, "[{Worker}] No se pudo renovar el lock del estudio {Id} en 'Migrating'.",
+                        workerId, studyId);
+                }
+            }
+        }
+        catch (OperationCanceledException) { /* fin normal del C-MOVE */ }
     }
 
     public async Task PauseAsync(int migrationId)

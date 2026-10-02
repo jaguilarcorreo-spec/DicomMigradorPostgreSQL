@@ -205,12 +205,24 @@ public interface IStudyRepository
     Task<int> EnqueueAllMigratedForVerificationAsync(int migrationId);
     /// <summary>Mark study as VerificationPending without setting VerificationStartDate — timer starts when worker picks it up.</summary>
     Task EnqueueForVerificationAsync(long id);
-    Task ReleaseLocksAsync(string workerId);
+    /// <summary>Marca el estudio 'Migrating' CONSERVANDO el lock del worker (LockedByWorker
+    /// + LockDate renovado), para que un 'Migrating' huérfano tras una caída sea rescatable.</summary>
+    Task MarkMigratingAsync(long id, string workerId);
+    /// <summary>Latido del C-MOVE: renueva LockDate si el estudio sigue 'Migrating' y
+    /// bloqueado por ese worker. False si ya no lo tiene.</summary>
+    Task<bool> RenewMigrationLockAsync(long id, string workerId);
+    /// <summary>Devuelve a 'Pending' los estudios 'Queued'/'Migrating' de esa migración
+    /// bloqueados por ese worker (al terminar el worker).</summary>
+    Task ReleaseLocksAsync(int migrationId, string workerId);
+    /// <summary>Devuelve a 'Pending' TODOS los estudios 'Queued'/'Migrating' de la migración
+    /// (de cualquier worker), sin consumir reintento. Solo es seguro llamarlo cuando no hay
+    /// workers de migración vivos para ella (arranque/reanudación). Devuelve cuántos rescató.</summary>
+    Task<int> ReleaseOrphanMigrationLocksAsync(int migrationId);
     /// <summary>Libera TODOS los locks huérfanos de una migración (de cualquier worker),
     /// devolviendo a 'Pending'/'Migrated' los estudios que quedaron en estado intermedio
-    /// ('Queued' o en verificación) tras una caída del proceso. Pensado para el arranque
-    /// en instancia única, donde un proceso recién iniciado no tiene workers vivos, por lo
-    /// que cualquier lock existente es necesariamente huérfano. No espera el timeout de 10 min.</summary>
+    /// ('Queued'/'Migrating' o en verificación) tras una caída del proceso. Pensado para el
+    /// arranque en instancia única, donde un proceso recién iniciado no tiene workers vivos,
+    /// por lo que cualquier lock existente es necesariamente huérfano. No espera a la caducidad.</summary>
     Task ReleaseOrphanLocksAsync(int migrationId);
     /// <summary>Return a single study to 'Pending' and clear its migration lock without
     /// consuming a retry — used on a SOURCE connection error (transient).</summary>
@@ -285,6 +297,9 @@ public interface IDiscoveryJobRepository
     /// so stale partitions from a previous configuration don't linger.</summary>
     Task DeletePartitionsAsync(int jobId);
     Task<DiscoveryPartition?> AcquireNextPendingPartitionAsync(int jobId, string workerId);
+    /// <summary>Devuelve a 'Pending' las particiones 'Running' huérfanas del job (sin consumir
+    /// AttemptCount). Solo es seguro sin workers vivos del job. Devuelve cuántas rescató.</summary>
+    Task<int> ReleaseOrphanPartitionsAsync(int jobId);
     Task UpdatePartitionAsync(DiscoveryPartition partition);
 
     // Stats

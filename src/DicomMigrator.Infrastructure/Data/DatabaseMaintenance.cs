@@ -64,11 +64,125 @@ public sealed class DatabaseMaintenance(
         }
     }
 
+    // Tablas de alto volumen que se borran y repueblan en bloque (borrar/resetear una
+    // migración o un job, purga de auditoría). Son las que inflan sus índices.
+    public static readonly string[] HighChurnTables =
+    [
+        "MigrationStudies", "MigrationInstances",
+        "DiscoveredStudies", "DiscoveredInstances",
+        "DiscoveryPartitions", "DiscoveryRequests",
+        "AuditLogs",
+    ];
+
+    // VACUUM/REINDEX sobre tablas con millones de filas superan de sobra el timeout
+    // por defecto (30 s) de los comandos.
+    private static readonly TimeSpan MaintenanceCommandTimeout = TimeSpan.FromHours(2);
+
     /// <summary>
-    /// In PostgreSQL space is reclaimed by autovacuum; there is no incremental_vacuum.
-    /// No-op, kept for call-site compatibility.
+    /// VACUUM (ANALYZE) de las tablas indicadas, best-effort (nunca lanza). Tras un borrado
+    /// masivo deja reutilizables las páginas de índice vaciadas ANTES de repoblar: sin él,
+    /// las claves nuevas (Ids crecientes) van siempre a páginas nuevas y el índice crece en
+    /// cada ciclo borrar/repoblar. También refresca las estadísticas, de las que depende
+    /// autovacuum (se pierden tras una parada no limpia de PostgreSQL). Si el usuario de
+    /// la app no es dueño de la tabla, PostgreSQL la omite con un WARNING.
     /// </summary>
-    public Task IncrementalVacuumAsync(CancellationToken ct = default) => Task.CompletedTask;
+    public async Task VacuumTablesAsync(IEnumerable<string> tables, CancellationToken ct = default)
+    {
+        foreach (var table in tables.Distinct())
+        {
+            try
+            {
+                await using var db = await factory.CreateDbContextAsync(ct);
+                db.Database.SetCommandTimeout(MaintenanceCommandTimeout);
+                // Nombre de tabla de una lista fija del código (no entrada de usuario).
+#pragma warning disable EF1002
+                await db.Database.ExecuteSqlRawAsync($"VACUUM (ANALYZE) \"{table}\";", ct);
+#pragma warning restore EF1002
+                logger.LogInformation("VACUUM (ANALYZE) \"{Table}\" completado.", table);
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "VACUUM de \"{Table}\" falló (no crítico).", table);
+            }
+        }
+    }
+
+    /// <summary>Fila de la estimación de inflado de índices (ver ReindexBloatedAsync).</summary>
+    public sealed class IndexBloatRow
+    {
+        public string Name       { get; set; } = "";
+        public long   Pages      { get; set; }
+        public long   IdealPages { get; set; }
+    }
+
+    /// <summary>
+    /// Detecta índices B-tree inflados y los reconstruye con REINDEX INDEX CONCURRENTLY
+    /// (en línea: no bloquea lecturas ni escrituras). Un B-tree no encoge nunca con VACUUM;
+    /// solo REINDEX devuelve el espacio. Sin pgstattuple, el tamaño ideal se estima con
+    /// pg_stats (anchura media de las columnas + cabecera de tupla, relleno 90 %), así
+    /// que conviene ejecutar ANALYZE antes. Solo actúa si el índice supera minPages y es
+    /// más de 'ratio' veces su tamaño estimado. Best-effort: un fallo (p. ej. el usuario
+    /// no es dueño de la tabla) se registra y se sigue con el siguiente. Devuelve cuántos
+    /// índices se reconstruyeron.
+    /// </summary>
+    public async Task<int> ReindexBloatedAsync(double ratio = 4.0, long minPages = 128,
+        CancellationToken ct = default)
+    {
+        List<IndexBloatRow> rows;
+        try
+        {
+            await using var db = await factory.CreateDbContextAsync(ct);
+            rows = await db.Database.SqlQueryRaw<IndexBloatRow>(@"
+SELECT format('%I.%I', n.nspname, i.relname)                              AS ""Name"",
+       i.relpages::bigint                                                 AS ""Pages"",
+       ceil(i.reltuples * (coalesce(w.width, 8) + 16) / (8192 * 0.9))::bigint AS ""IdealPages""
+FROM pg_index x
+JOIN pg_class i     ON i.oid = x.indexrelid
+JOIN pg_class t     ON t.oid = x.indrelid
+JOIN pg_namespace n ON n.oid = t.relnamespace
+JOIN pg_am am       ON am.oid = i.relam AND am.amname = 'btree'
+LEFT JOIN LATERAL (
+    SELECT sum(s.avg_width) AS width
+    FROM pg_attribute a
+    JOIN pg_stats s ON s.schemaname = n.nspname AND s.tablename = t.relname AND s.attname = a.attname
+    WHERE a.attrelid = t.oid AND a.attnum = ANY (x.indkey::int2[])
+) w ON true
+WHERE n.nspname = 'public' AND x.indisvalid AND i.reltuples >= 0 AND i.relpages > {0}",
+                minPages).ToListAsync(ct);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "No se pudo estimar el inflado de índices (no crítico).");
+            return 0;
+        }
+
+        var reindexed = 0;
+        foreach (var r in rows.Where(r => r.Pages > ratio * Math.Max(r.IdealPages, 1)))
+        {
+            try
+            {
+                await using var db = await factory.CreateDbContextAsync(ct);
+                db.Database.SetCommandTimeout(MaintenanceCommandTimeout);
+                // r.Name viene ya entrecomillado por format('%I.%I') de PostgreSQL.
+#pragma warning disable EF1002
+                await db.Database.ExecuteSqlRawAsync($"REINDEX INDEX CONCURRENTLY {r.Name};", ct);
+#pragma warning restore EF1002
+                reindexed++;
+                logger.LogInformation("REINDEX {Index}: {Pages} páginas (≈{Ideal} estimadas).",
+                    r.Name, r.Pages, r.IdealPages);
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                // Un REINDEX CONCURRENTLY interrumpido deja un índice inválido "<nombre>_ccnew"
+                // que hay que eliminar a mano (DROP INDEX CONCURRENTLY).
+                logger.LogWarning(ex, "REINDEX de {Index} falló (no crítico).", r.Name);
+            }
+        }
+        return reindexed;
+    }
 
     /// <summary>
     /// Purge old INFO audit logs, keeping WARN/ERROR entries for diagnostics.

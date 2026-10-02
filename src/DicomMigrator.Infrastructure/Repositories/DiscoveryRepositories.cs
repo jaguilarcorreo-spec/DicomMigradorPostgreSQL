@@ -15,7 +15,7 @@ file static class StringExtensions
 // RF-020 — Discovery Engine repositories
 // ═══════════════════════════════════════════════════════════════════════════
 
-public class DiscoveryJobRepository(IDbContextFactory<AppDbContext> factory) : IDiscoveryJobRepository
+public class DiscoveryJobRepository(IDbContextFactory<AppDbContext> factory, DeferredVacuum vacuum) : IDiscoveryJobRepository
 {
     public async Task<List<DiscoveryJob>> GetAllAsync()
     {
@@ -283,6 +283,7 @@ public class DiscoveryJobRepository(IDbContextFactory<AppDbContext> factory) : I
         await db.DiscoveryRequests.Where(r => r.DiscoveryJobId == id).ExecuteDeleteAsync();
         await db.DiscoveryPartitions.Where(p => p.DiscoveryJobId == id).ExecuteDeleteAsync();
         await db.DiscoveryJobs.Where(j => j.Id == id).ExecuteDeleteAsync();
+        vacuum.Request("DiscoveredStudies", "DiscoveredInstances", "DiscoveryRequests", "DiscoveryPartitions");
     }
 
     public async Task ResetJobAsync(int id)
@@ -322,6 +323,10 @@ public class DiscoveryJobRepository(IDbContextFactory<AppDbContext> factory) : I
                 .SetProperty(j => j.Status, "Draft")
                 .SetProperty(j => j.StartedDate, (DateTime?)null)
                 .SetProperty(j => j.FinishedDate, (DateTime?)null));
+
+        // El reset vacía el inventario del job para volver a descubrirlo: VACUUM en
+        // segundo plano para que el nuevo descubrimiento reutilice las páginas de índice.
+        vacuum.Request("DiscoveredStudies", "DiscoveredInstances", "DiscoveryRequests", "DiscoveryPartitions");
     }
 
     // ── Partitions ──────────────────────────────────────────────────────────
@@ -385,6 +390,23 @@ public class DiscoveryJobRepository(IDbContextFactory<AppDbContext> factory) : I
                 .SetProperty(p => p.LockDate, DateTime.UtcNow)
                 .SetProperty(p => p.StartedAt, DateTime.UtcNow));
         return locked > 0 ? next : null;
+    }
+
+    public async Task<int> ReleaseOrphanPartitionsAsync(int jobId)
+    {
+        // Particiones atrapadas en 'Running' (lock de un worker que ya no existe: caída
+        // abrupta del proceso, o fallo de BD al cerrarlas) → 'Pending', liberando el lock.
+        // AttemptCount NO se toca: el worker solo lo persiste al cerrar la partición, así
+        // que el valor en BD es el de antes del intento interrumpido (no se penaliza).
+        // Solo es seguro llamarlo cuando no hay workers vivos de ese job.
+        await using var db = factory.CreateDbContext();
+        return await db.DiscoveryPartitions
+            .Where(p => p.DiscoveryJobId == jobId && p.Status == "Running")
+            .ExecuteUpdateAsync(u => u
+                .SetProperty(p => p.Status,         "Pending")
+                .SetProperty(p => p.LockedByWorker, (string?)null)
+                .SetProperty(p => p.LockDate,       (DateTime?)null)
+                .SetProperty(p => p.StartedAt,      (DateTime?)null));
     }
 
     public async Task UpdatePartitionAsync(DiscoveryPartition partition)
