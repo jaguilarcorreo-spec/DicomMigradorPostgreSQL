@@ -106,13 +106,18 @@
             </thead>
             <tbody>
                 <tr><td><span class="status-badge s-Pending">Pending</span></td><td>Esperando ser procesada por un worker.</td></tr>
-                <tr><td><span class="status-badge s-Running">Running</span></td><td>Worker realizando la consulta al PACS.</td></tr>
+                <tr><td><span class="status-badge s-Running">Running</span></td><td>Worker realizando la consulta al PACS. Si el servicio se cae a mitad, al reanudar el job la partición vuelve a <code>Pending</code> sin gastar intento.</td></tr>
                 <tr><td><span class="status-badge s-Completed">Completed</span></td><td>Procesada con éxito, sin truncamiento.</td></tr>
                 <tr><td><span class="status-badge s-Subdivided">Subdivided</span></td><td>Detectado posible truncamiento — se generaron particiones hijas.</td></tr>
                 <tr><td><span class="status-badge s-PossiblyTruncated">PossiblyTruncated</span></td><td>Llegó al suelo de subdivisión (franja horaria mínima de ~5 min) y todavía rozó el límite. Datos posiblemente incompletos. <em>Estado terminal — no se reintenta.</em></td></tr>
                 <tr><td><span class="status-badge s-Failed">Failed</span></td><td>Error de comunicación o superó 5 reintentos.</td></tr>
             </tbody>
         </table>
+        <p style="margin:10px 0 0 0;color:var(--text-dim);font-size:13px;line-height:1.6">
+            El job solo se marca <code>Completed</code> cuando no queda ninguna partición <code>Pending</code> ni
+            <code>Running</code>. Si al terminar los workers quedara alguna sin consultar, el job pasa a
+            <code>Paused</code> para que lo reanudes, en lugar de cerrarse con huecos en el inventario.
+        </p>
     </HelpSection>
 
     <HelpSection Title="Inventario por job y migración derivada" Color="#3B82F6">
@@ -426,6 +431,7 @@
             <li><code>Pending → Migrating</code>: un worker adquiere el lock.</li>
             <li><code>Migrating → Migrated</code>: el C-MOVE termina con éxito.</li>
             <li><code>Migrating → Failed</code>: el C-MOVE falla.</li>
+            <li><code>Migrating → Pending</code>: el servicio se cayó a mitad del C-MOVE (corte de luz, parada forzada). El estudio se rescata al reanudar la migración, o a los 15 min sin latido del worker, <strong>sin consumir reintento</strong>.</li>
             <li><code>Failed → RetryPending</code>: el usuario pulsa "Reintentar fallidos" o se alcanza el delay automático.</li>
             <li><code>RetryPending → Migrating</code>: un worker recoge el estudio. La fecha de migración se borra para reiniciar el contador de tiempo.</li>
             <li><code>Migrated → VerificationPending → Verified</code>: lanzamiento de verificación, confirmación de presencia en destino.</li>
@@ -778,9 +784,13 @@
         </p>
     </HelpSection>
 
-    <HelpSection Title="Sección Maintenance — purga de auditoría" Color="var(--green)">
+    <HelpSection Title="Sección Maintenance — purga y mantenimiento de la BD" Color="var(--green)">
         <p style="margin:0 0 12px 0;color:var(--text-dim);font-size:13px;line-height:1.6">
-            Controla el servicio que purga periódicamente la tabla de auditoría (<code>AuditLog</code>) y compacta la BD.
+            Controla el servicio que, al arrancar y en cada ciclo, purga la tabla de auditoría (<code>AuditLog</code>),
+            ejecuta <code>VACUUM (ANALYZE)</code> sobre las tablas de más volumen y reconstruye con
+            <code>REINDEX CONCURRENTLY</code> los índices inflados (más de 4 veces su tamaño estimado), sin bloquear la
+            aplicación. Además, al borrar una migración o borrar/limpiar un descubrimiento se lanza un
+            <code>VACUUM</code> en segundo plano de las tablas afectadas. Es autónomo: no requiere intervención.
         </p>
         <table class="data-table" style="width:100%;font-size:12px">
             <thead><tr><th>Clave</th><th>Descripción</th><th>Por defecto</th></tr></thead>
@@ -788,8 +798,15 @@
                 <tr><td class="mono">Maintenance:AuditLogRetentionDays</td><td>Días de antigüedad a partir de los cuales se borran las entradas de auditoría.</td><td class="mono" style="color:var(--accent)">90</td></tr>
                 <tr><td class="mono">Maintenance:PurgeIntervalHours</td><td>Cada cuántas horas se ejecuta la purga.</td><td class="mono" style="color:var(--accent)">24</td></tr>
                 <tr><td class="mono">Maintenance:RunPurgeOnStartup</td><td>Si ejecuta una purga nada más arrancar, además del ciclo periódico.</td><td class="mono" style="color:var(--accent)">true</td></tr>
+                <tr><td class="mono">Maintenance:IndexMaintenance</td><td>Si cada ciclo incluye el <code>VACUUM</code> de las tablas de más volumen y la reconstrucción de índices inflados.</td><td class="mono" style="color:var(--accent)">true</td></tr>
             </tbody>
         </table>
+        <p style="margin:12px 0 0 0;color:var(--text-dim);font-size:13px;line-height:1.6">
+            <strong>Permisos:</strong> VACUUM y REINDEX exigen que el usuario de la aplicación sea dueño de las tablas o
+            tenga el rol de mantenimiento. Si no lo es, el mantenimiento se omite y solo deja un aviso en el log; para
+            habilitarlo, un administrador ejecuta una vez <code>GRANT pg_maintain TO dicom_app_migrator;</code>
+            (PostgreSQL 17+). El modo <code>DicomMigrator.exe --maintenance</code> hace lo mismo bajo demanda.
+        </p>
     </HelpSection>
 
     <HelpSection Title="Sección AutoResume — reanudación automática" Color="var(--yellow)">
@@ -965,7 +982,7 @@
     private readonly StudyState[] _states =
     [
         new("Pending",              "Pendiente",                "Recién creado, todavía no procesado por ningún worker."),
-        new("Migrating",            "En curso",                 "Un worker tiene el lock y está realizando el C-MOVE."),
+        new("Migrating",            "En curso",                 "Un worker tiene el lock y está realizando el C-MOVE. Si el servicio se cae, vuelve a Pendiente sin consumir reintento."),
         new("Migrated",             "Migrado",                  "C-MOVE completado con éxito. Pendiente de verificación."),
         new("VerificationPending",  "Verificación pendiente",   "Encolado para verificar su presencia en el destino."),
         new("Verified",             "Verificado",               "Confirmada la presencia del estudio en el destino con series e instancias coherentes."),
