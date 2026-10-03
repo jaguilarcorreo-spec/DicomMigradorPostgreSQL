@@ -6,6 +6,10 @@
    (« año ‹ mes · etiqueta pulsable → rejilla de años → rejilla de meses),
    pero sin atajos de rango ni segundo calendario.
 
+   La fecha también se puede ESCRIBIR en el campo (aaaa-mm-dd, dd/mm/aaaa, dd-mm-aaaa,
+   dd.mm.aaaa o aaaammdd); se aplica al salir del campo o pulsar Intro. El icono y la
+   flecha abren el calendario.
+
    Sin dependencias externas ni JS: el cierre "al hacer clic fuera" se resuelve
    con un backdrop transparente por debajo del popup.
    Estilos EMBEBIDOS a propósito: el proyecto no usa CSS isolation ni
@@ -17,17 +21,25 @@
     .sdp-root { position: relative; }
 
     .sdp-field {
-        display: flex; align-items: center; gap: 10px; cursor: pointer;
+        display: flex; align-items: center; gap: 10px;
         background: var(--bg); border: 1px solid var(--border); border-radius: var(--r);
         padding: 8px 11px; user-select: none; font-family: var(--font-mono);
         position: relative; z-index: 1; max-width: 210px;
     }
     .sdp-field:hover        { border-color: var(--border2); }
+    .sdp-field:focus-within { border-color: var(--purple); }
     .sdp-field.sdp-open     { border-color: var(--purple); box-shadow: 0 0 0 3px rgba(167,139,250,.12); }
+    .sdp-field.sdp-bad      { border-color: var(--red); box-shadow: 0 0 0 3px rgba(239,68,68,.12); }
     .sdp-field.sdp-disabled { opacity: .55; cursor: not-allowed; }
-    .sdp-field .sdp-ico     { color: var(--purple); font-size: 13px; line-height: 1; }
-    .sdp-field .sdp-val     { font-size: 13px; color: var(--text); letter-spacing: .02em; }
-    .sdp-field .sdp-chev    { margin-left: auto; color: var(--text-muted); font-size: 10px; }
+    .sdp-field .sdp-ico     { color: var(--purple); font-size: 13px; line-height: 1; cursor: pointer; }
+    .sdp-field .sdp-input {
+        flex: 1; min-width: 0; background: transparent; border: none; outline: none; padding: 0;
+        font-size: 13px; color: var(--text); letter-spacing: .02em; font-family: var(--font-mono);
+    }
+    .sdp-field .sdp-input::placeholder { color: var(--text-muted); }
+    .sdp-field .sdp-chev    { margin-left: auto; color: var(--text-muted); font-size: 10px; cursor: pointer; padding: 0 2px; }
+    .sdp-field.sdp-disabled .sdp-ico,
+    .sdp-field.sdp-disabled .sdp-chev { cursor: not-allowed; }
 
     .sdp-backdrop { position: fixed; inset: 0; z-index: 40; background: transparent; }
 
@@ -88,11 +100,12 @@
 
 <div class="sdp-root">
 
-    <div class="sdp-field @(_open ? "sdp-open" : "") @(Disabled ? "sdp-disabled" : "")"
-         @onclick="Toggle">
-        <span class="sdp-ico">▦</span>
-        <span class="sdp-val">@Value.ToString("yyyy-MM-dd")</span>
-        <span class="sdp-chev">▾</span>
+    <div class="sdp-field @(_open ? "sdp-open" : "") @(_invalid ? "sdp-bad" : "") @(Disabled ? "sdp-disabled" : "")">
+        <span class="sdp-ico" title="Abrir calendario" @onclick="Toggle">▦</span>
+        <input class="sdp-input" type="text" maxlength="10" placeholder="aaaa-mm-dd"
+               title="@(_invalid ? "Fecha no válida. Formatos: aaaa-mm-dd, dd/mm/aaaa, dd-mm-aaaa, aaaammdd" : "Escribe la fecha o pulsa el icono para abrir el calendario")"
+               value="@_text" disabled="@Disabled" @onchange="OnTyped" />
+        <span class="sdp-chev" title="Abrir calendario" @onclick="Toggle">▾</span>
     </div>
 
     @if (_open)
@@ -209,7 +222,15 @@
 
     private enum Mode { Days, Years, Months }
 
+    // Formatos admitidos al escribir la fecha. Se prueban en orden; el año debe tener
+    // 4 cifras, así que no hay ambigüedad entre aaaa-mm-dd y dd-mm-aaaa.
+    private static readonly string[] _formats =
+        ["yyyy-MM-dd", "yyyy-M-d", "yyyy/M/d", "yyyyMMdd",
+         "d/M/yyyy", "d-M-yyyy", "d.M.yyyy", "ddMMyyyy"];
+
     private bool     _open;
+    private string   _text = "";  // lo que muestra/edita el campo
+    private bool     _invalid;    // el texto escrito no es una fecha válida
     private DateOnly _view;       // mes visible
     private DateOnly _tmp;        // selección provisional (no se aplica hasta Aplicar)
     private Mode     _mode = Mode.Days;
@@ -217,6 +238,51 @@
     private int      _pickYear;
 
     private static string MonthLabel(DateOnly m) => $"{_months[m.Month - 1]} {m.Year}";
+
+    // Si el valor cambia desde fuera (o tras Aplicar en el calendario), el campo pasa a
+    // reflejarlo. Solo cuando CAMBIA: un re-render del padre por otro motivo no debe
+    // borrar lo que el usuario está escribiendo.
+    private DateOnly? _shown;
+    protected override void OnParametersSet()
+    {
+        if (_shown == Value) return;
+        _shown   = Value;
+        _text    = Value.ToString("yyyy-MM-dd");
+        _invalid = false;
+    }
+
+    async Task OnTyped(ChangeEventArgs e)
+    {
+        var raw = (e.Value?.ToString() ?? "").Trim();
+        _text = raw;
+
+        if (!TryParse(raw, out var d))
+        {
+            // Se deja el texto escrito, marcado en rojo, para que el usuario lo corrija;
+            // el valor enlazado no cambia.
+            _invalid = true;
+            return;
+        }
+
+        _invalid = false;
+        _text    = d.ToString("yyyy-MM-dd");
+        if (d != Value) await ValueChanged.InvokeAsync(d);
+    }
+
+    private static bool TryParse(string s, out DateOnly date)
+    {
+        foreach (var f in _formats)
+        {
+            // Rango razonable: descarta lecturas absurdas (p. ej. "01022024" leído como
+            // aaaammdd daría el año 0102) y deja que pruebe el siguiente formato.
+            if (DateOnly.TryParseExact(s, f, System.Globalization.CultureInfo.InvariantCulture,
+                    System.Globalization.DateTimeStyles.None, out date)
+                && date.Year is >= 1900 and <= 2100)
+                return true;
+        }
+        date = default;
+        return false;
+    }
 
     void Toggle()
     {
@@ -233,7 +299,9 @@
 
     async Task Apply()
     {
-        _open = false;
+        _open    = false;
+        _text    = _tmp.ToString("yyyy-MM-dd");
+        _invalid = false;
         if (_tmp != Value) await ValueChanged.InvokeAsync(_tmp);
     }
 
