@@ -234,7 +234,9 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             // índice para las consultas por job (que son la mayoría).
             e.HasIndex(x => new { x.DiscoveryJobId, x.StudyInstanceUid }).IsUnique();
             e.HasIndex(x => new { x.SourcePacsId, x.StudyDate });
-            e.HasIndex(x => x.ModalitiesInStudy);
+            // Sin índice sobre ModalitiesInStudy: el filtro busca por subcadena (Contains →
+            // strpos), que un B-tree no puede resolver, y los códigos de modalidad (2
+            // caracteres) son demasiado cortos para pg_trgm. Solo encarecía cada INSERT.
             e.HasIndex(x => x.PartitionId);
         });
 
