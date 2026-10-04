@@ -1212,16 +1212,20 @@ else
     {
         _migrations = await MigrationRepo.GetAllAsync();
         _nodes      = await NodeRepo.GetAllAsync();
-        _statsList  = [];
-        foreach (var m in _migrations)
-            _statsList.Add(await StudyRepo.GetStatsAsync(m.Id));
+        // Las fichas solo muestran recuentos: una única consulta indexada para todas, en
+        // vez de un GetStatsAsync (con tiempos) por migración. Mismo orden que _migrations,
+        // porque RefreshDetailAsync actualiza _statsList por posición.
+        var counts  = await StudyRepo.GetCountsByMigrationAsync();
+        _statsList  = _migrations
+            .Select(m => counts.GetValueOrDefault(m.Id) ?? new MigrationStats { MigrationId = m.Id })
+            .ToList();
     }
 
     async Task OpenDetail(Migration m)
     {
         _detail    = await MigrationRepo.GetByIdAsync(m.Id);
         _stats     = await StudyRepo.GetStatsAsync(m.Id);
-        _migHasN2  = await InstanceRepo.CountForMigrationAsync(m.Id) > 0;
+        _migHasN2  = await InstanceRepo.HasAnyForMigrationAsync(m.Id);
         _detailTab = "dashboard";
         _actionMsg = "";
 
@@ -1272,7 +1276,7 @@ else
         _detail = fresh;
 
         _stats    = await StudyRepo.GetStatsAsync(fresh.Id);
-        _migHasN2 = await InstanceRepo.CountForMigrationAsync(fresh.Id) > 0;
+        _migHasN2 = await InstanceRepo.HasAnyForMigrationAsync(fresh.Id);
         // Update the stats for this migration in the list too
         var idx = _migrations.FindIndex(m => m.Id == fresh.Id);
         if (idx >= 0 && idx < _statsList.Count)

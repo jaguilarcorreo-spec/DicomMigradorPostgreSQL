@@ -251,13 +251,8 @@
             _nodeCount      = nodes.Count;
             _migrationCount = migrations.Count;
 
-            long total = 0;
-            foreach (var m in migrations)
-            {
-                var stats = await StudyRepo.GetStatsAsync(m.Id);
-                total += stats.Total;
-            }
-            _studyCount = total;
+            var counts  = await StudyRepo.GetCountsByMigrationAsync();
+            _studyCount = counts.Values.Sum(s => s.Total);
 
             var cfg    = await ConfigRepo.GetAsync();
             _localAet  = cfg.LocalAet;

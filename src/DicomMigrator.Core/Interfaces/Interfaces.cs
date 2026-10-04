@@ -133,8 +133,10 @@ public interface IInstanceRepository
     /// <summary>Nº de instancias capturadas para un estudio.</summary>
     Task<int> CountForStudyAsync(long migrationStudyId);
 
-    /// <summary>Nº total de UIDs (instancias) copiados a una migración (indica si es Nivel 2).</summary>
-    Task<int> CountForMigrationAsync(int migrationId);
+    /// <summary>True si la migración tiene UIDs (instancias) copiados, es decir, si es
+    /// Nivel 2. Comprueba existencia (EXISTS), sin contar: con millones de instancias el
+    /// recuento costaba más de medio segundo y se repetía en cada refresco del detalle.</summary>
+    Task<bool> HasAnyForMigrationAsync(int migrationId);
 
     /// <summary>Conjunto de SOPInstanceUID capturados de un estudio (para comparar en verificación).</summary>
     Task<HashSet<string>> GetSopUidsForStudyAsync(long migrationStudyId);
@@ -233,6 +235,10 @@ public interface IStudyRepository
     Task RetryVerifyFailedAsync(int migrationId);
     Task CancelStudyAsync(long id);
     Task<MigrationStats> GetStatsAsync(int migrationId);
+    /// <summary>Recuentos por estado de TODAS las migraciones en una sola consulta
+    /// (índice MigrationId+MigrationStatus). Sin tiempos: para listas y totales. Las
+    /// migraciones sin estudios no aparecen en el diccionario.</summary>
+    Task<Dictionary<int, MigrationStats>> GetCountsByMigrationAsync();
     Task ExportToCsvAsync(int migrationId, StudyFilter filter, Stream output);
 
     /// <summary>Delete all studies of a migration (reset to pre-discovery state).</summary>

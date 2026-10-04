@@ -338,11 +338,13 @@ public class InstanceRepository(IDbContextFactory<AppDbContext> factory) : IInst
             .CountAsync(i => i.MigrationStudyId == migrationStudyId);
     }
 
-    public async Task<int> CountForMigrationAsync(int migrationId)
+    public async Task<bool> HasAnyForMigrationAsync(int migrationId)
     {
+        // AnyAsync → SELECT EXISTS: PostgreSQL se detiene en la primera instancia que
+        // encuentra (≈1 ms con 2 M de instancias, frente a ≈555 ms del COUNT).
         await using var db = factory.CreateDbContext();
         return await db.MigrationInstances
-            .CountAsync(i => i.Study != null && i.Study.MigrationId == migrationId);
+            .AnyAsync(i => i.Study != null && i.Study.MigrationId == migrationId);
     }
 
     public async Task<HashSet<string>> GetSopUidsForStudyAsync(long migrationStudyId)
@@ -1021,78 +1023,129 @@ WHERE di.""DiscoveredStudyId"" = ANY({batchStudyIds})
                 .SetProperty(s => s.LastUpdateDate, DateTime.UtcNow));
     }
 
+    /// <summary>Fila del agregado de GetStatsAsync (recuentos por estado + tiempos).</summary>
+    public sealed class MigrationStatsRow
+    {
+        public long   Total                    { get; set; }
+        public long   Pending                  { get; set; }
+        public long   Queued                   { get; set; }
+        public long   Migrating                { get; set; }
+        public long   Migrated                 { get; set; }
+        public long   VerificationPending      { get; set; }
+        public long   Verified                 { get; set; }
+        public long   Failed                   { get; set; }
+        public long   RetryPending             { get; set; }
+        public long   VerifyFailed             { get; set; }
+        public long   VerifyRetryPending       { get; set; }
+        public long   Cancelled                { get; set; }
+        public double TotalMigrationSeconds    { get; set; }
+        public double TotalVerificationSeconds { get; set; }
+        public double WallMigrationSeconds     { get; set; }
+        public double WallVerificationSeconds  { get; set; }
+    }
+
     public async Task<MigrationStats> GetStatsAsync(int migrationId)
     {
         await using var db = factory.CreateDbContext();
-        // RepeatableRead: las dos consultas de abajo (conteos por estado y timings) ven
-        // el mismo snapshot de datos aunque haya workers escribiendo concurrentemente.
-        // Sin esto, el Total de la primera consulta podía no cuadrar exactamente con
-        // los timings de la segunda si un estudio cambiaba de estado entre ambas —
-        // solo afecta al dashboard (cosmético), no a la migración en sí.
-        await using var tx = await db.Database.BeginTransactionAsync(System.Data.IsolationLevel.RepeatableRead);
+        // Todo se agrega en PostgreSQL en UNA sentencia: antes los tiempos traían a memoria
+        // una fila por estudio terminado (cientos de miles en una migración grande) solo
+        // para sumarlos en C#. Al ser una única sentencia ve un snapshot coherente, así que
+        // ya no hace falta la transacción RepeatableRead que alineaba las dos consultas.
+        //  - Tiempo acumulado: suma de (fin − inicio) de cada estudio con ambas fechas.
+        //  - Tiempo de reloj: del primer inicio al último fin, sobre esos mismos estudios.
+        var rows = await db.Database.SqlQueryRaw<MigrationStatsRow>(@"
+SELECT count(*)                                                        AS ""Total"",
+       count(*) FILTER (WHERE ""MigrationStatus"" = 'Pending')             AS ""Pending"",
+       count(*) FILTER (WHERE ""MigrationStatus"" = 'Queued')              AS ""Queued"",
+       count(*) FILTER (WHERE ""MigrationStatus"" = 'Migrating')           AS ""Migrating"",
+       count(*) FILTER (WHERE ""MigrationStatus"" = 'Migrated')            AS ""Migrated"",
+       count(*) FILTER (WHERE ""MigrationStatus"" = 'VerificationPending') AS ""VerificationPending"",
+       count(*) FILTER (WHERE ""MigrationStatus"" = 'Verified')            AS ""Verified"",
+       count(*) FILTER (WHERE ""MigrationStatus"" = 'Failed')              AS ""Failed"",
+       count(*) FILTER (WHERE ""MigrationStatus"" = 'RetryPending')        AS ""RetryPending"",
+       count(*) FILTER (WHERE ""MigrationStatus"" = 'VerifyFailed')        AS ""VerifyFailed"",
+       count(*) FILTER (WHERE ""MigrationStatus"" = 'VerifyRetryPending')  AS ""VerifyRetryPending"",
+       count(*) FILTER (WHERE ""MigrationStatus"" = 'Cancelled')           AS ""Cancelled"",
+       coalesce(sum(extract(epoch FROM ""MigrationDate"" - ""MigrationStartDate""))
+                FILTER (WHERE ""MigrationDate"" IS NOT NULL AND ""MigrationStartDate"" IS NOT NULL), 0)::float8
+                                                                       AS ""TotalMigrationSeconds"",
+       coalesce(sum(extract(epoch FROM ""VerificationDate"" - ""VerificationStartDate""))
+                FILTER (WHERE ""VerificationDate"" IS NOT NULL AND ""VerificationStartDate"" IS NOT NULL), 0)::float8
+                                                                       AS ""TotalVerificationSeconds"",
+       coalesce(extract(epoch FROM
+                  max(""MigrationDate"")      FILTER (WHERE ""MigrationDate"" IS NOT NULL AND ""MigrationStartDate"" IS NOT NULL)
+                - min(""MigrationStartDate"") FILTER (WHERE ""MigrationDate"" IS NOT NULL AND ""MigrationStartDate"" IS NOT NULL)), 0)::float8
+                                                                       AS ""WallMigrationSeconds"",
+       coalesce(extract(epoch FROM
+                  max(""VerificationDate"")      FILTER (WHERE ""VerificationDate"" IS NOT NULL AND ""VerificationStartDate"" IS NOT NULL)
+                - min(""VerificationStartDate"") FILTER (WHERE ""VerificationDate"" IS NOT NULL AND ""VerificationStartDate"" IS NOT NULL)), 0)::float8
+                                                                       AS ""WallVerificationSeconds""
+FROM ""MigrationStudies""
+WHERE ""MigrationId"" = {0}", migrationId).ToListAsync();
 
+        var r = rows.Single();
+        return new MigrationStats
+        {
+            MigrationId              = migrationId,
+            Total                    = r.Total,
+            Pending                  = r.Pending,
+            Queued                   = r.Queued,
+            Migrating                = r.Migrating,
+            Migrated                 = r.Migrated,
+            VerificationPending      = r.VerificationPending,
+            Verified                 = r.Verified,
+            Failed                   = r.Failed,
+            RetryPending             = r.RetryPending,
+            VerifyFailed             = r.VerifyFailed,
+            VerifyRetryPending       = r.VerifyRetryPending,
+            Cancelled                = r.Cancelled,
+            TotalMigrationSeconds    = r.TotalMigrationSeconds,
+            TotalVerificationSeconds = r.TotalVerificationSeconds,
+            WallMigrationSeconds     = r.WallMigrationSeconds,
+            WallVerificationSeconds  = r.WallVerificationSeconds,
+        };
+    }
+
+    public async Task<Dictionary<int, MigrationStats>> GetCountsByMigrationAsync()
+    {
+        await using var db = factory.CreateDbContext();
+        // Una sola consulta para todas las fichas: el índice (MigrationId, MigrationStatus)
+        // la resuelve sin leer la tabla (Index Only Scan). Sin tiempos: quien los necesite
+        // (detalle, Excel) sigue usando GetStatsAsync.
         var groups = await db.MigrationStudies
-            .Where(s => s.MigrationId == migrationId)
-            .GroupBy(s => s.MigrationStatus)
-            .Select(g => new { Status = g.Key, Count = (long)g.Count() })
+            .GroupBy(s => new { s.MigrationId, s.MigrationStatus })
+            .Select(g => new { g.Key.MigrationId, g.Key.MigrationStatus, Count = (long)g.Count() })
             .ToListAsync();
 
-        var stats = new MigrationStats { MigrationId = migrationId };
+        var result = new Dictionary<int, MigrationStats>();
         foreach (var g in groups)
         {
-            switch (g.Status)
-            {
-                case "Pending":             stats.Pending             = g.Count; break;
-                case "Queued":              stats.Queued              = g.Count; break;
-                case "Migrating":           stats.Migrating           = g.Count; break;
-                case "Migrated":            stats.Migrated            = g.Count; break;
-                case "VerificationPending": stats.VerificationPending = g.Count; break;
-                case "Verified":            stats.Verified            = g.Count; break;
-                case "Failed":              stats.Failed              = g.Count; break;
-                case "RetryPending":        stats.RetryPending        = g.Count; break;
-                case "VerifyFailed":        stats.VerifyFailed        = g.Count; break;
-                case "VerifyRetryPending":  stats.VerifyRetryPending  = g.Count; break;
-                case "Cancelled":           stats.Cancelled           = g.Count; break;
-            }
+            if (!result.TryGetValue(g.MigrationId, out var stats))
+                result[g.MigrationId] = stats = new MigrationStats { MigrationId = g.MigrationId };
+            AddStatusCount(stats, g.MigrationStatus, g.Count);
         }
-        stats.Total = groups.Sum(g => g.Count);
+        return result;
+    }
 
-        // Calculate total elapsed time: sum of individual study durations
-        // Migration: MigrationDate - MigrationStartDate (for Migrated + Verified + VerificationPending)
-        // Verification: VerificationDate - VerificationStartDate (for Verified only)
-        var timings = await db.MigrationStudies
-            .Where(s => s.MigrationId == migrationId
-                     && (s.MigrationDate != null || s.VerificationDate != null))
-            .Select(s => new
-            {
-                s.MigrationDate,
-                s.MigrationStartDate,
-                s.VerificationDate,
-                s.VerificationStartDate,
-            })
-            .ToListAsync();
-
-        stats.TotalMigrationSeconds = timings
-            .Where(s => s.MigrationDate.HasValue && s.MigrationStartDate.HasValue)
-            .Sum(s => (s.MigrationDate!.Value - s.MigrationStartDate!.Value).TotalSeconds);
-
-        stats.TotalVerificationSeconds = timings
-            .Where(s => s.VerificationDate.HasValue && s.VerificationStartDate.HasValue)
-            .Sum(s => (s.VerificationDate!.Value - s.VerificationStartDate!.Value).TotalSeconds);
-
-        // Wall-clock: from first start to last finish (actual elapsed time)
-        var migDone = timings.Where(s => s.MigrationDate.HasValue && s.MigrationStartDate.HasValue).ToList();
-        if (migDone.Count > 0)
-            stats.WallMigrationSeconds = (migDone.Max(s => s.MigrationDate!.Value)
-                                        - migDone.Min(s => s.MigrationStartDate!.Value)).TotalSeconds;
-
-        var verDone = timings.Where(s => s.VerificationDate.HasValue && s.VerificationStartDate.HasValue).ToList();
-        if (verDone.Count > 0)
-            stats.WallVerificationSeconds = (verDone.Max(s => s.VerificationDate!.Value)
-                                           - verDone.Min(s => s.VerificationStartDate!.Value)).TotalSeconds;
-
-        await tx.CommitAsync();
-        return stats;
+    // Suma un recuento al contador de su estado y al Total. Un estado desconocido cuenta
+    // solo en Total, igual que en GetStatsAsync (count(*) sin FILTER).
+    private static void AddStatusCount(MigrationStats stats, string status, long count)
+    {
+        stats.Total += count;
+        switch (status)
+        {
+            case "Pending":             stats.Pending             += count; break;
+            case "Queued":              stats.Queued              += count; break;
+            case "Migrating":           stats.Migrating           += count; break;
+            case "Migrated":            stats.Migrated            += count; break;
+            case "VerificationPending": stats.VerificationPending += count; break;
+            case "Verified":            stats.Verified            += count; break;
+            case "Failed":              stats.Failed              += count; break;
+            case "RetryPending":        stats.RetryPending        += count; break;
+            case "VerifyFailed":        stats.VerifyFailed        += count; break;
+            case "VerifyRetryPending":  stats.VerifyRetryPending  += count; break;
+            case "Cancelled":           stats.Cancelled           += count; break;
+        }
     }
 
     // RFC 4180: envolver siempre entre comillas y duplicar las comillas internas ("").

@@ -167,9 +167,12 @@ else
     {
         _migrations = await MigrationRepo.GetAllAsync();
         _nodes      = await NodeRepo.GetAllAsync();
-        _allStats   = [];
-        foreach (var m in _migrations)
-            _allStats.Add(await StudyRepo.GetStatsAsync(m.Id));
+        // Solo recuentos: una consulta indexada para todas las migraciones (se repite cada
+        // 3 s mientras hay algo activo, así que no debe recorrer la tabla de estudios).
+        var counts  = await StudyRepo.GetCountsByMigrationAsync();
+        _allStats   = _migrations
+            .Select(m => counts.GetValueOrDefault(m.Id) ?? new MigrationStats { MigrationId = m.Id })
+            .ToList();
         _loading = false;
         await InvokeAsync(StateHasChanged);
     }
