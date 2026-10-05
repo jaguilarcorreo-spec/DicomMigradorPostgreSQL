@@ -399,7 +399,17 @@ try
                 var all = await migRepo.GetAllAsync();
                 foreach (var m in all)
                 {
-                    if (m.Status == "Running")
+                    if (m.Status == "Running" && m.PopulateStatus == "Running")
+                    {
+                        // Estado heredado de antes de CONC-5 (migración arrancada durante el
+                        // poblado). StartAsync ya no lo permite y lanzaría, cortando este bucle
+                        // para las demás migraciones: se pausa y se reanuda a mano al terminar.
+                        await studyRepo.ReleaseOrphanLocksAsync(m.Id);
+                        await migRepo.UpdateStatusAsync(m.Id, "Paused");
+                        logger.LogWarning("Migración {Id} ('{Name}') estaba en marcha con el poblado sin terminar: " +
+                            "se deja en pausa; reanúdala cuando termine el poblado.", m.Id, m.Name);
+                    }
+                    else if (m.Status == "Running")
                     {
                         // Liberar locks huérfanos (estudios 'Queued'/'Migrating' o con lock
                         // de verificación) que quedaron de la ejecución anterior, para que

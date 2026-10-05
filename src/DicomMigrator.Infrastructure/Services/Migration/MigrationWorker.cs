@@ -126,6 +126,17 @@ public class MigrationWorker(
             migration = await MigrationRepo(scope).GetByIdAsync(migrationId)
                 ?? throw new InvalidOperationException($"Migración {migrationId} no encontrada");
 
+            // No arrancar mientras se puebla la lista de estudios desde el inventario
+            // (CONC-5): con la lista aún vacía o a medias, los workers no encuentran nada,
+            // salen, la migración se declara terminada (y se envía el correo de
+            // "completada"); los estudios que el poblado inserta después quedan Pending
+            // sin que nadie los procese. La guardia está aquí, no solo en la interfaz,
+            // para cubrir todos los caminos de arranque (botones, reanudaciones, ventana).
+            if (migration.PopulateStatus == "Running")
+                throw new InvalidOperationException(
+                    $"La migración '{migration.Name}' aún está cargando su lista de estudios desde el inventario. " +
+                    "Espera a que termine el poblado para iniciarla.");
+
             // ── Rescate de estudios huérfanos ─────────────────────────────────────
             // Ya tenemos el slot reservado, así que no hay workers NUEVOS de esta
             // migración. Si quedan los de una ejecución anterior (pausa → reanudar

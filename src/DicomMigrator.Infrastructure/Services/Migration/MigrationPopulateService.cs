@@ -28,13 +28,22 @@ public class MigrationPopulateService(
     public bool IsRunning(int migrationId) =>
         _cts.TryGetValue(migrationId, out var cts) && !cts.IsCancellationRequested;
 
-    public Task StartAsync(int migrationId, int sourceJobId, CancellationToken ct = default)
+    public async Task StartAsync(int migrationId, int sourceJobId, CancellationToken ct = default)
     {
         if (IsRunning(migrationId))
         {
             logger.LogWarning("El poblado de la migración {Id} ya está en marcha", migrationId);
-            return Task.CompletedTask;
+            return;
         }
+
+        // Marcar el poblado como en curso ANTES de volver al llamador. Antes solo se
+        // marcaba dentro del Task de fondo: la pantalla saltaba al listado de migraciones,
+        // lo leía todavía sin marcar y mostraba "Iniciar" activo durante el poblado
+        // (CONC-5). Si esto falla, la excepción llega a la pantalla y no se lanza nada.
+        using (var scope = scopeFactory.CreateScope())
+            await scope.ServiceProvider.GetRequiredService<IMigrationRepository>()
+                .SetPopulateRunningAsync(migrationId, total: 0, sourceJobId: sourceJobId);
+
         // Limpiar un CTS previo ya cancelado, si lo hubiera.
         if (_cts.TryRemove(migrationId, out var stale)) stale.Dispose();
 
@@ -44,7 +53,6 @@ public class MigrationPopulateService(
 
         // Fire-and-forget: el trabajo corre en el pool; el estado se persiste en BD.
         _ = Task.Run(() => RunAsync(migrationId, sourceJobId, linked, token), token);
-        return Task.CompletedTask;
     }
 
     private async Task RunAsync(int migrationId, int sourceJobId,

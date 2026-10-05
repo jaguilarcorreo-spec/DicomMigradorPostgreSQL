@@ -237,6 +237,12 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 .btn-ghost:hover { color: var(--text); border-color: var(--text-dim); }
 .btn-danger { background: rgba(239,68,68,0.12); color: var(--red); border: 1px solid rgba(239,68,68,0.2); }
 .btn-sm { padding: 4px 10px; font-size: 11px; }
+/* Botones desactivados: antes no tenían estilo y se veían igual que los activos
+   (p. ej. "Iniciar" durante el poblado). Atenuados, sin efecto hover y con el cursor
+   de "no permitido"; el title sigue mostrando el motivo al pasar el ratón. */
+.btn:disabled, .btn[disabled] { opacity: 0.4; cursor: not-allowed; filter: grayscale(0.4); }
+.btn-primary:disabled:hover { background: var(--accent2); }
+.btn-ghost:disabled:hover { color: var(--text-dim); border-color: var(--border2); }
 
 /* ── FORMS ── */
 .form-group  { margin-bottom: 14px; }
@@ -353,6 +359,7 @@ select.form-input { cursor: pointer; }
 /* ── LOG LEVEL BUTTON ── */
 .btn-yellow { background: rgba(245,158,11,0.12); color: var(--yellow); border: 1px solid rgba(245,158,11,0.2); }
 .btn-yellow:hover { background: rgba(245,158,11,0.22); }
+.btn-yellow:disabled:hover { background: rgba(245,158,11,0.12); }
 
 /* ── INCLUDE FIELD TAG GRID ── */
 .tag-grid { display:grid; grid-template-columns:1fr 1fr; gap:4px; margin-top:4px; }

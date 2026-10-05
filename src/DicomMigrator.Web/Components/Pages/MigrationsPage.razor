@@ -934,6 +934,13 @@ else
         </div>
     </div>
 
+    @* Errores de los atajos de las fichas (Iniciar/Pausar/Reanudar); antes solo se
+       mostraban en el detalle y en el listado se perdían. *@
+    @if (!string.IsNullOrEmpty(_actionMsg) && !_actionOk)
+    {
+        <div class="alert-error mb2">@_actionMsg</div>
+    }
+
     @if (_migrations.Count == 0)
     {
         <div class="empty-state">
@@ -964,6 +971,12 @@ else
                                 <span class="tag">@m.TransferMethod</span>
                                 <span class="tag">@m.WorkerThreads hilos</span>
                             </div>
+                            @if (m.PopulateStatus == "Running")
+                            {
+                                <div style="margin-top:3px;font-size:12px;color:var(--accent);font-weight:600">
+                                    Poblando desde el inventario… @m.PopulateDone.ToString("N0") / @m.PopulateTotal.ToString("N0") estudios
+                                </div>
+                            }
                             <div class="pacs-card-vendor" style="margin-top:3px">
                                 @m.OriginNode?.Alias → @m.DestNode?.Alias · @m.Description
                                 @if (!string.IsNullOrWhiteSpace(m.InventoryDateFrom) || !string.IsNullOrWhiteSpace(m.InventoryDateTo))
@@ -988,7 +1001,10 @@ else
                             }
                             @if (m.Status is "Draft" or "Ready")
                             {
-                                <button class="btn btn-primary btn-sm" @onclick="@(async () => { await StartAsync(m); })">▶ Iniciar</button>
+                                @* Mismo criterio que el botón del detalle: no iniciar mientras se puebla (CONC-5). *@
+                                <button class="btn btn-primary btn-sm" @onclick="@(async () => { await StartAsync(m); })"
+                                        disabled="@(_actionBusy || m.PopulateStatus == "Running")"
+                                        title="@(m.PopulateStatus == "Running" ? "Espera a que termine el poblado desde el inventario" : null)">▶ Iniciar</button>
                             }
                             </AuthorizeView>
                         </div>
@@ -1219,6 +1235,47 @@ else
         _statsList  = _migrations
             .Select(m => counts.GetValueOrDefault(m.Id) ?? new MigrationStats { MigrationId = m.Id })
             .ToList();
+
+        // Mientras alguna migración se esté poblando, refrescar el listado solo: así su
+        // ficha muestra el avance y el botón "Iniciar" se activa al terminar (CONC-5).
+        if (_detail is null && _migrations.Any(m => m.PopulateStatus == "Running"))
+            StartListRefresh();
+        else
+            StopListRefresh();
+    }
+
+    // ── Auto-refresco del LISTADO (solo mientras haya poblados en curso) ─────────
+    private System.Threading.Timer? _listTimer;
+    private int _listRefreshing;
+
+    void StartListRefresh()
+    {
+        if (_listTimer is not null) return;
+        _listTimer = new System.Threading.Timer(_ => _ = OnListTickAsync(), null,
+            TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(3));
+    }
+
+    void StopListRefresh()
+    {
+        _listTimer?.Dispose();
+        _listTimer = null;
+    }
+
+    private async Task OnListTickAsync()
+    {
+        if (Interlocked.Exchange(ref _listRefreshing, 1) == 1) return;   // tick anterior en curso
+        try
+        {
+            await InvokeAsync(async () =>
+            {
+                if (_detail is not null) { StopListRefresh(); return; }   // se abrió un detalle
+                await OnInitializedAsync();
+                StateHasChanged();
+            });
+        }
+        catch (ObjectDisposedException) { }
+        catch (Exception ex) { Logger.LogDebug(ex, "Auto-refresco del listado de migraciones falló (se ignora)."); }
+        finally { Interlocked.Exchange(ref _listRefreshing, 0); }
     }
 
     async Task OpenDetail(Migration m)
@@ -1366,7 +1423,7 @@ else
         _refreshTimer = null;
     }
 
-    public void Dispose() => StopAutoRefresh();
+    public void Dispose() { StopAutoRefresh(); StopListRefresh(); }
 
     // ── Study operations ─────────────────────────────────────────────────────
     async Task SearchStudiesAsync()
@@ -1796,9 +1853,11 @@ else
     }
 
     // Shortcut actions from list view
-    async Task StartAsync(Migration m)  { _actionBusy = true; try { await Worker.StartAsync(m.Id); m.Status = "Running"; } finally { _actionBusy = false; StateHasChanged(); } }
-    async Task PauseAsync(Migration m)  { _actionBusy = true; try { await Worker.PauseAsync(m.Id); m.Status = "Paused"; } finally { _actionBusy = false; StateHasChanged(); } }
-    async Task ResumeAsync(Migration m) { _actionBusy = true; try { await Worker.ResumeAsync(m.Id); m.Status = "Running"; } finally { _actionBusy = false; StateHasChanged(); } }
+    // Con catch: una excepción sin capturar en un manejador de evento tumba el circuito de
+    // Blazor (p. ej. StartAsync rechaza arrancar durante el poblado, CONC-5).
+    async Task StartAsync(Migration m)  { _actionBusy = true; try { await Worker.StartAsync(m.Id); m.Status = "Running"; } catch (Exception ex) { ShowMsg($"Error: {ex.Message}", false); } finally { _actionBusy = false; StateHasChanged(); } }
+    async Task PauseAsync(Migration m)  { _actionBusy = true; try { await Worker.PauseAsync(m.Id); m.Status = "Paused"; } catch (Exception ex) { ShowMsg($"Error: {ex.Message}", false); } finally { _actionBusy = false; StateHasChanged(); } }
+    async Task ResumeAsync(Migration m) { _actionBusy = true; try { await Worker.ResumeAsync(m.Id); m.Status = "Running"; } catch (Exception ex) { ShowMsg($"Error: {ex.Message}", false); } finally { _actionBusy = false; StateHasChanged(); } }
 
     // ── Audit logs ────────────────────────────────────────────────────────────
     async Task LoadAuditAsync()
