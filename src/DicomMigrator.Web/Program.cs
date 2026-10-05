@@ -182,7 +182,13 @@ try
     // ya no provoca ObjectDisposedException sobre el IServiceProvider del scope.
     // Cada repositorio sigue creando y disponiendo su propio contexto por operación.
     builder.Services.AddDbContextFactory<AppDbContext>(opt => opt
-        .UseNpgsql(connStr, o => o.SetPostgresVersion(18, 0))
+        // EnableRetryOnFailure: reintenta las operaciones que fallan por un error transitorio
+        // de PostgreSQL (reinicio, conexión cortada) en vez de propagarlo al primer intento.
+        // Es compatible porque el código no abre transacciones explícitas; las exportaciones
+        // leen por páginas, así que el buffering que impone la estrategia no carga tablas enteras.
+        .UseNpgsql(connStr, o => o
+            .SetPostgresVersion(18, 0)
+            .EnableRetryOnFailure(maxRetryCount: 3, maxRetryDelay: TimeSpan.FromSeconds(5), errorCodesToAdd: null))
         .ConfigureWarnings(w => w.Ignore(
             Microsoft.EntityFrameworkCore.Diagnostics.CoreEventId.FirstWithoutOrderByAndFilterWarning)));
 

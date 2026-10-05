@@ -49,4 +49,21 @@ internal static class ConnBackoff
         var seconds = Math.Min(300d, 10d * Math.Pow(2, n - 1));
         return TimeSpan.FromSeconds(seconds);
     }
+
+    /// <summary>True si la excepción (o alguna interna) viene de la base de datos propia:
+    /// conexión con PostgreSQL perdida, reintentos de Npgsql agotados, fallo al guardar.
+    /// Estas NO son errores del PACS ni del estudio: los bloques que clasifican fallos de
+    /// DICOM deben dejarlas pasar al bucle del worker, que espera con backoff y reintenta
+    /// sin contar hacia la auto-pausa ni gastar reintentos del estudio.</summary>
+    public static bool IsDatabaseError(Exception ex)
+    {
+        for (var e = ex; e is not null; e = e.InnerException)
+        {
+            if (e is System.Data.Common.DbException
+                || e is Microsoft.EntityFrameworkCore.Storage.RetryLimitExceededException
+                || e is Microsoft.EntityFrameworkCore.DbUpdateException)
+                return true;
+        }
+        return false;
+    }
 }

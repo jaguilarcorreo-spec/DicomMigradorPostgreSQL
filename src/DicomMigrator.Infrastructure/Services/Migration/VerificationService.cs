@@ -132,7 +132,7 @@ public class VerificationService(
             // espuria con su notificación por correo).
             throw;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (!ConnBackoff.IsDatabaseError(ex))   // los de BD suben al bucle del worker
         {
             logger.LogError(ex, "Verification error for study {Uid}", study.StudyInstanceUid);
             result.ErrorMessage = ex.Message;
@@ -198,7 +198,7 @@ public class VerificationService(
                 // Cancelación real: propagarla (ver comentario en el catch de arriba).
                 throw;
             }
-            catch (Exception ex)
+            catch (Exception ex) when (!ConnBackoff.IsDatabaseError(ex))   // los de BD suben al bucle del worker
             {
                 logger.LogError(ex, "Nivel 2 · error enumerando/comparando destino para {Uid}", study.StudyInstanceUid);
                 result.ErrorMessage = ex.Message;
@@ -311,6 +311,21 @@ public class VerificationService(
                 // cuando el servicio inyectado podría estar dispuesto.
                 using var scope = scopeFactory.CreateScope();
                 var migR = scope.ServiceProvider.GetRequiredService<IMigrationRepository>();
+
+                // Solo es "Completed" si de verdad no queda nada por verificar. Si los
+                // workers salieron con trabajo pendiente (salida anómala, o estudios que
+                // migraron después de que la cola se vaciara), se pausa en vez de dar la
+                // verificación por terminada y enviar el correo de fin.
+                var studyRepo = scope.ServiceProvider.GetRequiredService<IStudyRepository>();
+                if (await studyRepo.HasVerificationWorkPendingAsync(migrationId))
+                {
+                    await migR.UpdateVerificationStatusAsync(migrationId, "Paused");
+                    logger.LogWarning("Verificación de la migración {Id}: los workers terminaron con estudios " +
+                        "pendientes de verificar. Se pausa en vez de darla por completada; reanúdala para continuar.",
+                        migrationId);
+                    return;
+                }
+
                 await migR.UpdateVerificationStatusAsync(migrationId, "Completed");
                 await migR.SetVerificationAutoPausedAsync(migrationId, false);
                 logger.LogInformation("Verificación completada · migración {Id}", migrationId);
@@ -403,6 +418,7 @@ public class VerificationService(
         var ct = cts.Token;
         int emptyPolls = 0;
         int connErrors = 0;   // errores de conexión consecutivos (PACS destino inaccesible)
+        int unexpectedErrors = 0;   // errores inesperados seguidos (BD caída, etc.)
         // Caché de ventana por worker (relectura cada 30 s)
         DateTime lastWindowCheck = DateTime.MinValue;
         bool windowOpen = true;
@@ -415,164 +431,204 @@ public class VerificationService(
             var verSvc = scope.ServiceProvider.GetRequiredService<IVerificationService>();
             var auditR = scope.ServiceProvider.GetRequiredService<IAuditLogRepository>();
 
-            var migration = await migR.GetByIdAsync(migrationId);
-            if (migration?.DestNode is null)
+            // Carga inicial con reintentos: un fallo puntual de la BD no debe matar al
+            // worker antes de empezar (el cierre lo tomaría por "cola vacía").
+            MigrationEntity? migration = null;
+            for (var attempt = 1; migration is null; attempt++)
             {
-                logger.LogError("Verificación: migración {Id} sin nodo destino", migrationId);
-                return;
+                try
+                {
+                    migration = await migR.GetByIdAsync(migrationId);
+                    if (migration?.DestNode is null)
+                    {
+                        logger.LogError("Verificación: migración {Id} sin nodo destino", migrationId);
+                        return;
+                    }
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    var wait = ConnBackoff.ForAttempt(attempt);
+                    logger.LogError(ex, "Verificación worker {W}: no se pudo cargar la migración {Id}. Reintento en {S} s.",
+                        workerId, migrationId, wait.TotalSeconds);
+                    await Task.Delay(wait, ct);
+                }
             }
+            var destNode   = migration.DestNode!;   // comprobado al cargar (no nulo)
             var maxRetries = migration.MaxRetries;
             var retryDelay = migration.RetryDelaySeconds;
 
             while (!ct.IsCancellationRequested)
             {
-                // Respetar ventana de ejecución (con caché de 30 s)
-                if ((DateTime.UtcNow - lastWindowCheck).TotalSeconds >= 30)
-                {
-                    var fresh = await migR.GetByIdAsync(migrationId);
-                    windowOpen = windowScheduler.IsWindowOpen(fresh?.Windows);
-                    lastWindowCheck = DateTime.UtcNow;
-                }
-                if (!windowOpen)
-                {
-                    await Task.Delay(30_000, ct);
-                    continue;
-                }
-
-                var study = await studyR.AcquireNextForVerificationAsync(migrationId, workerId, retryDelay);
-
-                if (study is null)
-                {
-                    // ¿Queda trabajo? Migrated, VerificationPending (en vuelo) o VerifyRetryPending.
-                    var workLeft = await studyR.HasVerificationWorkPendingAsync(migrationId);
-                    if (!workLeft)
-                    {
-                        logger.LogInformation("Verificación worker {W}: cola vacía, saliendo", workerId);
-                        break;
-                    }
-                    emptyPolls++;
-                    await Task.Delay(emptyPolls > 3 ? 30_000 : 5_000, ct);
-                    continue;
-                }
-                emptyPolls = 0;
-
+                // try/catch por vuelta (igual que en MigrationWorker): un error inesperado de
+                // BD no saca al worker. El estudio que tuviera tomado sigue en
+                // 'VerificationPending' con su fecha de bloqueo y lo rescata la caducidad
+                // (AcquireNextForVerificationAsync, 10 min); no se libera aquí porque el error
+                // pudo llegar después de registrar el resultado.
                 try
                 {
-                    var result = await verSvc.VerifyStudyAsync(migration.DestNode, study, ct);
-
-                    // Error de conexión/operación (PACS caído, timeout): NO es fallo del
-                    // estudio. Devolverlo a 'Migrated' sin gastar reintento y esperar,
-                    // por si el destino está temporalmente inaccesible.
-                    if (result.ConnectionError)
+                    // Respetar ventana de ejecución (con caché de 30 s)
+                    if ((DateTime.UtcNow - lastWindowCheck).TotalSeconds >= 30)
                     {
-                        await studyR.ReleaseVerificationLockAsync(study.Id);
-
-                        if (result.ConfigurationError)
-                        {
-                            // Problema de CONFIGURACIÓN permanente (credenciales/AE Title
-                            // rechazados por el destino) — a diferencia de una caída de red,
-                            // reintentar nunca lo arregla solo. Pausar de inmediato (sin
-                            // esperar a acumular AutoPauseThreshold fallos) y decirlo con
-                            // honestidad en el log/notificación, en vez de "error de conexión".
-                            logger.LogError("Verificación: error de CONFIGURACIÓN (no de conexión) con el " +
-                                "destino para {Uid} ({Err}). Pausando verificación de la migración {Id} de " +
-                                "inmediato — revisa las credenciales/AE Title del nodo destino.",
-                                study.StudyInstanceUid, result.ErrorMessage, migrationId);
-
-                            if (ConnBackoff.TryAnnouncePause("VERIFY", migrationId))
-                            {
-                                await migR.UpdateVerificationStatusAsync(migrationId, "Paused");
-                                await migR.SetVerificationAutoPausedAsync(migrationId, true);
-                                try
-                                {
-                                    await scope.ServiceProvider.GetRequiredService<INotificationService>()
-                                        .RaiseAsync(NotificationEvents.AutoPaused, migration.Name, new (string, string)[]
-                                        {
-                                            ("Origen → Destino", $"{migration.OriginNode?.Alias ?? "?"} → {migration.DestNode?.Alias ?? "?"}"),
-                                            ("Proceso", "Verificación"),
-                                            ("Motivo",  "Error de configuración (credenciales/AE Title rechazados por el destino)"),
-                                            ("Nodo",    migration.DestNode?.Alias ?? "destino"),
-                                        }, migrationId, "migration");
-                                }
-                                catch (Exception nex) { logger.LogWarning(nex, "Notificación de auto-pausa (verificación {Id}) falló.", migrationId); }
-                            }
-                            cts.Cancel();
-                            break;
-                        }
-
-                        connErrors++;
-                        logger.LogWarning("Verificación: no se pudo consultar el destino para {Uid} ({Err}). " +
-                            "Estudio devuelto a Migrado. Errores de conexión consecutivos: {N}",
-                            study.StudyInstanceUid, result.ErrorMessage, connErrors);
-
-                        // Si se acumulan unos pocos errores seguidos, el destino está caído:
-                        // pausar pronto. La auto-reanudación lo retomará al volver la conexión.
-                        if (connErrors >= ConnBackoff.AutoPauseThreshold)
-                        {
-                            if (ConnBackoff.TryAnnouncePause("VERIFY", migrationId))
-                            {
-                                logger.LogError("Verificación: {N} errores de conexión consecutivos. " +
-                                    "Pausando verificación de la migración {Id} (se reanudará sola).", connErrors, migrationId);
-                                await migR.UpdateVerificationStatusAsync(migrationId, "Paused");
-                                await migR.SetVerificationAutoPausedAsync(migrationId, true);
-                                try
-                                {
-                                    await scope.ServiceProvider.GetRequiredService<INotificationService>()
-                                        .RaiseAsync(NotificationEvents.AutoPaused, migration.Name, new (string, string)[]
-                                        {
-                                            ("Origen → Destino", $"{migration.OriginNode?.Alias ?? "?"} → {migration.DestNode?.Alias ?? "?"}"),
-                                            ("Proceso", "Verificación"),
-                                            ("Motivo",  $"{connErrors} errores de conexión con el destino"),
-                                            ("Nodo",    migration.DestNode?.Alias ?? "destino"),
-                                        }, migrationId, "migration");
-                                }
-                                catch (Exception nex) { logger.LogWarning(nex, "Notificación de auto-pausa (verificación {Id}) falló.", migrationId); }
-                            }
-                            // Cancelar el token compartido: detiene a los demás workers de
-                            // inmediato y hace que el handler de finalización NO marque
-                            // "Completed" (verá wasCancelled=true).
-                            cts.Cancel();
-                            break;
-                        }
-                        await Task.Delay(ConnBackoff.PrePauseWait, ct);
+                        var fresh = await migR.GetByIdAsync(migrationId);
+                        windowOpen = windowScheduler.IsWindowOpen(fresh?.Windows);
+                        lastWindowCheck = DateTime.UtcNow;
+                    }
+                    if (!windowOpen)
+                    {
+                        await Task.Delay(30_000, ct);
                         continue;
                     }
-                    connErrors = 0;  // reset al verificar con éxito de operación
 
-                    // Nivel 2 (si se comparó por conjuntos): aprobado ⇔ estudio presente y
-                    // sin UIDs faltantes (los sobrantes solo avisan). Si no, Nivel 1 por conteos.
-                    var success = result.Level2Checked
-                        ? (result.StudyFoundInDest && result.MissingCount == 0)
-                        : (result.StudyFoundInDest && result.SeriesCountMatch && result.InstanceCountMatch);
+                    var study = await studyR.AcquireNextForVerificationAsync(migrationId, workerId, retryDelay);
+                    unexpectedErrors = 0;   // la BD ha respondido
 
-                    await studyR.CompleteVerificationAsync(study.Id, success, maxRetries,
-                        result.DestSeriesCount, result.DestInstanceCount,
-                        success ? null : (result.ErrorMessage ?? (result.Level2Checked
-                            ? $"Faltan {result.MissingCount} UIDs en destino"
-                            : "Conteos no coinciden")),
-                        result.MissingCount, result.ExtraCount,
-                        result.MissingUids.Count > 0 ? string.Join("\n", result.MissingUids) : null,
-                        result.VerifiedBy);
-
-                    await auditR.AddAsync(new MigrationAuditLog
+                    if (study is null)
                     {
-                        MigrationId      = migrationId,
-                        Action           = "VERIFY",
-                        StudyInstanceUid = study.StudyInstanceUid,
-                        Level            = success ? "INFO" : "WARN",
-                        Result           = success ? "OK" : "ERROR",
-                        UserOrProcess    = $"VERIFY-{workerId}",
-                        TechnicalMessage = success
-                            ? $"Verificado OK. Series={result.DestSeriesCount} Instances={result.DestInstanceCount} ({result.DurationMs}ms)"
-                            : result.ErrorMessage,
-                    });
+                        // ¿Queda trabajo? Migrated, VerificationPending (en vuelo) o VerifyRetryPending.
+                        var workLeft = await studyR.HasVerificationWorkPendingAsync(migrationId);
+                        if (!workLeft)
+                        {
+                            logger.LogInformation("Verificación worker {W}: cola vacía, saliendo", workerId);
+                            break;
+                        }
+                        emptyPolls++;
+                        await Task.Delay(emptyPolls > 3 ? 30_000 : 5_000, ct);
+                        continue;
+                    }
+                    emptyPolls = 0;
+
+                    try
+                    {
+                        var result = await verSvc.VerifyStudyAsync(destNode, study, ct);
+
+                        // Error de conexión/operación (PACS caído, timeout): NO es fallo del
+                        // estudio. Devolverlo a 'Migrated' sin gastar reintento y esperar,
+                        // por si el destino está temporalmente inaccesible.
+                        if (result.ConnectionError)
+                        {
+                            await studyR.ReleaseVerificationLockAsync(study.Id);
+
+                            if (result.ConfigurationError)
+                            {
+                                // Problema de CONFIGURACIÓN permanente (credenciales/AE Title
+                                // rechazados por el destino) — a diferencia de una caída de red,
+                                // reintentar nunca lo arregla solo. Pausar de inmediato (sin
+                                // esperar a acumular AutoPauseThreshold fallos) y decirlo con
+                                // honestidad en el log/notificación, en vez de "error de conexión".
+                                logger.LogError("Verificación: error de CONFIGURACIÓN (no de conexión) con el " +
+                                    "destino para {Uid} ({Err}). Pausando verificación de la migración {Id} de " +
+                                    "inmediato — revisa las credenciales/AE Title del nodo destino.",
+                                    study.StudyInstanceUid, result.ErrorMessage, migrationId);
+
+                                if (ConnBackoff.TryAnnouncePause("VERIFY", migrationId))
+                                {
+                                    await migR.UpdateVerificationStatusAsync(migrationId, "Paused");
+                                    await migR.SetVerificationAutoPausedAsync(migrationId, true);
+                                    try
+                                    {
+                                        await scope.ServiceProvider.GetRequiredService<INotificationService>()
+                                            .RaiseAsync(NotificationEvents.AutoPaused, migration.Name, new (string, string)[]
+                                            {
+                                                ("Origen → Destino", $"{migration.OriginNode?.Alias ?? "?"} → {migration.DestNode?.Alias ?? "?"}"),
+                                                ("Proceso", "Verificación"),
+                                                ("Motivo",  "Error de configuración (credenciales/AE Title rechazados por el destino)"),
+                                                ("Nodo",    migration.DestNode?.Alias ?? "destino"),
+                                            }, migrationId, "migration");
+                                    }
+                                    catch (Exception nex) { logger.LogWarning(nex, "Notificación de auto-pausa (verificación {Id}) falló.", migrationId); }
+                                }
+                                cts.Cancel();
+                                break;
+                            }
+
+                            connErrors++;
+                            logger.LogWarning("Verificación: no se pudo consultar el destino para {Uid} ({Err}). " +
+                                "Estudio devuelto a Migrado. Errores de conexión consecutivos: {N}",
+                                study.StudyInstanceUid, result.ErrorMessage, connErrors);
+
+                            // Si se acumulan unos pocos errores seguidos, el destino está caído:
+                            // pausar pronto. La auto-reanudación lo retomará al volver la conexión.
+                            if (connErrors >= ConnBackoff.AutoPauseThreshold)
+                            {
+                                if (ConnBackoff.TryAnnouncePause("VERIFY", migrationId))
+                                {
+                                    logger.LogError("Verificación: {N} errores de conexión consecutivos. " +
+                                        "Pausando verificación de la migración {Id} (se reanudará sola).", connErrors, migrationId);
+                                    await migR.UpdateVerificationStatusAsync(migrationId, "Paused");
+                                    await migR.SetVerificationAutoPausedAsync(migrationId, true);
+                                    try
+                                    {
+                                        await scope.ServiceProvider.GetRequiredService<INotificationService>()
+                                            .RaiseAsync(NotificationEvents.AutoPaused, migration.Name, new (string, string)[]
+                                            {
+                                                ("Origen → Destino", $"{migration.OriginNode?.Alias ?? "?"} → {migration.DestNode?.Alias ?? "?"}"),
+                                                ("Proceso", "Verificación"),
+                                                ("Motivo",  $"{connErrors} errores de conexión con el destino"),
+                                                ("Nodo",    migration.DestNode?.Alias ?? "destino"),
+                                            }, migrationId, "migration");
+                                    }
+                                    catch (Exception nex) { logger.LogWarning(nex, "Notificación de auto-pausa (verificación {Id}) falló.", migrationId); }
+                                }
+                                // Cancelar el token compartido: detiene a los demás workers de
+                                // inmediato y hace que el handler de finalización NO marque
+                                // "Completed" (verá wasCancelled=true).
+                                cts.Cancel();
+                                break;
+                            }
+                            await Task.Delay(ConnBackoff.PrePauseWait, ct);
+                            continue;
+                        }
+                        connErrors = 0;  // reset al verificar con éxito de operación
+
+                        // Nivel 2 (si se comparó por conjuntos): aprobado ⇔ estudio presente y
+                        // sin UIDs faltantes (los sobrantes solo avisan). Si no, Nivel 1 por conteos.
+                        var success = result.Level2Checked
+                            ? (result.StudyFoundInDest && result.MissingCount == 0)
+                            : (result.StudyFoundInDest && result.SeriesCountMatch && result.InstanceCountMatch);
+
+                        await studyR.CompleteVerificationAsync(study.Id, success, maxRetries,
+                            result.DestSeriesCount, result.DestInstanceCount,
+                            success ? null : (result.ErrorMessage ?? (result.Level2Checked
+                                ? $"Faltan {result.MissingCount} UIDs en destino"
+                                : "Conteos no coinciden")),
+                            result.MissingCount, result.ExtraCount,
+                            result.MissingUids.Count > 0 ? string.Join("\n", result.MissingUids) : null,
+                            result.VerifiedBy);
+
+                        await auditR.AddAsync(new MigrationAuditLog
+                        {
+                            MigrationId      = migrationId,
+                            Action           = "VERIFY",
+                            StudyInstanceUid = study.StudyInstanceUid,
+                            Level            = success ? "INFO" : "WARN",
+                            Result           = success ? "OK" : "ERROR",
+                            UserOrProcess    = $"VERIFY-{workerId}",
+                            TechnicalMessage = success
+                                ? $"Verificado OK. Series={result.DestSeriesCount} Instances={result.DestInstanceCount} ({result.DurationMs}ms)"
+                                : result.ErrorMessage,
+                        });
+                    }
+                    catch (OperationCanceledException) { break; }
+                    // Un error de BD (p. ej. al guardar el resultado) no es fallo del estudio:
+                    // no se gasta un reintento de verificación; sube al catch del bucle.
+                    catch (Exception ex) when (!ConnBackoff.IsDatabaseError(ex))
+                    {
+                        logger.LogError(ex, "Error verificando {Uid}", study.StudyInstanceUid);
+                        // Marcar como fallido/reintento para que salga de la cola
+                        await studyR.CompleteVerificationAsync(study.Id, false, maxRetries, null, null, ex.Message);
+                    }
                 }
-                catch (OperationCanceledException) { break; }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    break;
+                }
                 catch (Exception ex)
                 {
-                    logger.LogError(ex, "Error verificando {Uid}", study.StudyInstanceUid);
-                    // Marcar como fallido/reintento para que salga de la cola
-                    await studyR.CompleteVerificationAsync(study.Id, false, maxRetries, null, null, ex.Message);
+                    unexpectedErrors++;
+                    var wait = ConnBackoff.ForAttempt(unexpectedErrors);
+                    logger.LogError(ex, "Verificación worker {W} (migración {Id}): error inesperado ({N} seguido/s). " +
+                        "Se reintenta en {S} s.", workerId, migrationId, unexpectedErrors, wait.TotalSeconds);
+                    await Task.Delay(wait, ct);
                 }
             }
         }

@@ -184,47 +184,119 @@ public class MigrationWorker(
 
             if (wasCancelled) return;  // Pause/Cancel already set the right status
 
-            using var scope = scopeFactory.CreateScope();
-            var stats = await StudyRepo(scope).GetStatsAsync(migrationId);
-            // Determine final status of the MIGRATION phase:
-            // - Failed studies (and nothing recoverable left) → Failed
-            // - Everything migrated → Migrated (NOT Completed yet)
-            // The migration worker's job is done once nothing is left to MIGRATE;
-            // verification is a separate phase. "Completed" is reserved for when
-            // verification has also finished (promoted in CompleteVerification handler).
-            var finalStatus = stats.Failed > 0 ? "Failed" : "Migrated";
-            await MigrationRepo(scope).UpdateStatusAsync(migrationId, finalStatus);
+            // Cierre con reintentos: si la BD falla justo ahora, no dejar la migración
+            // "Running" sin workers a la primera. Cada intento comprueba que no se haya
+            // lanzado entretanto una ejecución nueva (reanudación), para no pisarla.
+            for (var attempt = 1; ; attempt++)
+            {
+                if (_cts.ContainsKey(migrationId)) return;   // ya hay otra ejecución en marcha
+                try
+                {
+                    await FinishMigrationAsync(migrationId);
+                    return;
+                }
+                catch (Exception ex) when (attempt < FinishAttempts)
+                {
+                    logger.LogWarning(ex, "Migración {Id}: fallo al cerrar la ejecución (intento {N}/{Max}); se reintenta.",
+                        migrationId, attempt, FinishAttempts);
+                    await Task.Delay(ConnBackoff.ForAttempt(attempt));
+                }
+                catch (Exception ex)
+                {
+                    logger.LogError(ex, "Migración {Id}: no se pudo cerrar la ejecución tras {Max} intentos. " +
+                        "Sigue figurando como 'Running' y se reanudará al reiniciar el servicio.", migrationId, FinishAttempts);
+                    return;
+                }
+            }
+        }, TaskScheduler.Default).Unwrap();
+    }
+
+    // Intentos del cierre de una ejecución ante errores de BD (esperas de ConnBackoff).
+    private const int FinishAttempts = 5;
+
+    /// <summary>Cierre de una ejecución cuyos workers salieron sin cancelación. Solo da la
+    /// migración por terminada si de verdad no queda trabajo; si quedan estudios por
+    /// migrar (salida anómala de los workers), la pausa y lo deja en la auditoría en vez
+    /// de declarar "Migrated" y enviar el correo de fin.</summary>
+    private async Task FinishMigrationAsync(int migrationId)
+    {
+        using var scope = scopeFactory.CreateScope();
+        var stats = await StudyRepo(scope).GetStatsAsync(migrationId);
+
+        var left = stats.Pending + stats.Queued + stats.Migrating + stats.RetryPending;
+        if (left > 0)
+        {
+            logger.LogError("Migración {Id}: los workers terminaron con {Left} estudio(s) por migrar " +
+                "(Pendientes={P} En cola={Q} Migrando={M} Reintento={R}). Se pausa en vez de darla por finalizada.",
+                migrationId, left, stats.Pending, stats.Queued, stats.Migrating, stats.RetryPending);
+            await MigrationRepo(scope).UpdateStatusAsync(migrationId, "Paused");
             await AuditRepo(scope).AddAsync(new MigrationAuditLog
             {
-                MigrationId = migrationId, Action = "COMPLETE", Result = "OK",
+                MigrationId = migrationId, Action = "COMPLETE", Level = "WARN", Result = "ERROR",
                 UserOrProcess = "WORKER",
-                TechnicalMessage = $"Migración finalizada. Estado: {finalStatus}. " +
-                    $"Migrados={stats.Migrated} Verificados={stats.Verified} Fallidos={stats.Failed}"
+                TechnicalMessage = $"Los workers terminaron con {left} estudio(s) por migrar " +
+                    $"(Pendientes={stats.Pending} En cola={stats.Queued} Migrando={stats.Migrating} " +
+                    $"Reintento={stats.RetryPending}). Migración pausada: reanúdala para continuar."
             });
-            logger.LogInformation("Migration {Id} finished with status {Status}", migrationId, finalStatus);
+            return;
+        }
 
-            // ── Notificación por correo (v227) ──
-            try
+        // Determine final status of the MIGRATION phase:
+        // - Failed studies (and nothing recoverable left) → Failed
+        // - Everything migrated → Migrated (NOT Completed yet)
+        // The migration worker's job is done once nothing is left to MIGRATE;
+        // verification is a separate phase. "Completed" is reserved for when
+        // verification has also finished (promoted in CompleteVerification handler).
+        var finalStatus = stats.Failed > 0 ? "Failed" : "Migrated";
+        await MigrationRepo(scope).UpdateStatusAsync(migrationId, finalStatus);
+        await AuditRepo(scope).AddAsync(new MigrationAuditLog
+        {
+            MigrationId = migrationId, Action = "COMPLETE", Result = "OK",
+            UserOrProcess = "WORKER",
+            TechnicalMessage = $"Migración finalizada. Estado: {finalStatus}. " +
+                $"Migrados={stats.Migrated} Verificados={stats.Verified} Fallidos={stats.Failed}"
+        });
+        logger.LogInformation("Migration {Id} finished with status {Status}", migrationId, finalStatus);
+
+        // ── Notificación por correo (v227) ──
+        try
+        {
+            var mig = await MigrationRepo(scope).GetByIdAsync(migrationId);
+            var notif = scope.ServiceProvider.GetRequiredService<INotificationService>();
+            var kind = finalStatus == "Failed"
+                ? NotificationEvents.MigrationFailed
+                : NotificationEvents.MigrationCompleted;
+            await notif.RaiseAsync(kind, mig?.Name ?? $"#{migrationId}", new (string, string)[]
             {
-                var mig = await MigrationRepo(scope).GetByIdAsync(migrationId);
-                var notif = scope.ServiceProvider.GetRequiredService<INotificationService>();
-                var kind = finalStatus == "Failed"
-                    ? NotificationEvents.MigrationFailed
-                    : NotificationEvents.MigrationCompleted;
-                await notif.RaiseAsync(kind, mig?.Name ?? $"#{migrationId}", new (string, string)[]
-                {
-                    ("Origen → Destino",    $"{mig?.OriginNode?.Alias ?? "?"} → {mig?.DestNode?.Alias ?? "?"}"),
-                }, migrationId, "migration",
-                kpis: new (string, string)[]
-                {
-                    ("Estudios",    stats.Total.ToString("N0")),
-                    ("Migrados",    stats.Migrated.ToString("N0")),
-                    ("Verificados", stats.Verified.ToString("N0")),
-                    ("Fallidos",    stats.Failed.ToString("N0")),
-                });
-            }
-            catch (Exception nex) { logger.LogWarning(nex, "Notificación de fin de migración {Id} falló (no crítico).", migrationId); }
-        }, TaskScheduler.Default).Unwrap();
+                ("Origen → Destino",    $"{mig?.OriginNode?.Alias ?? "?"} → {mig?.DestNode?.Alias ?? "?"}"),
+            }, migrationId, "migration",
+            kpis: new (string, string)[]
+            {
+                ("Estudios",    stats.Total.ToString("N0")),
+                ("Migrados",    stats.Migrated.ToString("N0")),
+                ("Verificados", stats.Verified.ToString("N0")),
+                ("Fallidos",    stats.Failed.ToString("N0")),
+            });
+        }
+        catch (Exception nex) { logger.LogWarning(nex, "Notificación de fin de migración {Id} falló (no crítico).", migrationId); }
+    }
+
+    /// <summary>Devuelve a 'Pending' los estudios que este worker tenga en 'Queued' o
+    /// 'Migrating' (sin gastar reintento). Best-effort: si la BD tampoco responde, el
+    /// bloqueo caducará solo (AcquireNextPendingAsync) o se rescatará al reanudar.</summary>
+    private async Task<bool> ReleaseOwnLocksAsync(int migrationId, string workerId)
+    {
+        try
+        {
+            using var scope = scopeFactory.CreateScope();
+            await StudyRepo(scope).ReleaseLocksAsync(migrationId, workerId);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Worker {Id}: no se pudieron liberar sus estudios (se reintentará en la siguiente vuelta).", workerId);
+            return false;
+        }
     }
 
     private async Task RunWorkerLoopAsync(MigrationEntity migration, string workerId,
@@ -234,95 +306,137 @@ public class MigrationWorker(
         logger.LogInformation("Worker {Id} started for migration {MigId}", workerId, migration.Id);
         int emptyPolls = 0;
         int connErrors = 0;   // errores de conexión consecutivos con el PACS origen
+        int unexpectedErrors = 0;   // errores inesperados seguidos (BD caída, etc.)
+        bool releasePending = false; // la liberación de sus estudios falló (BD caída): repetirla
 
         try
         {
             while (!ct.IsCancellationRequested)
             {
-                using var scope = scopeFactory.CreateScope();
-
-                // Respect the execution window — reload migration to pick up window changes
-                var freshMig = await MigrationRepo(scope).GetByIdAsync(migration.Id);
-                if (freshMig is not null && !WindowSched(scope).IsWindowOpen(freshMig.Windows))
+                // Cada vuelta del bucle tiene su propio try/catch: un error inesperado
+                // (BD caída unos segundos, fallo puntual de red…) NO saca al worker para
+                // siempre. Antes, el try envolvía todo el bucle: el worker moría y, cuando
+                // morían todos, el cierre declaraba la migración terminada con estudios
+                // pendientes. Ahora el worker libera su estudio, espera con backoff y sigue;
+                // solo sale al cancelar (pausa/parada) o cuando la cola está vacía.
+                try
                 {
-                    // Window closed — wait without processing. The WindowScheduler will
-                    // flip the migration to Paused; meanwhile workers idle politely.
-                    await Task.Delay(30_000, ct);
-                    continue;
-                }
+                    using var scope = scopeFactory.CreateScope();
 
-                var study = await StudyRepo(scope).AcquireNextPendingAsync(
-                    migration.Id, workerId, priorities,
-                    migration.RetryDelaySeconds,
-                    migration.StartFromDate,
-                    migration.OldestFirst);
-
-                if (study is null)
-                {
-                    // Nothing acquired. Check whether the queue is definitively empty:
-                    // no Pending, nothing Migrating (in-flight on another worker), and
-                    // no RetryPending waiting for its delay. If so, this worker is done.
-                    var stats = await StudyRepo(scope).GetStatsAsync(migration.Id);
-                    var workLeft = stats.Pending > 0 || stats.Migrating > 0 || stats.RetryPending > 0;
-                    if (!workLeft)
+                    // Si tras un error no se pudieron devolver a 'Pending' los estudios que
+                    // este worker tenía tomados (la BD seguía caída), hacerlo ahora: si no,
+                    // quedarían bloqueados hasta que caduque el lock (10-15 min) y la
+                    // migración se quedaría parada cerca del final. Aquí el worker no tiene
+                    // ningún estudio en curso, así que liberar los suyos es seguro.
+                    if (releasePending)
                     {
-                        logger.LogInformation("Worker {Id} sees empty queue — exiting", workerId);
-                        break;
+                        await StudyRepo(scope).ReleaseLocksAsync(migration.Id, workerId);
+                        releasePending = false;
+                        logger.LogInformation("Worker {Id}: estudios pendientes de liberar devueltos a la cola.", workerId);
                     }
 
-                    emptyPolls++;
-                    // Backoff: 5s normally, 30s if we've been empty many times
-                    // (remaining studies are in RetryPending delay)
-                    var delay = emptyPolls > 3 ? 30_000 : 5_000;
-                    await Task.Delay(delay, ct);
-                    continue;
-                }
-
-                emptyPolls = 0;
-                var wasConnError = await MigrateStudyAsync(migration, study, workerId, ct);
-
-                if (wasConnError)
-                {
-                    connErrors++;
-                    // Si se acumulan unos pocos errores de conexión seguidos, el destino
-                    // (o el origen) está caído: pausar pronto para no machacar en bucle.
-                    // El servicio de auto-reanudación lo retomará cuando vuelva la conexión.
-                    if (connErrors >= ConnBackoff.AutoPauseThreshold)
+                    // Respect the execution window — reload migration to pick up window changes
+                    var freshMig = await MigrationRepo(scope).GetByIdAsync(migration.Id);
+                    if (freshMig is not null && !WindowSched(scope).IsWindowOpen(freshMig.Windows))
                     {
-                        if (ConnBackoff.TryAnnouncePause("MIGRATE", migration.Id))
+                        // Window closed — wait without processing. The WindowScheduler will
+                        // flip the migration to Paused; meanwhile workers idle politely.
+                        await Task.Delay(30_000, ct);
+                        continue;
+                    }
+
+                    var study = await StudyRepo(scope).AcquireNextPendingAsync(
+                        migration.Id, workerId, priorities,
+                        migration.RetryDelaySeconds,
+                        migration.StartFromDate,
+                        migration.OldestFirst);
+
+                    // La base de datos ha respondido: se reinicia la cuenta de errores seguidos.
+                    unexpectedErrors = 0;
+
+                    if (study is null)
+                    {
+                        // Nothing acquired. Check whether the queue is definitively empty:
+                        // no Pending, nothing Migrating (in-flight on another worker), and
+                        // no RetryPending waiting for its delay. If so, this worker is done.
+                        var stats = await StudyRepo(scope).GetStatsAsync(migration.Id);
+                        var workLeft = stats.Pending > 0 || stats.Migrating > 0 || stats.RetryPending > 0;
+                        if (!workLeft)
                         {
-                            logger.LogError("Migración: {N} errores de conexión consecutivos. " +
-                                "Pausando migración {Id} (se reanudará sola al recuperarse la conexión).",
-                                connErrors, migration.Id);
-                            await MigrationRepo(scope).UpdateStatusAsync(migration.Id, "Paused");
-                            try
-                            {
-                                await scope.ServiceProvider.GetRequiredService<INotificationService>()
-                                    .RaiseAsync(NotificationEvents.AutoPaused, migration.Name, new (string, string)[]
-                                    {
-                                        ("Origen → Destino", $"{migration.OriginNode?.Alias ?? "?"} → {migration.DestNode?.Alias ?? "?"}"),
-                                        ("Proceso", "Migración"),
-                                        ("Motivo",  $"{connErrors} errores de conexión con el origen"),
-                                        ("Nodo",    migration.OriginNode?.Alias ?? "origen"),
-                                    }, migration.Id, "migration");
-                            }
-                            catch (Exception nex) { logger.LogWarning(nex, "Notificación de auto-pausa (migración {Id}) falló.", migration.Id); }
-                            await MigrationRepo(scope).SetMigrationAutoPausedAsync(migration.Id, true);
+                            logger.LogInformation("Worker {Id} sees empty queue — exiting", workerId);
+                            break;
                         }
-                        // Cancelar el token compartido: detiene a los demás workers de
-                        // inmediato (no esperan a llegar cada uno al umbral) y hace que el
-                        // handler de finalización NO marque "Completed" (wasCancelled=true).
-                        cts.Cancel();
-                        break;
+
+                        emptyPolls++;
+                        // Backoff: 5s normally, 30s if we've been empty many times
+                        // (remaining studies are in RetryPending delay)
+                        var delay = emptyPolls > 3 ? 30_000 : 5_000;
+                        await Task.Delay(delay, ct);
+                        continue;
                     }
-                    // Espera corta y fija mientras acumulamos hacia el umbral, para que
-                    // la auto-pausa se dispare en un tiempo razonable (no un backoff largo
-                    // que retrasaría la pausa varios minutos).
-                    await Task.Delay(ConnBackoff.PrePauseWait, ct);
+
+                    emptyPolls = 0;
+                    var wasConnError = await MigrateStudyAsync(migration, study, workerId, ct);
+
+                    if (wasConnError)
+                    {
+                        connErrors++;
+                        // Si se acumulan unos pocos errores de conexión seguidos, el destino
+                        // (o el origen) está caído: pausar pronto para no machacar en bucle.
+                        // El servicio de auto-reanudación lo retomará cuando vuelva la conexión.
+                        if (connErrors >= ConnBackoff.AutoPauseThreshold)
+                        {
+                            if (ConnBackoff.TryAnnouncePause("MIGRATE", migration.Id))
+                            {
+                                logger.LogError("Migración: {N} errores de conexión consecutivos. " +
+                                    "Pausando migración {Id} (se reanudará sola al recuperarse la conexión).",
+                                    connErrors, migration.Id);
+                                await MigrationRepo(scope).UpdateStatusAsync(migration.Id, "Paused");
+                                try
+                                {
+                                    await scope.ServiceProvider.GetRequiredService<INotificationService>()
+                                        .RaiseAsync(NotificationEvents.AutoPaused, migration.Name, new (string, string)[]
+                                        {
+                                            ("Origen → Destino", $"{migration.OriginNode?.Alias ?? "?"} → {migration.DestNode?.Alias ?? "?"}"),
+                                            ("Proceso", "Migración"),
+                                            ("Motivo",  $"{connErrors} errores de conexión con el origen"),
+                                            ("Nodo",    migration.OriginNode?.Alias ?? "origen"),
+                                        }, migration.Id, "migration");
+                                }
+                                catch (Exception nex) { logger.LogWarning(nex, "Notificación de auto-pausa (migración {Id}) falló.", migration.Id); }
+                                await MigrationRepo(scope).SetMigrationAutoPausedAsync(migration.Id, true);
+                            }
+                            // Cancelar el token compartido: detiene a los demás workers de
+                            // inmediato (no esperan a llegar cada uno al umbral) y hace que el
+                            // handler de finalización NO marque "Completed" (wasCancelled=true).
+                            cts.Cancel();
+                            break;
+                        }
+                        // Espera corta y fija mientras acumulamos hacia el umbral, para que
+                        // la auto-pausa se dispare en un tiempo razonable (no un backoff largo
+                        // que retrasaría la pausa varios minutos).
+                        await Task.Delay(ConnBackoff.PrePauseWait, ct);
+                    }
+                    else
+                    {
+                        connErrors = 0;
+                    }
                 }
-                else
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {
-                    connErrors = 0;
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    unexpectedErrors++;
+                    var wait = ConnBackoff.ForAttempt(unexpectedErrors);
+                    logger.LogError(ex, "Worker {Id} (migración {MigId}): error inesperado ({N} seguido/s). " +
+                        "Se reintenta en {S} s.", workerId, migration.Id, unexpectedErrors, wait.TotalSeconds);
+                    // Devolver a 'Pending' el estudio que tuviera tomado (sin gastar reintento),
+                    // para que no espere a la caducidad del bloqueo.
+                    if (!await ReleaseOwnLocksAsync(migration.Id, workerId))
+                        releasePending = true;
+                    await Task.Delay(wait, ct);
                 }
             }
         }
@@ -331,8 +445,7 @@ public class MigrationWorker(
         { logger.LogError(ex, "Worker {Id} crashed", workerId); }
         finally
         {
-            using var scope = scopeFactory.CreateScope();
-            await StudyRepo(scope).ReleaseLocksAsync(migration.Id, workerId);
+            await ReleaseOwnLocksAsync(migration.Id, workerId);
             logger.LogInformation("Worker {Id} stopped", workerId);
         }
     }
@@ -508,7 +621,11 @@ public class MigrationWorker(
             await studyRepo.ReleaseMigrationLockAsync(study.Id);
             throw;
         }
-        catch (Exception ex)
+        // Los errores de la BASE DE DATOS (p. ej. caída justo tras un C-MOVE correcto, al
+        // marcar 'Migrated') no se capturan aquí: no son fallo del PACS y no deben contar
+        // hacia la auto-pausa por "errores de conexión con el origen". Suben al bucle de
+        // RunWorkerLoopAsync, que libera el estudio y reintenta con backoff.
+        catch (Exception ex) when (!ConnBackoff.IsDatabaseError(ex))
         {
             // Excepción inesperada de red/transporte = error de conexión: reintentar.
             await studyRepo.ReleaseMigrationLockAsync(study.Id);
