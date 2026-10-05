@@ -188,7 +188,8 @@ public interface IStudyRepository
 
     /// <summary>Release the verification lock and return the study to 'Migrated'
     /// WITHOUT consuming a retry — used when the destination couldn't be reached
-    /// (connection error), so the study is verified again later, not failed.</summary>
+    /// (connection error), so the study is verified again later, not failed. Only acts while
+    /// the study is still 'VerificationPending' (never undoes a recorded result).</summary>
     Task ReleaseVerificationLockAsync(long id);
 
     /// <summary>True if the migration still has studies to verify: any in 'Migrated',

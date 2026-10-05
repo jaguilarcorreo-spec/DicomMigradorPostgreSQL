@@ -713,12 +713,16 @@ WHERE di.""DiscoveredStudyId"" = ANY({batchStudyIds})
     {
         await using var db = factory.CreateDbContext();
 
-        // Release stale verification locks (> 10 min without update)
+        // Release stale verification locks (> 10 min without update). También los
+        // 'VerificationPending' SIN fecha de bloqueo: ningún worker vivo los tiene (la
+        // adquisición fija estado y bloqueo en el mismo UPDATE), así que son huérfanos de
+        // versiones anteriores de ReleaseOrphanLocksAsync. Con solo "< cutoff" (NULL nunca
+        // lo cumple) se quedaban ahí para siempre y la verificación no terminaba.
         var staleCutoff = DateTime.UtcNow.AddMinutes(-10);
         await db.MigrationStudies
             .Where(s => s.MigrationId == migrationId
                      && s.MigrationStatus == "VerificationPending"
-                     && s.VerifyLockDate < staleCutoff)
+                     && (s.VerifyLockDate == null || s.VerifyLockDate < staleCutoff))
             .ExecuteUpdateAsync(u => u
                 .SetProperty(s => s.MigrationStatus, "Migrated")
                 .SetProperty(s => s.VerifyLockedByWorker, (string?)null)
@@ -759,9 +763,12 @@ WHERE di.""DiscoveredStudyId"" = ANY({batchStudyIds})
         // Connection error during verification: put the study back to 'Migrated'
         // and clear the verify lock, leaving VerifyRetryCount untouched (it wasn't
         // the study's fault that the destination was unreachable).
+        // Solo si sigue 'VerificationPending': si el resultado ya se registró (Verified,
+        // VerifyRetryPending, VerifyFailed), liberar no debe deshacerlo. Así el worker puede
+        // llamarlo sin riesgo tras un error o una cancelación, sepa o no en qué punto quedó.
         await using var db = factory.CreateDbContext();
         await db.MigrationStudies
-            .Where(s => s.Id == id)
+            .Where(s => s.Id == id && s.MigrationStatus == "VerificationPending")
             .ExecuteUpdateAsync(u => u
                 .SetProperty(s => s.MigrationStatus, "Migrated")
                 .SetProperty(s => s.VerifyLockedByWorker, (string?)null)
@@ -932,8 +939,20 @@ WHERE di.""DiscoveredStudyId"" = ANY({batchStudyIds})
 
         await using var db = factory.CreateDbContext();
 
-        // Verificación: estudios con lock de verificación colgado → liberar el lock,
-        // dejándolos de nuevo verificables (su MigrationStatus 'Migrated' no cambia).
+        // Verificación: estudios que se quedaron a medio verificar ('VerificationPending')
+        // → de vuelta a 'Migrated', sin gastar reintento, para que se verifiquen otra vez.
+        // Antes solo se borraba el bloqueo y el estudio seguía en 'VerificationPending':
+        // ningún worker lo volvía a tomar y la verificación no terminaba nunca.
+        await db.MigrationStudies
+            .Where(s => s.MigrationId == migrationId && s.MigrationStatus == "VerificationPending")
+            .ExecuteUpdateAsync(u => u
+                .SetProperty(s => s.MigrationStatus, "Migrated")
+                .SetProperty(s => s.VerifyLockedByWorker, (string?)null)
+                .SetProperty(s => s.VerifyLockDate, (DateTime?)null)
+                .SetProperty(s => s.VerificationStartDate, (DateTime?)null)
+                .SetProperty(s => s.LastUpdateDate, DateTime.UtcNow));
+
+        // Cualquier otro bloqueo de verificación colgado (estado ya final): solo liberarlo.
         await db.MigrationStudies
             .Where(s => s.MigrationId == migrationId && s.VerifyLockedByWorker != null)
             .ExecuteUpdateAsync(u => u

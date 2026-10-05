@@ -419,6 +419,12 @@ public class VerificationService(
         int emptyPolls = 0;
         int connErrors = 0;   // errores de conexión consecutivos (PACS destino inaccesible)
         int unexpectedErrors = 0;   // errores inesperados seguidos (BD caída, etc.)
+        // Estudio que este worker tiene en 'VerificationPending' y aún no ha cerrado
+        // (ni resultado registrado ni devuelto a 'Migrated'). Si una cancelación o un error
+        // corta la verificación, se devuelve a la cola; si la BD está caída y no se puede,
+        // se reintenta en la siguiente vuelta en vez de esperar 10 min a que caduque.
+        // Se libera por Id (no por nombre de worker: "V0"… se repiten entre sesiones).
+        long? heldStudyId = null;
         // Caché de ventana por worker (relectura cada 30 s)
         DateTime lastWindowCheck = DateTime.MinValue;
         bool windowOpen = true;
@@ -460,12 +466,18 @@ public class VerificationService(
             while (!ct.IsCancellationRequested)
             {
                 // try/catch por vuelta (igual que en MigrationWorker): un error inesperado de
-                // BD no saca al worker. El estudio que tuviera tomado sigue en
-                // 'VerificationPending' con su fecha de bloqueo y lo rescata la caducidad
-                // (AcquireNextForVerificationAsync, 10 min); no se libera aquí porque el error
-                // pudo llegar después de registrar el resultado.
+                // BD no saca al worker. El estudio que tuviera tomado se devuelve a 'Migrated'
+                // (ReleaseVerificationLockAsync solo actúa si sigue 'VerificationPending', así
+                // que no deshace un resultado ya registrado).
                 try
                 {
+                    if (heldStudyId is long pendingRelease)
+                    {
+                        await studyR.ReleaseVerificationLockAsync(pendingRelease);
+                        heldStudyId = null;
+                        logger.LogInformation("Verificación worker {W}: estudio pendiente de liberar devuelto a la cola.", workerId);
+                    }
+
                     // Respetar ventana de ejecución (con caché de 30 s)
                     if ((DateTime.UtcNow - lastWindowCheck).TotalSeconds >= 30)
                     {
@@ -496,6 +508,7 @@ public class VerificationService(
                         continue;
                     }
                     emptyPolls = 0;
+                    heldStudyId = study.Id;
 
                     try
                     {
@@ -507,6 +520,7 @@ public class VerificationService(
                         if (result.ConnectionError)
                         {
                             await studyR.ReleaseVerificationLockAsync(study.Id);
+                            heldStudyId = null;
 
                             if (result.ConfigurationError)
                             {
@@ -594,6 +608,7 @@ public class VerificationService(
                             result.MissingCount, result.ExtraCount,
                             result.MissingUids.Count > 0 ? string.Join("\n", result.MissingUids) : null,
                             result.VerifiedBy);
+                        heldStudyId = null;   // resultado registrado: ya no está en vuelo
 
                         await auditR.AddAsync(new MigrationAuditLog
                         {
@@ -616,6 +631,7 @@ public class VerificationService(
                         logger.LogError(ex, "Error verificando {Uid}", study.StudyInstanceUid);
                         // Marcar como fallido/reintento para que salga de la cola
                         await studyR.CompleteVerificationAsync(study.Id, false, maxRetries, null, null, ex.Message);
+                        heldStudyId = null;
                     }
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -628,6 +644,10 @@ public class VerificationService(
                     var wait = ConnBackoff.ForAttempt(unexpectedErrors);
                     logger.LogError(ex, "Verificación worker {W} (migración {Id}): error inesperado ({N} seguido/s). " +
                         "Se reintenta en {S} s.", workerId, migrationId, unexpectedErrors, wait.TotalSeconds);
+                    // Devolver a la cola el estudio en vuelo; si la BD sigue caída, queda
+                    // anotado en heldStudyId y se reintenta al principio de la siguiente vuelta.
+                    if (await TryReleaseVerificationAsync(heldStudyId, workerId))
+                        heldStudyId = null;
                     await Task.Delay(wait, ct);
                 }
             }
@@ -636,6 +656,31 @@ public class VerificationService(
         catch (Exception ex)
         {
             logger.LogError(ex, "Verificación worker {W} crashed", workerId);
+        }
+        finally
+        {
+            // Pausa, parada o salida por error: un estudio a medio verificar vuelve a
+            // 'Migrated' en vez de quedarse en 'VerificationPending' (CONC-3).
+            await TryReleaseVerificationAsync(heldStudyId, workerId);
+        }
+    }
+
+    /// <summary>Best-effort: devuelve a 'Migrated' el estudio en vuelo (si lo hay). Usa su
+    /// propio scope porque puede llamarse tras desechar el del worker. False si falló.</summary>
+    private async Task<bool> TryReleaseVerificationAsync(long? studyId, string workerId)
+    {
+        if (studyId is not long id) return true;
+        try
+        {
+            using var scope = scopeFactory.CreateScope();
+            await scope.ServiceProvider.GetRequiredService<IStudyRepository>().ReleaseVerificationLockAsync(id);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Verificación worker {W}: no se pudo devolver el estudio {Id} a la cola " +
+                "(se reintentará; si no, lo rescata la caducidad del bloqueo).", workerId, id);
+            return false;
         }
     }
 }
