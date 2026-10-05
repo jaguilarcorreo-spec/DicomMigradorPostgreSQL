@@ -1310,7 +1310,9 @@ else
         if (t == "estudios") await SearchStudiesAsync();
     }
 
-    async Task RefreshDetailAsync()
+    Task RefreshDetailAsync() => RefreshDetailAsync(recheckN2: false);
+
+    async Task RefreshDetailAsync(bool recheckN2)
     {
         // Copia local para no releer el campo compartido _detail tras cada await: el
         // auto-refresco (hilo del pool) y la navegación (BackToList pone _detail=null)
@@ -1333,7 +1335,13 @@ else
         _detail = fresh;
 
         _stats    = await StudyRepo.GetStatsAsync(fresh.Id);
-        _migHasN2 = await InstanceRepo.HasAnyForMigrationAsync(fresh.Id);
+        // "¿Tiene UIDs Nivel 2?" solo cambia cuando el poblado copia los UIDs, así que no se
+        // recalcula en cada tick (cada 3 s): con una migración de 1 M de estudios sin
+        // UIDs cuesta ~1 s (CONC-18). Se calcula al abrir el detalle (OpenDetail), al
+        // terminar un poblado y al pulsar ↺.
+        var populateJustFinished = mig.PopulateStatus == "Running" && fresh.PopulateStatus != "Running";
+        if (recheckN2 || populateJustFinished)
+            _migHasN2 = await InstanceRepo.HasAnyForMigrationAsync(fresh.Id);
         // Update the stats for this migration in the list too
         var idx = _migrations.FindIndex(m => m.Id == fresh.Id);
         if (idx >= 0 && idx < _statsList.Count)
@@ -1409,7 +1417,7 @@ else
     // Blazor ("An unhandled error has occurred. Reload"). Con la BD caída, avisar y seguir.
     private async Task RefreshDetailClickAsync()
     {
-        try { await RefreshDetailAsync(); }
+        try { await RefreshDetailAsync(recheckN2: true); }
         catch (Exception ex)
         {
             Logger.LogWarning(ex, "No se pudo actualizar el detalle de la migración.");

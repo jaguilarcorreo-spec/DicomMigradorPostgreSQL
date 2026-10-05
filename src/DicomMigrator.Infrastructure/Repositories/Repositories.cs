@@ -340,11 +340,15 @@ public class InstanceRepository(IDbContextFactory<AppDbContext> factory) : IInst
 
     public async Task<bool> HasAnyForMigrationAsync(int migrationId)
     {
-        // AnyAsync → SELECT EXISTS: PostgreSQL se detiene en la primera instancia que
-        // encuentra (≈1 ms con 2 M de instancias, frente a ≈555 ms del COUNT).
+        // Se recorren los ESTUDIOS de la migración y, por cada uno, se mira en el índice
+        // (MigrationStudyId, SopInstanceUid) si tiene alguna instancia (CONC-18). La versión
+        // anterior partía de las instancias: rápida si la migración las tenía, pero si no
+        // tenía ninguna recorría TODAS las del resto de migraciones antes de responder
+        // "no" (674 ms con 2 M de instancias, frente a 54 ms así). Se llama en cada
+        // refresco del detalle de una migración.
         await using var db = factory.CreateDbContext();
-        return await db.MigrationInstances
-            .AnyAsync(i => i.Study != null && i.Study.MigrationId == migrationId);
+        return await db.MigrationStudies
+            .AnyAsync(s => s.MigrationId == migrationId && s.Instances.Any());
     }
 
     public async Task<HashSet<string>> GetSopUidsForStudyAsync(long migrationStudyId)
