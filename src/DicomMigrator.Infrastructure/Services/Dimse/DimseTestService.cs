@@ -198,13 +198,18 @@ public class DimseTestService(ILogger<DimseTestService> logger)
             int pending = 0;
             request.OnResponseReceived += (req, resp) =>
             {
-                if (resp.Status == DicomStatus.Pending && resp.Dataset is not null)
+                // Por ESTADO, no por código (DCM-1): Pending agrupa 0xFF00 y 0xFF01
+                // ("Pending, alguna clave opcional no soportada"). Comparando con
+                // DicomStatus.Pending (0xFF00), cada 0xFF01 caía en la rama de respuesta
+                // final y su estudio se perdía: un PACS que responde así devolvía 0
+                // estudios y la final 0x0000 daba la consulta por buena.
+                if (resp.Status.State == DicomState.Pending && resp.Dataset is not null)
                 {
                     pending++;
                     var study = ParseStudy(resp.Dataset);
                     result.Studies.Add(study);
                 }
-                else
+                else if (resp.Status.State != DicomState.Pending)   // solo la respuesta final
                 {
                     result.DicomStatus = resp.Status.Code;
                     result.Success = resp.Status == DicomStatus.Success;
@@ -270,7 +275,7 @@ public class DimseTestService(ILogger<DimseTestService> logger)
 
             request.OnResponseReceived += (req, resp) =>
             {
-                if (resp.Status == DicomStatus.Pending && resp.Dataset is not null)
+                if (resp.Status.State == DicomState.Pending && resp.Dataset is not null)   // 0xFF00 y 0xFF01 (DCM-1)
                 {
                     result.Instances.Add(new TesterInstanceDto
                     {
@@ -278,7 +283,7 @@ public class DimseTestService(ILogger<DimseTestService> logger)
                         SopInstanceUid    = resp.Dataset.GetSingleValueOrDefault(DicomTag.SOPInstanceUID,    string.Empty),
                     });
                 }
-                else
+                else if (resp.Status.State != DicomState.Pending)   // solo la respuesta final
                 {
                     result.DicomStatus = resp.Status.Code;
                     result.Success = resp.Status == DicomStatus.Success;
