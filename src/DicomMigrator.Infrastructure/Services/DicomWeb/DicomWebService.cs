@@ -46,6 +46,7 @@ public class DicomWebService(ILogger<DicomWebService> logger, IHttpClientFactory
             HttpStatus   = r.HttpStatus,
             DurationMs   = r.DurationMs,
             ResultCount  = r.ResultCount,
+            SkippedCount = r.SkippedCount,
             RawJson      = r.RawJson,
             ErrorMessage = r.ErrorMessage,
             RequestUrl   = r.RequestUrl,

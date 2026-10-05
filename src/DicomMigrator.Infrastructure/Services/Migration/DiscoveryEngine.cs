@@ -380,6 +380,8 @@ public class DiscoveryEngine(
             List<DicomStudyDto> studies;
             string result = "OK";
             bool truncated;
+            string? queryError = null;   // motivo concreto del fallo de la consulta, si lo hay
+            int unreadable = 0;          // estudios de la respuesta que no se pudieron leer
 
             if (job.QueryMethod == "QIDO")
             {
@@ -388,11 +390,13 @@ public class DiscoveryEngine(
                 // ni de modalidad, que dejarían fuera estudios sin StudyTime o con una
                 // modalidad no prevista. Solo si el servidor no pagina bien (o hay más de
                 // MaxQidoPages páginas) se cae a la subdivisión, con lo leído como muestra.
-                var (pages, ok, complete, pageCount) = await QidoAllPagesAsync(dicomWeb, job.SourcePacs, partition, job.PacsResultLimit, ct);
+                var (pages, ok, complete, pageCount, skipped, qidoError) = await QidoAllPagesAsync(dicomWeb, job.SourcePacs, partition, job.PacsResultLimit, ct);
                 studies = pages;
-                if (!ok) result = "ERROR";
+                if (!ok) { result = "ERROR"; queryError = qidoError; }
                 truncated = !complete;
+                unreadable = skipped;
                 if (pageCount > 1) filters += $" páginas={pageCount}";
+                if (skipped > 0) filters += $" descartados={skipped}";
             }
             else // CFIND
             {
@@ -423,6 +427,7 @@ public class DiscoveryEngine(
                 Result          = result,
                 StudiesReturned = studies.Count,
                 Attempt         = partition.AttemptCount,
+                Error           = queryError,
             });
 
             partition.StudiesFound = studies.Count;
@@ -435,9 +440,10 @@ public class DiscoveryEngine(
             if (result == "ERROR")
             {
                 partition.Status         = "Failed";
-                partition.LastError      = job.QueryMethod == "QIDO"
-                    ? "Petición QIDO-RS fallida (ver logs)"
-                    : "Petición C-FIND fallida (ver logs)";
+                partition.LastError      = (job.QueryMethod == "QIDO"
+                    ? "Petición QIDO-RS fallida"
+                    : "Petición C-FIND fallida")
+                    + (queryError is null ? " (ver logs)" : $": {queryError}");
                 partition.FinishedAt     = DateTime.UtcNow;
                 partition.LockedByWorker = null;
                 await jobRepo.UpdatePartitionAsync(partition);
@@ -461,6 +467,8 @@ public class DiscoveryEngine(
                 await studyRepo.UpsertAsync(sample);
 
                 var (children, coverageGap) = Subdivide(partition, jobId, studies);
+                if (unreadable > 0)
+                    coverageGap = (coverageGap is null ? "" : coverageGap + " ") + UnreadableNote(unreadable);
                 await jobRepo.AddPartitionsAsync(children);
 
                 // Si la subdivisión no puede garantizar que cubre todo lo que había más
@@ -489,11 +497,19 @@ public class DiscoveryEngine(
 
             partition.StudiesInserted = inserted;
             partition.StudiesUpdated  = updated;
-            partition.Status          = truncated ? "PossiblyTruncated" : "Completed";
+            // Estudios ilegibles en la respuesta: la partición no está completa aunque no
+            // se haya truncado. Queda como "Posible truncamiento" con el motivo, en vez de
+            // "Completed" con estudios de menos y sin rastro (DISC-2).
+            partition.Status          = truncated || unreadable > 0 ? "PossiblyTruncated" : "Completed";
             partition.FinishedAt      = DateTime.UtcNow;
             partition.LockedByWorker  = null;
             if (truncated)
                 partition.LastError = $"Posible truncamiento: {studies.Count} resultados (límite {job.PacsResultLimit}). No se pudo subdividir más.";
+            if (unreadable > 0)
+            {
+                partition.LastError = (truncated ? partition.LastError + " " : "") + UnreadableNote(unreadable);
+                logger.LogWarning("[{Worker}] Partición {Id} ({Date}): {Note}", workerId, partition.Id, dateStr, UnreadableNote(unreadable));
+            }
 
             await jobRepo.UpdatePartitionAsync(partition);
 
@@ -549,6 +565,10 @@ public class DiscoveryEngine(
             await jobRepo.UpdatePartitionAsync(partition);
         }
     }
+
+    private static string UnreadableNote(int n) =>
+        $"{n} estudio(s) de la respuesta del PACS no se pudieron leer (sin StudyInstanceUID o con formato " +
+        "inesperado) y no están en el inventario. Revisa el log de QIDO-RS y el servidor DICOMweb.";
 
     // ── Adaptive subdivision logic ──────────────────────────────────────────────
     // Jerarquía de subdivisión (DISC-1). PRIMERO por hora y, solo como último recurso,
@@ -652,13 +672,13 @@ public class DiscoveryEngine(
     /// <summary>Lee todas las páginas QIDO-RS de la partición (offset). <c>complete</c> es
     /// false si el servidor no avanza con el offset o se supera MaxQidoPages: entonces lo
     /// leído se usa como muestra y la partición se subdivide.</summary>
-    private static async Task<(List<DicomStudyDto> studies, bool ok, bool complete, int pages)> QidoAllPagesAsync(
+    private static async Task<(List<DicomStudyDto> studies, bool ok, bool complete, int pages, int skipped, string? error)> QidoAllPagesAsync(
         IDicomWebService dicomWeb, DicomNode node, DiscoveryPartition partition, int limit, CancellationToken ct)
     {
         var all  = new List<DicomStudyDto>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
         limit = Math.Max(1, limit);
-        int offset = 0;
+        int offset = 0, skipped = 0;
 
         for (int page = 1; ; page++)
         {
@@ -673,8 +693,9 @@ public class DiscoveryEngine(
                 Offset            = offset,
                 IncludeField      = DiscoveryIncludeFields,
             }, ct);
-            if (!qido.Success) return (all, false, false, page);
+            if (!qido.Success) return (all, false, false, page, skipped, qido.ErrorMessage);
 
+            skipped += qido.SkippedCount;
             int fresh = 0;
             foreach (var s in qido.Studies)
             {
@@ -682,9 +703,12 @@ public class DiscoveryEngine(
                 if (seen.Add(s.StudyInstanceUid)) { all.Add(s); fresh++; }
             }
 
-            if (qido.Studies.Count < limit) return (all, true, true, page);   // última página
-            if (fresh == 0 || page >= MaxQidoPages) return (all, true, false, page);   // no pagina bien
-            offset += qido.Studies.Count;
+            // Página llena o no se mide por los elementos que TRAÍA la respuesta, no por los
+            // legibles: si se descartara alguno, una página llena parecería la última.
+            var pageItems = qido.ResultCount;
+            if (pageItems < limit) return (all, true, true, page, skipped, null);   // última página
+            if (fresh == 0 || page >= MaxQidoPages) return (all, true, false, page, skipped, null);   // no pagina bien
+            offset += pageItems;
         }
     }
 

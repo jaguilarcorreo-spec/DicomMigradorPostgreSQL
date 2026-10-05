@@ -150,7 +150,12 @@ public class QidoResult
     public bool    Success      { get; set; }
     public int     HttpStatus   { get; set; }
     public long    DurationMs   { get; set; }
+    /// <summary>Elementos que traía la respuesta, incluidos los descartados (sirve para
+    /// saber si una página vino llena al paginar).</summary>
     public int     ResultCount  { get; set; }
+    /// <summary>Elementos de la respuesta que no se pudieron leer (sin StudyInstanceUID o
+    /// con estructura inesperada): no están en Studies.</summary>
+    public int     SkippedCount { get; set; }
     public string? RawJson      { get; set; }
     public List<DicomStudyDto>          Studies         { get; set; } = [];
     public Dictionary<string, string>   ResponseHeaders { get; set; } = [];
