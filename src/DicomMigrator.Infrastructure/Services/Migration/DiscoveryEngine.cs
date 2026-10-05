@@ -31,20 +31,22 @@ public class DiscoveryEngine(
     // Rondas extra de workers si al terminar quedan particiones 'Running' huérfanas.
     private const int MaxOrphanRounds = 3;
 
-    // Modalidades BASE para subdividir un día truncado. Se amplía en tiempo de
-    // ejecución con las modalidades realmente presentes en la respuesta del día
-    // (ver Subdivide), de modo que una modalidad poco habitual no se quede sin
-    // partición hija y, por tanto, sin descubrir. La lista base cubre además los
-    // códigos DICOM estándar más frecuentes por si esa modalidad solo tuviera
-    // estudios más allá del corte del truncamiento.
+    // Modalidades BASE para la subdivisión por modalidad, que ahora es el ÚLTIMO
+    // recurso (solo cuando una franja horaria mínima sigue truncada; ver Subdivide).
+    // Se amplía en tiempo de ejecución con las modalidades presentes en la muestra.
+    // Cubre los términos definidos de Modality (PS3.3 C.7.3.1.1.1 / CID 29 y CID 33)
+    // y los no estándar habituales en PACS reales (SC, DR, ST…): una modalidad que
+    // solo tuviera estudios más allá del corte y no estuviera aquí no se descubriría.
     private static readonly string[] BaselineModalities =
     [
         "CT","MR","CR","DX","DR","RG","RF","XA","MG","US","NM","PT",
-        "MA","XC","PX","IO","GM","SM","OP","OPT","OCT","ES","IVUS","IVOCT",
-        "BI","BMD","ECG","EPS","HD","LS","TG","ST","HC",
-        "SR","KO","PR","REG","SEG","DOC",
-        "RTIMAGE","RTDOSE","RTSTRUCT","RTPLAN","RTRECORD",
-        "OT"
+        "MA","XC","PX","IO","GM","SM","OP","OPT","OPTBSV","OPTENF","OPM","OPV","OAM",
+        "OCT","IVOCT","ES","IVUS","BI","BMD","BDUS","ECG","EEG","EMG","EOG","EPS",
+        "HD","RESP","LS","TG","ST","HC","AU","DG","SC","AR","KER","LEN","IOL","VA",
+        "SRF","POS","FID","M3D","DOC","SR","KO","PR","REG","SEG","PLAN","ASMT",
+        "RWV","SMR","STAIN","TEXTUREMAP","CTPROTOCOL","XAPROTOCOL",
+        "RTIMAGE","RTDOSE","RTSTRUCT","RTPLAN","RTRECORD","RTINTENT","RTRAD","RTSEGANN",
+        "OSS","OT"
     ];
 
     // Separa un ModalitiesInStudy multivaluado ("CT\MR", "CT,PR"…) en códigos sueltos.
@@ -59,14 +61,21 @@ public class DiscoveryEngine(
         }
     }
 
-    // Time ranges used in level-3 subdivision (StudyTime HHmmss)
+    // Primeras franjas horarias al subdividir un día truncado (StudyTime HHmmss).
+    // Se SOLAPAN un segundo (…060000 / 060000…): con límites como 055959 y 060000, un
+    // StudyTime con fracción (055959.4) quedaba fuera de las dos. El upsert por
+    // StudyInstanceUID elimina el duplicado que pueda traer el segundo compartido.
     private static readonly (string from, string to)[] TimeRanges =
     [
-        ("000000", "055959"),
-        ("060000", "115959"),
-        ("120000", "175959"),
+        ("000000", "060000"),
+        ("060000", "120000"),
+        ("120000", "180000"),
         ("180000", "235959"),
     ];
+
+    // QIDO-RS: páginas máximas por partición antes de rendirse y subdividir (protege
+    // frente a un servidor que pagine mal). Con un límite de 500 son 100.000 estudios/día.
+    private const int MaxQidoPages = 200;
 
     // ── Partition generation ──────────────────────────────────────────────────
     public async Task GeneratePartitionsAsync(int jobId, CancellationToken ct = default)
@@ -370,19 +379,20 @@ public class DiscoveryEngine(
         {
             List<DicomStudyDto> studies;
             string result = "OK";
+            bool truncated;
 
             if (job.QueryMethod == "QIDO")
             {
-                var qido = await dicomWeb.QidoAsync(job.SourcePacs, new QidoQuery
-                {
-                    StudyDate    = BuildDateForQuery(partition),
-                    Modality     = partition.Modality,
-                    StudyTime    = BuildTimeForQuery(partition),
-                    Limit        = job.PacsResultLimit + 1,  // +1 to detect truncation
-                    IncludeField = DiscoveryIncludeFields,
-                }, ct);
-                studies = qido.Studies;
-                if (!qido.Success) result = "ERROR";
+                // QIDO-RS admite paginación (offset): se leen todas las páginas de la
+                // partición en vez de subdividirla. Así no hace falta ningún filtro de hora
+                // ni de modalidad, que dejarían fuera estudios sin StudyTime o con una
+                // modalidad no prevista. Solo si el servidor no pagina bien (o hay más de
+                // MaxQidoPages páginas) se cae a la subdivisión, con lo leído como muestra.
+                var (pages, ok, complete, pageCount) = await QidoAllPagesAsync(dicomWeb, job.SourcePacs, partition, job.PacsResultLimit, ct);
+                studies = pages;
+                if (!ok) result = "ERROR";
+                truncated = !complete;
+                if (pageCount > 1) filters += $" páginas={pageCount}";
             }
             else // CFIND
             {
@@ -395,6 +405,8 @@ public class DiscoveryEngine(
                 }, ct);
                 studies = find.Studies;
                 if (!find.Success) result = "ERROR";
+                // C-FIND no pagina: si se alcanza el límite, el PACS pudo cortar la respuesta.
+                truncated = studies.Count >= job.PacsResultLimit;
             }
 
             sw.Stop();
@@ -432,10 +444,7 @@ public class DiscoveryEngine(
                 return;
             }
 
-            // ── Truncation detection ──
-            // If results >= configured limit, the PACS may have truncated the response.
-            bool truncated = studies.Count >= job.PacsResultLimit;
-
+            // ── Truncation detection ── (calculado arriba según el método de consulta)
             if (truncated && CanSubdivide(partition))
             {
                 logger.LogWarning("[{Worker}] Partición posiblemente truncada ({Count} >= {Limit}) — subdividiendo",
@@ -451,11 +460,19 @@ public class DiscoveryEngine(
                     .ToList();
                 await studyRepo.UpsertAsync(sample);
 
-                var children = Subdivide(partition, jobId, studies);
+                var (children, coverageGap) = Subdivide(partition, jobId, studies);
                 await jobRepo.AddPartitionsAsync(children);
 
-                partition.Status   = "Subdivided";
-                partition.LastError = $"Truncada con {studies.Count} resultados (límite {job.PacsResultLimit}). Subdividida en {children.Count} particiones.";
+                // Si la subdivisión no puede garantizar que cubre todo lo que había más
+                // allá del corte (estudios sin hora, o reparto por modalidad), la partición
+                // queda como "Posible truncamiento" en vez de "Subdividida": el job no debe
+                // parecer completo y limpio cuando puede faltar algún estudio. Las hijas se
+                // procesan igual.
+                partition.Status   = coverageGap is null ? "Subdivided" : "PossiblyTruncated";
+                partition.LastError = $"Truncada con {studies.Count} resultados (límite {job.PacsResultLimit}). Subdividida en {children.Count} particiones."
+                                    + (coverageGap is null ? "" : " ATENCIÓN: " + coverageGap);
+                if (coverageGap is not null)
+                    logger.LogWarning("[{Worker}] Partición {Id} ({Date}): {Gap}", workerId, partition.Id, dateStr, coverageGap);
                 partition.FinishedAt = DateTime.UtcNow;
                 partition.LockedByWorker = null;
                 await jobRepo.UpdatePartitionAsync(partition);
@@ -534,64 +551,141 @@ public class DiscoveryEngine(
     }
 
     // ── Adaptive subdivision logic ──────────────────────────────────────────────
-    private static bool CanSubdivide(DiscoveryPartition p) =>
-        // Day → DayModality → DayModalityTime, y un DayModalityTime todavía se puede
-        // afinar bisecando su ventana horaria hasta el suelo mínimo. La bisección es
-        // agnóstica a la modalidad, así que no pierde estudios por su modalidad.
-        p.PartitionType is "Day" or "DayModality"
-        || (p.PartitionType == "DayModalityTime" && TimeWindowSeconds(p) > MinTimeWindowSeconds);
+    // Jerarquía de subdivisión (DISC-1). PRIMERO por hora y, solo como último recurso,
+    // por modalidad:
+    //   Day ─► DayTime (4 franjas de 6 h) ─► DayTime (bisección… hasta 5 min)
+    //       ─► DayTimeModality (franja mínima aún truncada: una hija por modalidad)
+    // Partir por hora no depende de la modalidad, así que no pierde estudios de
+    // modalidades raras (SC, AU…) ni sin modalidad. Antes era al revés (Day ─►
+    // DayModality ─► DayModalityTime) y lo de modalidades fuera de la lista se perdía.
+    // Los tipos antiguos (DayModality, DayModalityTime) se siguen procesando para los
+    // jobs que ya los tenían creados.
+    private static bool CanSubdivide(DiscoveryPartition p) => p.PartitionType switch
+    {
+        "Day"             => true,
+        "DayTime"         => true,    // biseca o, en el suelo, reparte por modalidad
+        "DayTimeModality" => false,   // último nivel: si sigue truncada, PossiblyTruncated
+        "DayModality"     => true,    // (antiguo)
+        "DayModalityTime" => TimeWindowSeconds(p) > MinTimeWindowSeconds,   // (antiguo)
+        _                 => false,
+    };
 
-    private static List<DiscoveryPartition> Subdivide(
+    /// <summary>Genera las particiones hijas. <c>coverageGap</c> no es null cuando la
+    /// subdivisión NO puede garantizar que encuentra todo lo que quedó más allá del corte;
+    /// explica por qué, y la partición padre se marca PossiblyTruncated.</summary>
+    private static (List<DiscoveryPartition> children, string? coverageGap) Subdivide(
         DiscoveryPartition parent, int jobId, IReadOnlyList<DicomStudyDto> studies)
     {
         var children = new List<DiscoveryPartition>();
+        string? gap = null;
 
-        if (parent.PartitionType == "Day")
+        switch (parent.PartitionType)
         {
-            // Level 2: split by modality.
-            // Conjunto a cubrir = modalidades base ∪ las realmente presentes en la
-            // respuesta (troceando ModalitiesInStudy multivaluado). Así ninguna
-            // modalidad del día se queda sin partición hija aunque no esté en la base.
-            var mods = new HashSet<string>(BaselineModalities, StringComparer.OrdinalIgnoreCase);
-            foreach (var s in studies)
-                foreach (var m in SplitModalities(s.ModalitiesInStudy))
-                    mods.Add(m);
-
-            foreach (var mod in mods.OrderBy(m => m, StringComparer.Ordinal))
+            case "Day":
             {
-                children.Add(new DiscoveryPartition
+                foreach (var (from, to) in TimeRanges)
+                    children.Add(TimeChild(parent, jobId, "DayTime", ParseHms(from), ParseHms(to)));
+
+                // Un estudio sin StudyTime no cae en ninguna franja horaria. Los de la
+                // muestra ya se han guardado; si la muestra trae alguno, es probable que
+                // haya más tras el corte, y esos no los puede encontrar la subdivisión.
+                var noTime = studies.Count(s => string.IsNullOrWhiteSpace(s.StudyTime));
+                if (noTime > 0)
+                    gap = $"{noTime} estudio(s) de la muestra no tienen hora (StudyTime). Los estudios sin hora que " +
+                          "hubiera más allá del corte no los encuentra ninguna franja horaria: revisa ese día en el PACS " +
+                          "o sube el límite de resultados.";
+                break;
+            }
+            case "DayTime" when TimeWindowSeconds(parent) > MinTimeWindowSeconds:
+                Bisect(parent, jobId, "DayTime", children);
+                break;
+            case "DayTime":
+            {
+                // Franja mínima aún truncada: repartir por modalidad (base ∪ las vistas en
+                // la muestra, troceando ModalitiesInStudy multivaluado), conservando la hora.
+                foreach (var mod in ModalitySet(studies))
                 {
-                    DiscoveryJobId = jobId,
-                    PartitionType  = "DayModality",
-                    StartDate      = parent.StartDate,
-                    EndDate        = parent.EndDate,
-                    Modality       = mod,
-                    Status         = "Pending",
-                });
+                    var c = TimeChild(parent, jobId, "DayTimeModality", ParseHms(parent.StudyTimeFrom), ParseHms(parent.StudyTimeTo));
+                    c.Modality = mod;
+                    children.Add(c);
+                }
+                gap = $"La franja de {TimeWindowSeconds(parent) / 60} min sigue superando el límite; se ha repartido por " +
+                      "modalidad como último recurso. Los estudios sin modalidad, o de una modalidad que no esté en la " +
+                      "lista, que hubiera más allá del corte, pueden faltar.";
+                break;
             }
-        }
-        else if (parent.PartitionType == "DayModality")
-        {
-            // Level 3: split by time range (4 franjas de 6 h)
-            foreach (var (from, to) in TimeRanges)
-                children.Add(TimeChild(parent, jobId, ParseHms(from), ParseHms(to)));
-        }
-        else if (parent.PartitionType == "DayModalityTime")
-        {
-            // Level 3+: bisección recursiva de la ventana horaria. Mantiene la
-            // modalidad del padre (agnóstica a modalidad → no pierde estudios); solo
-            // afina el rango hasta bajar del límite o llegar al suelo (MinTimeWindowSeconds).
-            int from = ParseHms(parent.StudyTimeFrom);
-            int to   = ParseHms(parent.StudyTimeTo);
-            if (to > from)
-            {
-                int mid = from + (to - from) / 2;
-                children.Add(TimeChild(parent, jobId, from, mid));
-                children.Add(TimeChild(parent, jobId, mid + 1, to));
-            }
+
+            // ── Tipos antiguos (jobs creados antes de este cambio) ──
+            case "DayModality":
+                foreach (var (from, to) in TimeRanges)
+                    children.Add(TimeChild(parent, jobId, "DayModalityTime", ParseHms(from), ParseHms(to)));
+                break;
+            case "DayModalityTime":
+                Bisect(parent, jobId, "DayModalityTime", children);
+                break;
         }
 
-        return children;
+        return (children, gap);
+    }
+
+    /// <summary>Parte la ventana horaria del padre en dos mitades que comparten el segundo
+    /// central (sin hueco para StudyTime con fracción; el upsert deduplica).</summary>
+    private static void Bisect(DiscoveryPartition parent, int jobId, string type, List<DiscoveryPartition> children)
+    {
+        int from = ParseHms(parent.StudyTimeFrom);
+        int to   = ParseHms(parent.StudyTimeTo);
+        if (to <= from) return;
+        int mid = from + (to - from) / 2;
+        children.Add(TimeChild(parent, jobId, type, from, mid));
+        children.Add(TimeChild(parent, jobId, type, mid, to));
+    }
+
+    private static IEnumerable<string> ModalitySet(IReadOnlyList<DicomStudyDto> studies)
+    {
+        var mods = new HashSet<string>(BaselineModalities, StringComparer.OrdinalIgnoreCase);
+        foreach (var s in studies)
+            foreach (var m in SplitModalities(s.ModalitiesInStudy))
+                if (m.Length <= 16) mods.Add(m);   // 16 = longitud máxima de la columna
+        return mods.OrderBy(m => m, StringComparer.Ordinal);
+    }
+
+    /// <summary>Lee todas las páginas QIDO-RS de la partición (offset). <c>complete</c> es
+    /// false si el servidor no avanza con el offset o se supera MaxQidoPages: entonces lo
+    /// leído se usa como muestra y la partición se subdivide.</summary>
+    private static async Task<(List<DicomStudyDto> studies, bool ok, bool complete, int pages)> QidoAllPagesAsync(
+        IDicomWebService dicomWeb, DicomNode node, DiscoveryPartition partition, int limit, CancellationToken ct)
+    {
+        var all  = new List<DicomStudyDto>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        limit = Math.Max(1, limit);
+        int offset = 0;
+
+        for (int page = 1; ; page++)
+        {
+            var qido = await dicomWeb.QidoAsync(node, new QidoQuery
+            {
+                StudyDate         = BuildDateForQuery(partition),
+                // ModalitiesInStudy es el atributo de nivel ESTUDIO; Modality es de serie
+                // y un servidor podía ignorarlo o rechazarlo (DISC-6).
+                ModalitiesInStudy = partition.Modality,
+                StudyTime         = BuildTimeForQuery(partition),
+                Limit             = limit,
+                Offset            = offset,
+                IncludeField      = DiscoveryIncludeFields,
+            }, ct);
+            if (!qido.Success) return (all, false, false, page);
+
+            int fresh = 0;
+            foreach (var s in qido.Studies)
+            {
+                if (string.IsNullOrEmpty(s.StudyInstanceUid)) continue;
+                if (seen.Add(s.StudyInstanceUid)) { all.Add(s); fresh++; }
+            }
+
+            if (qido.Studies.Count < limit) return (all, true, true, page);   // última página
+            if (fresh == 0 || page >= MaxQidoPages) return (all, true, false, page);   // no pagina bien
+            offset += qido.Studies.Count;
+        }
     }
 
     // ── Helpers de ventana horaria (subdivisión temporal recursiva) ──────────────
@@ -617,10 +711,10 @@ public class DiscoveryEngine(
         return $"{totalSeconds / 3600:D2}{(totalSeconds % 3600) / 60:D2}{totalSeconds % 60:D2}";
     }
 
-    private static DiscoveryPartition TimeChild(DiscoveryPartition parent, int jobId, int fromSec, int toSec) => new()
+    private static DiscoveryPartition TimeChild(DiscoveryPartition parent, int jobId, string type, int fromSec, int toSec) => new()
     {
         DiscoveryJobId = jobId,
-        PartitionType  = "DayModalityTime",
+        PartitionType  = type,
         StartDate      = parent.StartDate,
         EndDate        = parent.EndDate,
         Modality       = parent.Modality,

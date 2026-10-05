@@ -59,7 +59,7 @@ public class DiscoveryJob
 
 /// <summary>
 /// Unidad mínima de trabajo del descubrimiento. Por defecto 1 día = 1 partición.
-/// Puede subdividirse por modalidad o rango horario si se detecta truncamiento.
+/// Si se detecta truncamiento se subdivide por rango horario y, como último recurso, por modalidad.
 /// </summary>
 public class DiscoveryPartition
 {
@@ -67,7 +67,7 @@ public class DiscoveryPartition
     public int      DiscoveryJobId { get; set; }
     public DiscoveryJob? DiscoveryJob { get; set; }
 
-    /// <summary>Day | DayModality | DayModalityTime</summary>
+    /// <summary>Day | DayTime | DayTimeModality (y, en jobs anteriores, DayModality | DayModalityTime)</summary>
     public string   PartitionType  { get; set; } = "Day";
 
     public DateOnly? StartDate     { get; set; }
