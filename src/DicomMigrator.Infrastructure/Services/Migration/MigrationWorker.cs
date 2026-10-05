@@ -484,23 +484,28 @@ public class MigrationWorker(
 
             var result = await dimse.MoveAsync(freshMigration.OriginNode!, request, ct);
 
-            // C-MOVE hacia otro PACS: éxito = Completed > 0 y Failed == 0.
+            // La regla de éxito vive en un solo sitio (CMoveService): respuesta FINAL del
+            // PACS, sin fallos ni pendientes. Antes aquí había otra copia, más laxa, que
+            // daba por migrado un C-MOVE cortado con solo las respuestas Pending (CONC-2).
             // ReceivedCount siempre es 0 porque los C-STORE van directo del origen al destino.
-            var success = result.Failed == 0
-                       && result.Completed > 0
-                       && (result.DicomStatus == 0x0000
-                           || result.DicomStatus == 0xFF00
-                           || result.DicomStatus == 0xFF01
-                           || result.Success);
+            var success = result.Success;
 
             var techMsg = $"Status=0x{result.DicomStatus:X4} " +
                           $"Completed={result.Completed} Received={result.ReceivedCount} " +
-                          $"Failed={result.Failed} Warning={result.Warning} {result.DurationMs}ms";
+                          $"Failed={result.Failed} Warning={result.Warning} Remaining={result.Remaining} {result.DurationMs}ms";
 
             if (!success && result.Completed == 0 && result.DicomStatus == null)
             {
                 // Sin respuesta alguna — timeout o asociación rechazada
                 techMsg = result.ErrorMessage ?? "Sin respuesta del PACS origen";
+            }
+            else if (!success && !result.FinalResponseReceived)
+            {
+                // Hubo respuestas Pending pero no la final: el C-MOVE se cortó a medias
+                // (inactividad, red, aborto del PACS). El estudio puede estar incompleto en
+                // el destino: se reintenta entero (el destino descarta los duplicados).
+                techMsg += " — C-MOVE cortado sin respuesta final del PACS origen: el estudio puede estar incompleto. " +
+                           (result.ErrorMessage ?? "");
             }
             else if (!success && result.Completed == 0)
             {
@@ -594,7 +599,9 @@ public class MigrationWorker(
             else
             {
                 // Fallo real del estudio: el origen respondió y procesó, pero alguna
-                // instancia falló (Failed > 0). El destino está operativo.
+                // instancia falló (Failed > 0), o el C-MOVE se cortó a medias sin respuesta
+                // final. Se gasta un reintento: así un estudio que se corta siempre acaba
+                // "Failed" y visible, en vez de quedar en bucle o darse por migrado.
                 var currentStudy = await studyRepo.GetByIdAsync(study.Id);
                 var retries      = (currentStudy?.RetryCount ?? study.RetryCount) + 1;
                 var nextStatus   = retries >= migration.MaxRetries ? "Failed" : "RetryPending";

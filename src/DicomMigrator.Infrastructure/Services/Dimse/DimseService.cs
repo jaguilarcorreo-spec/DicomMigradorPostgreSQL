@@ -140,6 +140,7 @@ public class DimseService(ILogger<DimseService> logger, ILocalConfigRepository l
             Failed     = result.Failed,
             Warning    = result.Warning,
             Remaining  = result.Remaining,
+            FinalResponseReceived = result.FinalResponseReceived,
             ReceivedCount     = result.ReceivedCount,
             DownloadDirectory = result.DownloadDirectory,
             ErrorMessage = result.ErrorMessage,

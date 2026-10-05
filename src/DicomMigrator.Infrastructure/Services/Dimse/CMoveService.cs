@@ -267,8 +267,13 @@ public class CMoveService(ILogger<CMoveService> logger)
                 result.Logs.Add($"[INFO] Recibido: {Path.GetFileName(path)}");
             });
 
+            // Vigilante de INACTIVIDAD, no tope total: se rearma con cada respuesta del PACS.
+            // Antes era un tope fijo (ResponseTimeout + 60 = 180 s por defecto) que cortaba
+            // cualquier estudio grande que tardara más, aunque el PACS siguiera enviando y
+            // respondiendo con Pending; y el corte se daba por bueno (CONC-2).
+            var inactivity = TimeSpan.FromSeconds(config.ResponseTimeoutSeconds + 60);
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            cts.CancelAfter(TimeSpan.FromSeconds(config.ResponseTimeoutSeconds + 60));
+            cts.CancelAfter(inactivity);
 
             var client = DicomClientFactory.Create(
                 config.RemoteHost, config.RemotePort, config.UseTls,
@@ -288,31 +293,62 @@ public class CMoveService(ILogger<CMoveService> logger)
                     new DicomCMoveRequest(request.DestinationAet, request.StudyInstanceUid),
             };
 
+            bool countersReported = false;
             moveReq.OnResponseReceived += (req, resp) =>
             {
                 result.DicomStatus = resp.Status.Code;
-                result.Remaining   = resp.Command.GetValueOrDefault(DicomTag.NumberOfRemainingSuboperations,  0, 0);
-                result.Completed   = resp.Command.GetValueOrDefault(DicomTag.NumberOfCompletedSuboperations, 0, 0);
-                result.Failed      = resp.Command.GetValueOrDefault(DicomTag.NumberOfFailedSuboperations,    0, 0);
-                result.Warning     = resp.Command.GetValueOrDefault(DicomTag.NumberOfWarningSuboperations,   0, 0);
+                var isFinal = resp.Status.State != DicomState.Pending;
+
+                // Los contadores son OPCIONALES en la respuesta final (PS3.4 C.4.2.1.4):
+                // solo se actualizan si vienen. Antes un final sin contadores los ponía a 0
+                // y un estudio ya migrado se reenviaba hasta acabar "Failed" (DCM-6).
+                if (TryCount(resp.Command, DicomTag.NumberOfCompletedSuboperations, out var c)) { result.Completed = c; countersReported = true; }
+                if (TryCount(resp.Command, DicomTag.NumberOfFailedSuboperations,    out var f)) { result.Failed    = f; countersReported = true; }
+                if (TryCount(resp.Command, DicomTag.NumberOfWarningSuboperations,   out var w)) { result.Warning   = w; countersReported = true; }
+                // Remaining solo tiene sentido en las Pending; en la final, si no viene, es 0.
+                result.Remaining = TryCount(resp.Command, DicomTag.NumberOfRemainingSuboperations, out var r) ? r
+                                 : isFinal ? 0 : result.Remaining;
+                if (isFinal) result.FinalResponseReceived = true;
+
                 result.Logs.Add($"[INFO] Status={resp.Status} Completed={result.Completed} " +
                                 $"Failed={result.Failed} Remaining={result.Remaining}");
+
+                // Hay actividad: rearmar el vigilante de inactividad.
+                try { cts.CancelAfter(inactivity); } catch (ObjectDisposedException) { }
             };
 
             await client.AddRequestAsync(moveReq);
             await client.SendAsync(cts.Token);
 
+            // fo-dicom NO lanza excepción al cancelar (modo ImmediatelyReleaseAssociation):
+            // SendAsync vuelve con normalidad y lo recibido hasta entonces son respuestas
+            // Pending con una parte de las imágenes. Antes eso se daba por migrado.
+            if (ct.IsCancellationRequested)
+                throw new OperationCanceledException(ct);   // pausa/parada/ventana: ver catch
+            if (cts.IsCancellationRequested && !result.FinalResponseReceived)
+            {
+                result.ErrorMessage = $"Sin respuesta del PACS origen durante {inactivity.TotalSeconds:0} s " +
+                                      $"(C-MOVE cortado sin respuesta final; Completed={result.Completed}, Remaining={result.Remaining}).";
+                result.Logs.Add($"[WARN] {result.ErrorMessage}");
+            }
+
             // C-MOVE hacia otro PACS: el origen envía los C-STORE directamente al destino,
             // NO pasan por el SCP local del migrador. ReceivedCount siempre será 0.
-            // Éxito = no hubo fallos Y el PACS reportó al menos 1 completada.
-            // 0xFF00/0xFF01 son respuestas de progreso válidas (Pending); si la final
-            // es 0x0000 o quedó en 0xFF00 con Completed>0 y Failed=0 → OK.
+            //
+            // Éxito SOLO con la respuesta FINAL del PACS (CONC-2):
+            //   · 0x0000 (todas las sub-operaciones OK), o 0xB000 (terminado con avisos) sin
+            //     fallos: los avisos no son pérdida de imágenes (CONC-17);
+            //   · sin fallos ni sub-operaciones pendientes;
+            //   · al menos una completada, salvo que el PACS no informe contadores (son
+            //     opcionales) y la final sea 0x0000.
+            // Una 0xFF00/0xFF01 (Pending) como último estado significa que el C-MOVE no
+            // terminó: tope, corte de red o aborto del PACS. Ya no cuenta como migrado.
             result.ReceivedCount = received.Count; // para diagnóstico, siempre 0 en C-MOVE normal
-            result.Success = result.Failed == 0
-                          && result.Completed > 0
-                          && (result.DicomStatus == 0x0000
-                              || result.DicomStatus == 0xFF00
-                              || result.DicomStatus == 0xFF01);
+            result.Success = result.FinalResponseReceived
+                          && (result.DicomStatus == 0x0000 || result.DicomStatus == 0xB000)
+                          && result.Failed == 0
+                          && result.Remaining == 0
+                          && (result.Completed > 0 || (!countersReported && result.DicomStatus == 0x0000));
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -367,5 +403,14 @@ public class CMoveService(ILogger<CMoveService> logger)
             }
         }
         return result;
+    }
+
+    /// <summary>Lee un contador de sub-operaciones solo si el PACS lo incluyó.</summary>
+    private static bool TryCount(DicomDataset command, DicomTag tag, out int value)
+    {
+        value = 0;
+        if (!command.Contains(tag)) return false;
+        value = command.GetValueOrDefault(tag, 0, 0);
+        return true;
     }
 }

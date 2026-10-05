@@ -181,6 +181,9 @@ public class CMoveResult
     public int     Failed            { get; set; }
     public int     Warning           { get; set; }
     public int     Remaining         { get; set; }
+    /// <summary>True si llegó la respuesta FINAL (no Pending) del C-MOVE. Si es false con
+    /// Completed &gt; 0, el C-MOVE se cortó a medias: el estudio NO está migrado entero.</summary>
+    public bool    FinalResponseReceived { get; set; }
     public int     ReceivedCount     { get; set; }   // instancias realmente llegadas al SCP
     public string  DownloadDirectory { get; set; } = string.Empty;
     public string? ErrorMessage      { get; set; }
