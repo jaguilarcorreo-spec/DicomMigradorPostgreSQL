@@ -156,6 +156,15 @@ public class MigrationWorker(
                 logger.LogWarning("Migración {Id}: {N} estudio(s) huérfano(s) en 'Queued'/'Migrating' " +
                     "devuelto(s) a 'Pending' (sin consumir reintento).", migrationId, rescued);
 
+            // Rango de modalidad de los estudios en cola, según la prioridad ACTUAL de la
+            // migración: lo usa el índice de la cola para que cada worker tome su estudio
+            // en orden sin ordenar todos los pendientes (CONC-9). Recoge los estudios
+            // poblados desde el último arranque y los cambios de prioridad hechos con la
+            // migración en pausa. Solo actualiza las filas cuyo rango cambia.
+            var ranked = await StudyRepo(scope).RecomputeModalityRankAsync(migrationId, ParsePriority(migration.ModalityPriority));
+            if (ranked > 0)
+                logger.LogInformation("Migración {Id}: prioridad de modalidad recalculada en {N} estudio(s).", migrationId, ranked);
+
             await MigrationRepo(scope).UpdateStatusAsync(migrationId, "Running");
             // Acción manual: limpiar el flag de auto-pausa por conexión.
             await MigrationRepo(scope).SetMigrationAutoPausedAsync(migrationId, false);
@@ -177,7 +186,7 @@ public class MigrationWorker(
         }
 
         // Launch worker threads — each creates its own scope
-        var priorities = (migration.ModalityPriority ?? "CT,MR,MG,CR,OT").Split(',');
+        var priorities = ParsePriority(migration.ModalityPriority);
         var tasks = Enumerable.Range(0, migration.WorkerThreads)
             .Select(i => RunWorkerLoopAsync(migration, $"WORKER-{i + 1}", priorities, cts))
             .ToArray();
@@ -370,8 +379,10 @@ public class MigrationWorker(
                         // Nothing acquired. Check whether the queue is definitively empty:
                         // no Pending, nothing Migrating (in-flight on another worker), and
                         // no RetryPending waiting for its delay. If so, this worker is done.
-                        var stats = await StudyRepo(scope).GetStatsAsync(migration.Id);
-                        var workLeft = stats.Pending > 0 || stats.Migrating > 0 || stats.RetryPending > 0;
+                        // Con SKIP LOCKED, "nada" ya no significa haber perdido la carrera: no hay
+                        // ningún estudio disponible ahora. ¿Queda trabajo (en curso en otro worker
+                        // o esperando su reintento)? EXISTS, sin agregar toda la migración.
+                        var workLeft = await StudyRepo(scope).HasMigrationWorkPendingAsync(migration.Id);
                         if (!workLeft)
                         {
                             logger.LogInformation("Worker {Id} sees empty queue — exiting", workerId);
@@ -773,6 +784,12 @@ public class MigrationWorker(
             await heartbeat;   // nunca lanza: traga sus propios errores y la cancelación
         }
     }
+
+    /// <summary>Lista de prioridad de modalidades de la migración ("CT,MR,…"), sin
+    /// espacios ni entradas vacías. Por defecto CT, MR, MG, CR, OT.</summary>
+    private static string[] ParsePriority(string? modalityPriority) =>
+        (string.IsNullOrWhiteSpace(modalityPriority) ? "CT,MR,MG,CR,OT" : modalityPriority)
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
     /// <summary>Explicación de 0xA801 con los datos exactos que hay que dar de alta.</summary>
     private static string MoveDestinationUnknownMessage(MigrationEntity m, string? pacsComment)

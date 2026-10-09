@@ -216,6 +216,10 @@ public class MigrationStudy
     public string?  AccessionNumber    { get; set; }
     public string?  StudyDate          { get; set; }
     public string?  ModalitiesInStudy  { get; set; }
+    /// <summary>Posición de la primera modalidad del estudio en la prioridad de la
+    /// migración (1 = la más prioritaria; 999 = no está en la lista). La calcula
+    /// MigrationWorker.StartAsync y la usa el índice de la cola de trabajo (CONC-9).</summary>
+    public short    ModalityRank       { get; set; } = 999;
 
     // ── Contadores origen ────────────────────────────────────────────────────
     public int?     SourceSeriesCount    { get; set; }

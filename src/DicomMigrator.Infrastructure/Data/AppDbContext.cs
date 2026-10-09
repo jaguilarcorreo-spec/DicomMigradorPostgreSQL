@@ -1,5 +1,6 @@
 using DicomMigrator.Core.Models;
 using Microsoft.EntityFrameworkCore;
+using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
 namespace DicomMigrator.Infrastructure.Data;
 
@@ -100,11 +101,30 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             // ahora en el modelo para que entren en las migraciones EF y los cree
             // el dueño del esquema con los permisos correctos).
             //
-            // Índice PARCIAL para AcquireNextPending: solo cubre estudios accionables,
-            // así se mantiene pequeño aunque la tabla tenga millones de filas.
-            e.HasIndex(x => new { x.MigrationId, x.StudyDate })
-             .HasDatabaseName("IX_MigStudies_active")
-             .HasFilter("\"MigrationStatus\" IN ('Pending','RetryPending')");
+            // ── Colas de trabajo (CONC-9) ────────────────────────────────────────
+            // Índices PARCIALES que ya están en el ORDEN en que los workers toman los
+            // estudios. Con FOR UPDATE SKIP LOCKED cada worker recorre el índice en orden
+            // y se queda con el primero que nadie tenga bloqueado: ~1 ms aunque haya
+            // millones pendientes, y sin que todos compitan por el mismo estudio. Solo
+            // cubren los estudios en cola, así que encogen a medida que se migra.
+            // Sustituyen a IX_MigStudies_active (MigrationId, StudyDate), que el
+            // planificador no usaba porque no coincidía con el orden de la cola (BD-7).
+            e.Property(x => x.ModalityRank).HasDefaultValue((short)999);
+
+            // Orden por defecto: más recientes primero (StudyDate DESC, sin fecha al final).
+            e.HasIndex(x => new { x.MigrationId, x.ModalityRank, x.RetryCount, x.StudyDate, x.Id }, "IX_MigStudies_queue_newest")
+             .HasFilter("\"MigrationStatus\" = 'Pending'")
+             .IsDescending(false, false, false, true, false)
+             .HasNullSortOrder(NullSortOrder.NullsLast, NullSortOrder.NullsLast, NullSortOrder.NullsLast,
+                               NullSortOrder.NullsLast, NullSortOrder.NullsLast);
+
+            // Opción "más antiguos primero" (StudyDate ASC, sin fecha al final).
+            e.HasIndex(x => new { x.MigrationId, x.ModalityRank, x.RetryCount, x.StudyDate, x.Id }, "IX_MigStudies_queue_oldest")
+             .HasFilter("\"MigrationStatus\" = 'Pending'");
+
+            // Cola de verificación: los migrados por orden de Id.
+            e.HasIndex(x => new { x.MigrationId, x.Id }, "IX_MigStudies_verify_queue")
+             .HasFilter("\"MigrationStatus\" = 'Migrated'");
 
             e.HasIndex(x => new { x.MigrationId, x.DiscoveryDate })
              .HasDatabaseName("IX_MigStudies_Mig_DiscDate");

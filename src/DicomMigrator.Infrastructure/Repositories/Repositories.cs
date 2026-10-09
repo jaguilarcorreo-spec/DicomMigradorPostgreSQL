@@ -2,6 +2,7 @@ using DicomMigrator.Core.Interfaces;
 using DicomMigrator.Core.Models;
 using DicomMigrator.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
+using Npgsql;
 using System.Text;
 
 namespace DicomMigrator.Infrastructure.Repositories;
@@ -607,7 +608,9 @@ WHERE di.""DiscoveredStudyId"" = ANY({batchStudyIds})
     {
         await using var db = factory.CreateDbContext();
 
-        var priorityList = modalityPriority.Select((m, i) => (m, i)).ToList();
+        // La prioridad de modalidades ya no se aplica aquí: está precalculada en
+        // ModalityRank (RecomputeModalityRankAsync, al iniciar la migración).
+        _ = modalityPriority;
 
         // Release stale locks (> 10 min without update)
         var staleCutoff = DateTime.UtcNow.AddMinutes(-10);
@@ -642,65 +645,77 @@ WHERE di.""DiscoveredStudyId"" = ANY({batchStudyIds})
         var retryCutoff = DateTime.UtcNow.AddSeconds(-retryDelaySeconds);
 
         // StudyDate se guarda como string en formato DICOM DA (YYYYMMDD, 8 caracteres
-        // fijos) — no como fecha nativa — así que la comparación lexicográfica de
-        // cadenas de PostgreSQL da el mismo orden que la comparación cronológica. Esto
-        // asume que el valor SIEMPRE tiene ese formato exacto; un StudyDate vacío o mal
-        // formado devuelto por un PACS no conforme rompería el filtro/orden en
-        // silencio, pero está fuera de alcance arreglarlo aquí sin migrar la columna.
+        // fijos), así que la comparación de cadenas da el orden cronológico.
         var startDateStr = startFromDate?.ToString("yyyyMMdd");
 
-        var query = db.MigrationStudies
-            .Where(s => s.MigrationId == migrationId
-                     && s.LockedByWorker == null
-                     && (s.MigrationStatus == "Pending"
-                         || (s.MigrationStatus == "RetryPending" && s.LastUpdateDate < retryCutoff)));
+        // ── Adquisición atómica (CONC-9) ──────────────────────────────────────
+        // Antes: leer 50 candidatos, elegir en memoria y bloquear en otro paso. Todos
+        // los workers elegían el MISMO estudio; uno ganaba y los demás recibían "nada"
+        // y dormían 5-30 s como si la cola estuviera vacía. Y la prioridad por
+        // modalidad solo se aplicaba dentro de esos 50 (CONC-16).
+        // Ahora: una sola sentencia que recorre el índice de la cola en orden y bloquea
+        // el primer estudio que nadie tenga (FOR UPDATE SKIP LOCKED). Cada worker se
+        // queda con uno distinto, la prioridad se aplica a todos los pendientes y el
+        // coste no depende de cuántos haya (~1 ms con millones, índices
+        // IX_MigStudies_queue_newest / _oldest). Orden: rango de modalidad (calculado en
+        // StartAsync), reintentos, fecha (más recientes o más antiguos primero, sin fecha
+        // al final) e Id. Los RetryPending solo cuando no queda ningún Pending.
+        var dateOrder  = oldestFirst ? @"s.""StudyDate"" ASC NULLS LAST" : @"s.""StudyDate"" DESC NULLS LAST";
+        var dateFilter = startDateStr is null ? "" : @" AND (s.""StudyDate"" IS NULL OR s.""StudyDate"" >= @start)";
+        string ClaimSql(string statusFilter) => $@"
+UPDATE ""MigrationStudies"" AS m
+SET ""MigrationStatus"" = 'Queued', ""LockedByWorker"" = @worker, ""LockDate"" = @now, ""MigrationStartDate"" = @now
+WHERE m.""Id"" = (
+    SELECT s.""Id"" FROM ""MigrationStudies"" AS s
+    WHERE s.""MigrationId"" = @mig AND s.""LockedByWorker"" IS NULL AND {statusFilter}{dateFilter}
+    ORDER BY s.""ModalityRank"", s.""RetryCount"", {dateOrder}, s.""Id""
+    LIMIT 1
+    FOR UPDATE SKIP LOCKED)
+RETURNING m.*";
 
-        // Apply StartFromDate filter if configured
-        if (startDateStr is not null)
-            query = query.Where(s => s.StudyDate == null || string.Compare(s.StudyDate, startDateStr) >= 0);
+        NpgsqlParameter[] Params() =>
+        [
+            new("mig", migrationId), new("worker", workerId), new("now", DateTime.UtcNow),
+            new("start", (object?)startDateStr ?? DBNull.Value), new("retryCutoff", retryCutoff),
+        ];
 
-        var candidates = await query
-            .OrderBy(s => s.MigrationStatus == "RetryPending" ? 1 : 0)
-            .ThenBy(s => s.Id)
-            .Take(50)
-            .ToListAsync();
+        var claimed = await db.MigrationStudies
+            .FromSqlRaw(ClaimSql(@"s.""MigrationStatus"" = 'Pending'"), Params())
+            .AsNoTracking().ToListAsync();
+        if (claimed.Count == 0)
+            claimed = await db.MigrationStudies
+                .FromSqlRaw(ClaimSql(@"s.""MigrationStatus"" = 'RetryPending' AND s.""LastUpdateDate"" < @retryCutoff"), Params())
+                .AsNoTracking().ToListAsync();
+        return claimed.FirstOrDefault();
+    }
 
-        if (candidates.Count == 0) return null;
+    /// <summary>True si a la migración le queda trabajo de migración: algún estudio
+    /// Pending, Migrating o RetryPending. EXISTS, sin agregar toda la migración.</summary>
+    public async Task<bool> HasMigrationWorkPendingAsync(int migrationId)
+    {
+        await using var db = factory.CreateDbContext();
+        return await db.MigrationStudies.AnyAsync(s => s.MigrationId == migrationId
+            && (s.MigrationStatus == "Pending"
+                || s.MigrationStatus == "Migrating"
+                || s.MigrationStatus == "RetryPending"));
+    }
 
-        // Sort by priority in memory:
-        // 1. RetryPending studies go last
-        // 2. Modality priority (independent of date ordering)
-        // 3. Date direction controlled by OldestFirst switch
-        IOrderedEnumerable<MigrationStudy> ordered;
-        var byModality = candidates
-            .OrderBy(s => s.MigrationStatus == "RetryPending" ? 1 : 0)
-            .ThenBy(s =>
-            {
-                var m = s.ModalitiesInStudy?.Split('\\', '/', ',').FirstOrDefault() ?? "";
-                var entry = priorityList.FirstOrDefault(p => p.m == m);
-                return entry == default ? 999 : entry.i;
-            })
-            .ThenBy(s => s.RetryCount);
-
-        ordered = oldestFirst
-            ? byModality.ThenBy(s => s.StudyDate ?? "99999999")          // ASC — oldest first
-            : byModality.ThenByDescending(s => s.StudyDate ?? "00000000"); // DESC — newest first
-
-        var selected = ordered.FirstOrDefault();
-
-        if (selected is null) return null;
-
-        // Atomic lock
-        var locked = await db.MigrationStudies
-            .Where(s => s.Id == selected.Id && s.LockedByWorker == null
-                     && (s.MigrationStatus == "Pending" || s.MigrationStatus == "RetryPending"))
-            .ExecuteUpdateAsync(u => u
-                .SetProperty(s => s.MigrationStatus, "Queued")
-                .SetProperty(s => s.LockedByWorker, workerId)
-                .SetProperty(s => s.LockDate, DateTime.UtcNow)
-                .SetProperty(s => s.MigrationStartDate, DateTime.UtcNow));
-
-        return locked > 0 ? selected : null;
+    /// <summary>Recalcula ModalityRank de los estudios en cola según la prioridad de
+    /// modalidades de la migración: posición (1..n) de la PRIMERA modalidad del estudio
+    /// (ModalitiesInStudy, separada por \, / o ,) en la lista; 999 si no está. Solo
+    /// toca las filas cuyo rango cambia, así que tras la primera vez es casi gratis.</summary>
+    public async Task<int> RecomputeModalityRankAsync(int migrationId, IReadOnlyList<string> modalityPriority)
+    {
+        await using var db = factory.CreateDbContext();
+        db.Database.SetCommandTimeout(TimeSpan.FromMinutes(10));   // la 1.ª vez con millones de filas
+        const string rank = @"COALESCE(array_position(@prio,
+            split_part(translate(COALESCE(""ModalitiesInStudy"", ''), '/,', chr(92) || chr(92)), chr(92), 1)), 999)::smallint";
+        return await db.Database.ExecuteSqlRawAsync($@"
+UPDATE ""MigrationStudies"" SET ""ModalityRank"" = {rank}
+WHERE ""MigrationId"" = @mig AND ""MigrationStatus"" IN ('Pending', 'RetryPending')
+  AND ""ModalityRank"" <> {rank}",
+            new NpgsqlParameter("mig", migrationId),
+            new NpgsqlParameter("prio", modalityPriority.ToArray()));
     }
 
     public async Task<bool> HasVerificationWorkPendingAsync(int migrationId)
@@ -735,29 +750,36 @@ WHERE di.""DiscoveredStudyId"" = ANY({batchStudyIds})
         // VerifyRetryPending must wait at least retryDelaySeconds since last attempt
         var retryCutoff = DateTime.UtcNow.AddSeconds(-retryDelaySeconds);
 
-        // Acquire studies in 'Migrated' state, or 'VerifyRetryPending' whose delay elapsed.
-        var candidate = await db.MigrationStudies
-            .Where(s => s.MigrationId == migrationId
-                     && s.VerifyLockedByWorker == null
-                     && (s.MigrationStatus == "Migrated"
-                         || (s.MigrationStatus == "VerifyRetryPending" && s.LastUpdateDate < retryCutoff)))
-            .OrderBy(s => s.MigrationStatus == "VerifyRetryPending" ? 1 : 0)
-            .ThenBy(s => s.Id)
-            .FirstOrDefaultAsync();
+        // Adquisición atómica con SKIP LOCKED (CONC-9 / BD-2): cada worker de verificación
+        // se queda con un estudio distinto en ~1 ms (índice IX_MigStudies_verify_queue),
+        // en vez de ordenar todos los migrados y competir por el mismo. Los
+        // VerifyRetryPending solo cuando no queda ningún Migrated.
+        static string ClaimSql(string statusFilter) => $@"
+UPDATE ""MigrationStudies"" AS m
+SET ""MigrationStatus"" = 'VerificationPending', ""VerifyLockedByWorker"" = @worker,
+    ""VerifyLockDate"" = @now, ""VerificationStartDate"" = @now
+WHERE m.""Id"" = (
+    SELECT s.""Id"" FROM ""MigrationStudies"" AS s
+    WHERE s.""MigrationId"" = @mig AND s.""VerifyLockedByWorker"" IS NULL AND {statusFilter}
+    ORDER BY s.""Id""
+    LIMIT 1
+    FOR UPDATE SKIP LOCKED)
+RETURNING m.*";
 
-        if (candidate is null) return null;
+        NpgsqlParameter[] Params() =>
+        [
+            new("mig", migrationId), new("worker", workerId), new("now", DateTime.UtcNow),
+            new("retryCutoff", retryCutoff),
+        ];
 
-        // Atomic lock: mark VerificationPending + set verify lock + start timestamp
-        var locked = await db.MigrationStudies
-            .Where(s => s.Id == candidate.Id && s.VerifyLockedByWorker == null
-                     && (s.MigrationStatus == "Migrated" || s.MigrationStatus == "VerifyRetryPending"))
-            .ExecuteUpdateAsync(u => u
-                .SetProperty(s => s.MigrationStatus, "VerificationPending")
-                .SetProperty(s => s.VerifyLockedByWorker, workerId)
-                .SetProperty(s => s.VerifyLockDate, DateTime.UtcNow)
-                .SetProperty(s => s.VerificationStartDate, DateTime.UtcNow));
-
-        return locked > 0 ? candidate : null;
+        var claimed = await db.MigrationStudies
+            .FromSqlRaw(ClaimSql(@"s.""MigrationStatus"" = 'Migrated'"), Params())
+            .AsNoTracking().ToListAsync();
+        if (claimed.Count == 0)
+            claimed = await db.MigrationStudies
+                .FromSqlRaw(ClaimSql(@"s.""MigrationStatus"" = 'VerifyRetryPending' AND s.""LastUpdateDate"" < @retryCutoff"), Params())
+                .AsNoTracking().ToListAsync();
+        return claimed.FirstOrDefault();
     }
 
     /// <summary>Finalize a verification attempt: Verified on success, or VerifyRetryPending

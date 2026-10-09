@@ -196,6 +196,14 @@ public interface IStudyRepository
     /// 'VerificationPending' (in flight) or 'VerifyRetryPending' (awaiting retry).</summary>
     Task<bool> HasVerificationWorkPendingAsync(int migrationId);
 
+    /// <summary>True si queda trabajo de migración: algún estudio Pending, Migrating o
+    /// RetryPending (EXISTS; para que un worker decida si sale).</summary>
+    Task<bool> HasMigrationWorkPendingAsync(int migrationId);
+
+    /// <summary>Recalcula ModalityRank de los estudios en cola según la prioridad de
+    /// modalidades de la migración (CONC-9). Devuelve cuántos cambiaron.</summary>
+    Task<int> RecomputeModalityRankAsync(int migrationId, IReadOnlyList<string> modalityPriority);
+
     Task UpdateStatusAsync(long id, string status, string? error = null);
     Task UpdateVerificationAsync(long id, string status, int? targetSeries, int? targetInstances);
     Task UpdateVerificationStartAsync(long id);
