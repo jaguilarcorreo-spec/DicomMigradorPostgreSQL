@@ -8,6 +8,8 @@
 ;    · Copia el ejecutable autónomo (win-x64) a C:\DicomMigrator (por defecto).
 ;    · Primera instalación: pide la conexión PostgreSQL, puerto web y contraseña inicial
 ;      de admin, y escribe appsettings.Production.json (solo Administradores/SYSTEM).
+;    · Protege la carpeta (en cada instalación y actualización): sin herencia de C:\;
+;      Usuarios solo lectura y ejecución; logs solo Administradores/SYSTEM (SEC-1).
 ;    · Opcional: crea el rol y la base del Modelo A con un superusuario (--setup-db).
 ;    · Opcional: copia un fichero de licencia .dmlic.
 ;    · Registra el Servicio de Windows "DicomMigrator" con reinicio automático.
@@ -416,10 +418,70 @@ begin
   SetArrayLength(Lines, N);
 
   SaveStringsToUTF8File(ConfigPath, Lines, False);
+  { Sus permisos (solo Administradores y SYSTEM) los fija SecureInstallDir. }
+end;
 
-  { Contiene contraseñas: solo Administradores (S-1-5-32-544) y SYSTEM (S-1-5-18). }
-  RunHidden(ExpandConstant('{sys}\icacls.exe'),
-    '"' + ConfigPath + '" /inheritance:r /grant:r *S-1-5-32-544:F *S-1-5-18:F');
+{ ── Permisos de la carpeta de instalación (SEC-1) ─────────────────────────────
+  Antes la carpeta heredaba los permisos de C:\, que en Windows de escritorio dan
+  "Modificar" a Usuarios autentificados: cualquier usuario sin privilegios podía
+  sustituir el .exe o una DLL que el servicio ejecuta como LocalSystem (escalada a
+  SYSTEM), editar appsettings.json o leer los logs, que contienen datos de pacientes.
+  Ahora:
+    · carpeta y contenido: Administradores y SYSTEM control total; Usuarios, solo
+      lectura y ejecución;
+    · logs: solo Administradores y SYSTEM;
+    · appsettings.Production.json (contraseñas): solo Administradores y SYSTEM.
+  Se aplica en cada instalación y actualización, así que corrige también las
+  instalaciones existentes. Se usan SID, no nombres, para que valga en cualquier
+  idioma de Windows: S-1-5-32-544 Administradores, S-1-5-18 SYSTEM,
+  S-1-5-32-545 Usuarios. }
+function Icacls(const Params: String; var Failed: String): Boolean;
+var Code: Integer;
+begin
+  Code := RunHidden(ExpandConstant('{sys}\icacls.exe'), Params);
+  Result := Code = 0;
+  Log('icacls ' + Params + ' -> ' + IntToStr(Code));
+  if not Result then
+    Failed := Failed + '  icacls ' + Params + '  (código ' + IntToStr(Code) + ')' + #13#10;
+end;
+
+procedure SecureInstallDir;
+var
+  App, Logs, Failed: String;
+begin
+  WizardForm.StatusLabel.Caption := 'Protegiendo la carpeta de instalación...';
+  App := ExpandConstant('{app}');
+  Logs := App + '\logs';
+  Failed := '';
+
+  { 1. La carpeta deja de heredar de C:\ y recibe permisos explícitos heredables.
+       /grant:r solo sustituye los grupos que nombra: un permiso EXPLÍCITO previo para
+       Usuarios autentificados (S-1-5-11), Todos (S-1-1-0), Interactivo (S-1-5-4) o
+       CREATOR OWNER (S-1-3-0), p. ej. añadido a mano, se quedaría. Se quita antes. }
+  Icacls('"' + App + '" /inheritance:r', Failed);
+  Icacls('"' + App + '" /remove:g *S-1-5-11 *S-1-1-0 *S-1-5-4 *S-1-3-0', Failed);
+  Icacls('"' + App + '" /grant:r *S-1-5-32-544:(OI)(CI)F *S-1-5-18:(OI)(CI)F ' +
+         '*S-1-5-32-545:(OI)(CI)RX', Failed);
+  { 2. Todo su contenido pasa a heredar de ella. Quita los permisos heredados de C:\
+       que quedaran en ficheros de una instalación anterior. }
+  Icacls('"' + App + '\*" /reset /T /C /Q', Failed);
+  { 3. Configuración con contraseñas: el paso 2 la restablece; se vuelve a proteger. }
+  if FileExists(ConfigPath) then
+    Icacls('"' + ConfigPath + '" /inheritance:r /grant:r *S-1-5-32-544:F *S-1-5-18:F', Failed);
+  { 4. Logs: pueden contener datos de pacientes. Sin acceso para Usuarios. }
+  if DirExists(Logs) then
+  begin
+    Icacls('"' + Logs + '" /inheritance:r', Failed);
+    Icacls('"' + Logs + '" /remove:g *S-1-5-11 *S-1-1-0 *S-1-5-4 *S-1-3-0 *S-1-5-32-545', Failed);
+    Icacls('"' + Logs + '" /grant:r *S-1-5-32-544:(OI)(CI)F *S-1-5-18:(OI)(CI)F', Failed);
+    Icacls('"' + Logs + '\*" /reset /T /C /Q', Failed);
+  end;
+
+  if Failed <> '' then
+    SuppressibleMsgBox('No se pudieron ajustar todos los permisos de la carpeta de instalación:' + #13#10#13#10 +
+      Failed + #13#10 + 'La aplicación funcionará, pero la carpeta puede quedar modificable por ' +
+      'usuarios sin privilegios. Revisa los permisos con: icacls "' + App + '"',
+      mbError, MB_OK, IDOK);
 end;
 
 procedure SetupDatabase;
@@ -478,6 +540,9 @@ begin
 
   if not KeptConfig then
     WriteConfig;
+
+  { Antes de ejecutar nada de la carpeta (--setup-db, servicio): permisos seguros. }
+  SecureInstallDir;
 
   SetupDatabase;
 

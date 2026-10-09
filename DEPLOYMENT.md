@@ -35,6 +35,12 @@ El instalador (ejecutar como administrador en la máquina destino):
 - Pide servidor/puerto/base/usuario/contraseña de PostgreSQL, puerto HTTP, contraseña
   inicial de `admin` y, opcionalmente, un fichero `.dmlic`, y escribe
   `appsettings.Production.json` (con permisos solo para Administradores y SYSTEM).
+- Protege la carpeta de instalación, también al actualizar: deja de heredar los permisos
+  de `C:\` (que en Windows de escritorio dan *Modificar* a Usuarios autentificados) y queda
+  con control total para Administradores y SYSTEM y solo lectura y ejecución para Usuarios.
+  La carpeta `logs` queda solo para Administradores y SYSTEM, porque puede contener datos
+  de pacientes. Así un usuario sin privilegios no puede sustituir el programa que el
+  servicio ejecuta como SYSTEM. Para comprobarlo: `icacls C:\DicomMigrator`.
 - Opcionalmente crea el rol y la base (sección 1) con un superusuario que no se guarda,
   y comprueba la conexión (`DicomMigrator.Web.exe --setup-db`).
 - Registra y arranca el servicio `DicomMigrator` con reinicio automático ante fallos, y
@@ -346,7 +352,8 @@ sc delete DicomMigrator    # eliminar el servicio (tras detenerlo)
 ### 8.6 Si el servicio no arranca
 
 Si `sc query DicomMigrator` muestra que el servicio se detuvo o no llega a `RUNNING`,
-revisa los logs de la aplicación, que se escriben junto al ejecutable:
+revisa los logs de la aplicación, que se escriben junto al ejecutable. La carpeta `logs`
+solo es accesible para administradores: abre la consola como administrador.
 
 ```bash
 type C:\DicomMigrator\logs\dicommigrator-*.log
