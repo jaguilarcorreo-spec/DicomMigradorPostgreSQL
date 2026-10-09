@@ -189,6 +189,10 @@ public class CMoveResult
     /// <summary>True si llegó la respuesta FINAL (no Pending) del C-MOVE. Si es false con
     /// Completed &gt; 0, el C-MOVE se cortó a medias: el estudio NO está migrado entero.</summary>
     public bool    FinalResponseReceived { get; set; }
+    /// <summary>Comentario de error (0000,0902) del PACS, p. ej. "VNAPRE is a unknown move
+    /// destination". Va aparte de ErrorMessage para no alterar la detección de errores de
+    /// conexión, que se basa en el texto de ErrorMessage.</summary>
+    public string? ErrorComment      { get; set; }
     public int     ReceivedCount     { get; set; }   // instancias realmente llegadas al SCP
     public string  DownloadDirectory { get; set; } = string.Empty;
     public string? ErrorMessage      { get; set; }

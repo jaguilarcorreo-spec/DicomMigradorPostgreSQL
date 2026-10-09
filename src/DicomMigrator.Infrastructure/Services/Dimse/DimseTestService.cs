@@ -103,6 +103,8 @@ public class TesterCMoveResult
     /// <summary>True si llegó la respuesta FINAL (no Pending) del C-MOVE. Sin ella, el
     /// C-MOVE se cortó (inactividad, red, aborto) y lo contado es parcial.</summary>
     public bool    FinalResponseReceived { get; set; }
+    /// <summary>Comentario de error (0000,0902) que el PACS adjunta a la respuesta, si lo hay.</summary>
+    public string? ErrorComment      { get; set; }
     public int     ReceivedCount     { get; set; }   // instancias realmente recibidas en el SCP
     public string  DownloadDirectory { get; set; } = string.Empty;
     public string? ErrorMessage      { get; set; }

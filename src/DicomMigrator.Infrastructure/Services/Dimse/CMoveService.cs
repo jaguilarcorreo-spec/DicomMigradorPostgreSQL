@@ -309,6 +309,10 @@ public class CMoveService(ILogger<CMoveService> logger)
                 result.Remaining = TryCount(resp.Command, DicomTag.NumberOfRemainingSuboperations, out var r) ? r
                                  : isFinal ? 0 : result.Remaining;
                 if (isFinal) result.FinalResponseReceived = true;
+                // Comentario de error del PACS (0000,0902), p. ej. GE: "VNAPRE is a unknown
+                // move destination". Dice la causa exacta; se muestra en el mensaje (DCM-4).
+                var comment = resp.Command.GetSingleValueOrDefault(DicomTag.ErrorComment, string.Empty);
+                if (!string.IsNullOrWhiteSpace(comment)) result.ErrorComment = comment.Trim();
 
                 result.Logs.Add($"[INFO] Status={resp.Status} Completed={result.Completed} " +
                                 $"Failed={result.Failed} Remaining={result.Remaining}");

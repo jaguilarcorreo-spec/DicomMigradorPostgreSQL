@@ -387,9 +387,44 @@ public class MigrationWorker(
                     }
 
                     emptyPolls = 0;
-                    var wasConnError = await MigrateStudyAsync(migration, study, workerId, ct);
+                    var outcome = await MigrateStudyAsync(migration, study, workerId, ct);
 
-                    if (wasConnError)
+                    if (outcome.ConfigurationError is string configError)
+                    {
+                        // Error de configuración permanente (0xA801): pausar la migración
+                        // entera al primero. NO se marca como auto-pausa: la auto-reanudación
+                        // solo comprueba que el origen responde y la relanzaría en bucle,
+                        // fallando igual. Se reanuda a mano tras corregir la configuración.
+                        if (ConnBackoff.TryAnnouncePause("MIGRATE", migration.Id))
+                        {
+                            logger.LogError("Migración {Id}: {Reason}", migration.Id, configError);
+                            await MigrationRepo(scope).UpdateStatusAsync(migration.Id, "Paused");
+                            await AuditRepo(scope).AddAsync(new MigrationAuditLog
+                            {
+                                MigrationId = migration.Id, Action = "PAUSE", Level = "ERROR", Result = "ERROR",
+                                UserOrProcess = workerId,
+                                TechnicalMessage = $"Migración pausada por error de configuración: {configError}",
+                            });
+                            try
+                            {
+                                await scope.ServiceProvider.GetRequiredService<INotificationService>()
+                                    .RaiseAsync(NotificationEvents.AutoPaused, migration.Name, new (string, string)[]
+                                    {
+                                        ("Origen → Destino", $"{migration.OriginNode?.Alias ?? "?"} → {migration.DestNode?.Alias ?? "?"}"),
+                                        ("Proceso", "Migración"),
+                                        ("Motivo",  configError),
+                                        ("Nodo",    migration.OriginNode?.Alias ?? "origen"),
+                                    }, migration.Id, "migration");
+                            }
+                            catch (Exception nex) { logger.LogWarning(nex, "Notificación de pausa (migración {Id}) falló.", migration.Id); }
+                        }
+                        // Detiene a los demás workers ya (sus estudios vuelven a Pending sin
+                        // gastar reintento) y evita que el cierre marque la migración como terminada.
+                        cts.Cancel();
+                        break;
+                    }
+
+                    if (outcome.IsTransient)
                     {
                         connErrors++;
                         // Si se acumulan unos pocos errores de conexión seguidos, el destino
@@ -461,9 +496,20 @@ public class MigrationWorker(
         }
     }
 
-    /// <summary>Migrate one study. Returns true if it failed due to a SOURCE connection
-    /// error (transient — study returned to Pending), false otherwise.</summary>
-    private async Task<bool> MigrateStudyAsync(MigrationEntity migration, MigrationStudy study,
+    /// <summary>Resultado de migrar un estudio, para el bucle del worker.</summary>
+    /// <param name="IsTransient">Fallo transitorio de conexión o de recursos del PACS: el
+    /// estudio volvió a Pending sin gastar reintento y cuenta para la auto-pausa.</param>
+    /// <param name="ConfigurationError">Error de configuración permanente (p. ej. 0xA801):
+    /// motivo para pausar la migración entera. Null si no lo hubo.</param>
+    private readonly record struct MoveOutcome(bool IsTransient, string? ConfigurationError)
+    {
+        public static readonly MoveOutcome Done      = new(false, null);
+        public static readonly MoveOutcome Transient = new(true, null);
+        public static MoveOutcome Config(string reason) => new(false, reason);
+    }
+
+    /// <summary>Migra un estudio y clasifica el resultado (ver MoveOutcome).</summary>
+    private async Task<MoveOutcome> MigrateStudyAsync(MigrationEntity migration, MigrationStudy study,
         string workerId, CancellationToken ct)
     {
         using var scope = scopeFactory.CreateScope();
@@ -518,13 +564,62 @@ public class MigrationWorker(
                 techMsg += " — C-MOVE cortado sin respuesta final del PACS origen: el estudio puede estar incompleto. " +
                            (result.ErrorMessage ?? "");
             }
+            else if (!success && result.DicomStatus == 0xA801)
+            {
+                techMsg += " — " + MoveDestinationUnknownMessage(freshMigration, result.ErrorComment);
+            }
+            else if (!success && result.DicomStatus is >= 0xA700 and <= 0xA7FF)
+            {
+                techMsg += " — El PACS origen no tiene recursos para atender el C-MOVE ahora (saturado). " +
+                           "Se reintentará sin gastar intento." +
+                           (result.ErrorComment is null ? "" : $" Mensaje del PACS: «{result.ErrorComment}».");
+            }
             else if (!success && result.Completed == 0)
             {
-                techMsg += " — El PACS origen no procesó ninguna instancia. Verifica que el StudyInstanceUID existe en el origen.";
+                techMsg += " — El PACS origen no procesó ninguna instancia. Verifica que el StudyInstanceUID existe en el origen." +
+                           (result.ErrorComment is null ? "" : $" Mensaje del PACS: «{result.ErrorComment}».");
             }
 
             logger.LogInformation("[{Worker}] C-MOVE result: {Msg} StudyUID={Uid}",
                 workerId, techMsg, study.StudyInstanceUid);
+
+            // ── Errores que NO son del estudio (DCM-4) ─────────────────────────
+            // 0xA801 "Move Destination unknown": el PACS origen no tiene dado de alta el
+            // AE destino. Es configuración, igual para todos los estudios: no se gasta
+            // reintento (antes cada estudio agotaba sus intentos y acababa "Failed") y se
+            // pausa la migración entera con el motivo exacto.
+            if (!success && result.DicomStatus == 0xA801)
+            {
+                await studyRepo.ReleaseMigrationLockAsync(study.Id);
+                await auditRepo.AddAsync(new MigrationAuditLog
+                {
+                    MigrationId      = migration.Id,
+                    Action           = "C-MOVE",
+                    Level            = "ERROR",
+                    Result           = "ERROR",
+                    StudyInstanceUid = study.StudyInstanceUid,
+                    UserOrProcess    = workerId,
+                    TechnicalMessage = $"Error de configuración (sin gastar reintento): {techMsg}",
+                });
+                return MoveOutcome.Config(MoveDestinationUnknownMessage(freshMigration, result.ErrorComment));
+            }
+            // 0xA7xx "Out of resources": el PACS origen está saturado. Transitorio: se
+            // devuelve el estudio sin gastar reintento y cuenta para la auto-pausa.
+            if (!success && result.DicomStatus is >= 0xA700 and <= 0xA7FF)
+            {
+                await studyRepo.ReleaseMigrationLockAsync(study.Id);
+                await auditRepo.AddAsync(new MigrationAuditLog
+                {
+                    MigrationId      = migration.Id,
+                    Action           = "C-MOVE",
+                    Level            = "WARN",
+                    Result           = "ERROR",
+                    StudyInstanceUid = study.StudyInstanceUid,
+                    UserOrProcess    = workerId,
+                    TechnicalMessage = $"PACS origen sin recursos (reintento sin penalizar): {techMsg}",
+                });
+                return MoveOutcome.Transient;
+            }
 
             if (success)
             {
@@ -539,7 +634,7 @@ public class MigrationWorker(
                     UserOrProcess    = workerId,
                     TechnicalMessage = techMsg,
                 });
-                return false;  // no fue error de conexión
+                return MoveOutcome.Done;  // no fue error de conexión
             }
             else if (result.ConnectionError)
             {
@@ -559,7 +654,7 @@ public class MigrationWorker(
                     UserOrProcess    = workerId,
                     TechnicalMessage = $"Error de conexión con el origen (reintento sin penalizar): {techMsg}",
                 });
-                return true;   // fue error de conexión
+                return MoveOutcome.Transient;   // fue error de conexión
             }
             else if (result.Completed == 0)
             {
@@ -585,7 +680,7 @@ public class MigrationWorker(
                         UserOrProcess    = workerId,
                         TechnicalMessage = $"Destino inaccesible (reintento sin penalizar): {techMsg}",
                     });
-                    return true;   // tratar como error de conexión (transitorio)
+                    return MoveOutcome.Transient;   // tratar como error de conexión (transitorio)
                 }
                 // El destino SÍ responde → el estudio realmente no se pudo migrar.
                 var currentStudy = await studyRepo.GetByIdAsync(study.Id);
@@ -605,7 +700,7 @@ public class MigrationWorker(
                     UserOrProcess    = workerId,
                     TechnicalMessage = $"Fallo intento {retries}/{migration.MaxRetries} (destino accesible). {techMsg}",
                 });
-                return false;
+                return MoveOutcome.Done;
             }
             else
             {
@@ -630,7 +725,7 @@ public class MigrationWorker(
                     UserOrProcess    = workerId,
                     TechnicalMessage = $"Fallo intento {retries}/{migration.MaxRetries}. {techMsg}",
                 });
-                return false;
+                return MoveOutcome.Done;
             }
         }
         catch (OperationCanceledException)
@@ -649,13 +744,24 @@ public class MigrationWorker(
             await studyRepo.ReleaseMigrationLockAsync(study.Id);
             logger.LogWarning(ex, "[{Worker}] Error de conexión migrando {Uid}. Estudio devuelto a Pendiente.",
                 workerId, study.StudyInstanceUid);
-            return true;
+            return MoveOutcome.Transient;
         }
         finally
         {
             heartbeatCts.Cancel();
             await heartbeat;   // nunca lanza: traga sus propios errores y la cancelación
         }
+    }
+
+    /// <summary>Explicación de 0xA801 con los datos exactos que hay que dar de alta.</summary>
+    private static string MoveDestinationUnknownMessage(MigrationEntity m, string? pacsComment)
+    {
+        var dest   = m.DestNode;
+        var origin = m.OriginNode;
+        return $"El PACS origen {origin?.Alias} ({origin?.RemoteAet}) no conoce el AE destino '{dest?.RemoteAet}' " +
+               "(0xA801, Move Destination unknown" + (pacsComment is null ? "" : $": «{pacsComment}»") + "). " +
+               $"Dalo de alta en el PACS origen como destino de C-MOVE: AE '{dest?.RemoteAet}', " +
+               $"IP {dest?.RemoteHost}, puerto {dest?.RemotePort}. La migración se ha pausado; reanúdala cuando esté corregido.";
     }
 
     /// <summary>Renueva periódicamente el LockDate del estudio en 'Migrating' mientras dura
