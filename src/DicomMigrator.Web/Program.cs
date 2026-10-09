@@ -655,13 +655,8 @@ try
         await writer.FlushAsync(ct);
         return Results.Empty;
 
-        static string CsvField(string? v)
-        {
-            if (string.IsNullOrEmpty(v)) return "";
-            return v.Contains(',') || v.Contains('"') || v.Contains('\n')
-                ? $"\"{v.Replace("\"", "\"\"")}\""
-                : v;
-        }
+        // Escapado común y neutralización de fórmulas (SEC-8): ver CsvText.
+        static string CsvField(string? v) => CsvText.Field(v);
     }).RequireAuthorization(PendingPasswordChange.PasswordChangedPolicy);   // datos de paciente: sesión y contraseña ya cambiada
 
     // Exportar RESUMEN de todas las migraciones a Excel (.xlsx), una fila por migración,
@@ -873,13 +868,8 @@ try
         await writer.FlushAsync(ct);
         return Results.Empty;
 
-        static string CsvField(string? v)
-        {
-            if (string.IsNullOrEmpty(v)) return "";
-            return v.Contains(',') || v.Contains('"') || v.Contains('\n')
-                ? $"\"{v.Replace("\"", "\"\"")}\""
-                : v;
-        }
+        // Escapado común y neutralización de fórmulas (SEC-8): ver CsvText.
+        static string CsvField(string? v) => CsvText.Field(v);
     }).RequireAuthorization(PendingPasswordChange.PasswordChangedPolicy);   // datos de paciente: sesión y contraseña ya cambiada
 
     // Al cerrar la aplicación: primero cancelar los workers en curso para que el proceso

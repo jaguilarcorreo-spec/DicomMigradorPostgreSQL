@@ -1198,8 +1198,8 @@ WHERE ""MigrationId"" = {0}", migrationId).ToListAsync();
     // vienen de PACS externos y no se puede asumir que no contengan comillas, comas o
     // saltos de línea — sin este escapado, un solo valor así desplaza todas las columnas
     // siguientes de esa fila sin que el usuario lo note.
-    private static string CsvField(string? value) =>
-        "\"" + (value ?? string.Empty).Replace("\"", "\"\"") + "\"";
+    // Escapado común y neutralización de fórmulas de Excel (SEC-8): ver CsvText.
+    private static string CsvField(string? value) => CsvText.Field(value);
 
     public async Task ExportToCsvAsync(int migrationId, StudyFilter filter, Stream output)
     {
