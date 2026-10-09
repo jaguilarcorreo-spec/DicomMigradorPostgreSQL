@@ -124,15 +124,11 @@
 
     protected override async Task OnInitializedAsync()
     {
-        // Contraseña pendiente de cambio: no se puede usar la aplicación hasta hacerlo.
-        // Comprobarlo aquí (y no solo al entrar) cierra la vía de navegar a mano a otra URL.
-        var auth = await AuthState.GetAuthenticationStateAsync();
-        if (auth.User.HasClaim("must_change_pwd", "1")
-            && !Nav.Uri.Contains("/cambiar-password", StringComparison.OrdinalIgnoreCase))
-        {
-            Nav.NavigateTo("/cambiar-password", forceLoad: true);
-            return;
-        }
+        // Contraseña pendiente de cambio: no se puede usar la aplicación hasta hacerlo. El
+        // filtro del servidor (UsePendingPasswordChangeGate) ya lo impide en cada petición;
+        // esto lo refuerza dentro del circuito. Se compara la RUTA exacta: antes se buscaba
+        // el texto en la URL completa y /?x=/cambiar-password se lo saltaba (UI-17).
+        if (await RedirectIfPasswordChangePendingAsync()) return;
 
         await LoadConfig();
         Nav.LocationChanged += OnLocationChanged;
@@ -140,8 +136,20 @@
 
     async void OnLocationChanged(object? sender, LocationChangedEventArgs e)
     {
+        // La navegación interna de Blazor no vuelve a pasar por OnInitializedAsync.
+        if (await RedirectIfPasswordChangePendingAsync()) return;
         await LoadConfig();
         await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task<bool> RedirectIfPasswordChangePendingAsync()
+    {
+        var auth = await AuthState.GetAuthenticationStateAsync();
+        if (!PendingPasswordChange.IsPending(auth.User)) return false;
+        var path = "/" + Nav.ToBaseRelativePath(Nav.Uri).Split('?', '#')[0];
+        if (PendingPasswordChange.IsChangePasswordPath(path)) return false;
+        Nav.NavigateTo(PendingPasswordChange.PagePath, forceLoad: true);
+        return true;
     }
 
     // ── Identidad mostrada en el pie de la barra lateral ──

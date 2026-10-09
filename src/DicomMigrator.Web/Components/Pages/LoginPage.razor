@@ -139,7 +139,7 @@
         // Marca la sesión como "pendiente de cambiar contraseña". Se comprueba en el
         // layout, así no se puede esquivar navegando a otra URL a mano.
         if (user.MustChangePassword)
-            claims.Add(new Claim("must_change_pwd", "1"));
+            claims.Add(new Claim(DicomMigrator.Web.Services.PendingPasswordChange.ClaimType, "1"));
 
         var principal = new ClaimsPrincipal(
             new ClaimsIdentity(claims, CookieAuthenticationDefaults.AuthenticationScheme));

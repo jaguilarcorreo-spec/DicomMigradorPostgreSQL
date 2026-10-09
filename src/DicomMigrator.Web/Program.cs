@@ -150,7 +150,12 @@ try
                 }
             };
         });
-    builder.Services.AddAuthorization();
+    builder.Services.AddAuthorization(o =>
+        // Exportaciones (datos de paciente): además de sesión, exigen no tener pendiente
+        // el cambio de contraseña obligatorio (SEC-5).
+        o.AddPolicy(DicomMigrator.Web.Services.PendingPasswordChange.PasswordChangedPolicy, p => p
+            .RequireAuthenticatedUser()
+            .RequireAssertion(c => !DicomMigrator.Web.Services.PendingPasswordChange.IsPending(c.User))));
     // Revalida cada 30 s las sesiones de los circuitos de Blazor ya abiertos (SEC-2).
     builder.Services.AddScoped<Microsoft.AspNetCore.Components.Authorization.AuthenticationStateProvider,
         DicomMigrator.Web.Services.SessionRevalidatingAuthStateProvider>();
@@ -533,6 +538,10 @@ try
     app.UseStaticFiles();
     app.UseSerilogRequestLogging();
     app.UseAuthentication();
+    // Con el cambio de contraseña pendiente, solo se puede cambiarla o cerrar sesión (UI-17,
+    // SEC-5). Va ANTES de UseAuthorization: si no, la política de las exportaciones rechaza
+    // primero y el rechazo redirige a AccessDeniedPath (/login), en vez de responder 403.
+    app.UsePendingPasswordChangeGate();
     app.UseAuthorization();
     app.UseAntiforgery();
 
@@ -628,7 +637,7 @@ try
                 ? $"\"{v.Replace("\"", "\"\"")}\""
                 : v;
         }
-    }).RequireAuthorization();   // exporta datos de paciente: exige sesión
+    }).RequireAuthorization(PendingPasswordChange.PasswordChangedPolicy);   // datos de paciente: sesión y contraseña ya cambiada
 
     // Exportar RESUMEN de todas las migraciones a Excel (.xlsx), una fila por migración,
     // con contadores y métricas de tiempo. Genera el fichero con ClosedXML.
@@ -784,7 +793,7 @@ try
         ms.Position = 0;
         await ms.CopyToAsync(ctx.Response.Body, ct);
         return Results.Empty;
-    }).RequireAuthorization();   // exporta datos de paciente: exige sesión
+    }).RequireAuthorization(PendingPasswordChange.PasswordChangedPolicy);   // datos de paciente: sesión y contraseña ya cambiada
 
     app.MapGet("/discovery/{jobId:int}/export.csv",
         async (int jobId,
@@ -846,7 +855,7 @@ try
                 ? $"\"{v.Replace("\"", "\"\"")}\""
                 : v;
         }
-    }).RequireAuthorization();   // exporta datos de paciente: exige sesión
+    }).RequireAuthorization(PendingPasswordChange.PasswordChangedPolicy);   // datos de paciente: sesión y contraseña ya cambiada
 
     // Al cerrar la aplicación: primero cancelar los workers en curso para que el proceso
     // pueda terminar con agilidad (los estudios a medias se reanudan al reiniciar), y
