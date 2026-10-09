@@ -137,8 +137,23 @@ try
             o.AccessDeniedPath   = "/login";
             o.ExpireTimeSpan     = TimeSpan.FromHours(8);
             o.SlidingExpiration  = true;
+            // En cada petición: la sesión solo vale si el usuario sigue activo y su sello
+            // de seguridad no ha cambiado (rol, contraseña, desactivación o cierre de
+            // sesión). Si no, se rechaza y se borra la cookie (SEC-2).
+            o.Events.OnValidatePrincipal = async ctx =>
+            {
+                if (ctx.Principal is null) return;
+                if (!await DicomMigrator.Web.Services.SessionValidator.IsValidAsync(ctx.Principal, ctx.HttpContext.RequestServices))
+                {
+                    ctx.RejectPrincipal();
+                    await ctx.HttpContext.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
+                }
+            };
         });
     builder.Services.AddAuthorization();
+    // Revalida cada 30 s las sesiones de los circuitos de Blazor ya abiertos (SEC-2).
+    builder.Services.AddScoped<Microsoft.AspNetCore.Components.Authorization.AuthenticationStateProvider,
+        DicomMigrator.Web.Services.SessionRevalidatingAuthStateProvider>();
 
     // ── EF Core / PostgreSQL ─────────────────────────────────────────────────
     // PostgreSQL es el único motor soportado. El servidor arbitra la concurrencia
@@ -522,8 +537,13 @@ try
     app.UseAntiforgery();
 
     // Cierre de sesión. POST (no GET) porque modifica estado.
-    app.MapPost("/logout", async (HttpContext ctx) =>
+    app.MapPost("/logout", async (HttpContext ctx, IUserRepository users) =>
     {
+        // Cambiar el sello invalida TODAS las sesiones de este usuario, también una
+        // cookie copiada o abierta en otro equipo: cerrar sesión deja de ser solo borrar
+        // la cookie de este navegador (SEC-2).
+        if (int.TryParse(ctx.User.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value, out var uid))
+            await users.RotateSecurityStampAsync(uid);
         await ctx.SignOutAsync(CookieAuthenticationDefaults.AuthenticationScheme);
         return Results.Redirect("/login");
     });

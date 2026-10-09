@@ -279,6 +279,9 @@ public interface IUserRepository
     Task UpdateAsync(AppUser user);
     /// <summary>Nº de usuarios dados de alta. Se usa para sembrar el primer administrador.</summary>
     Task<int> CountAsync();
+    /// <summary>Cambia el sello de seguridad: invalida todas las sesiones del usuario
+    /// (al cerrar sesión). Ver AppUser.SecurityStamp.</summary>
+    Task RotateSecurityStampAsync(int userId);
 }
 
 public interface IDiscoveryJobRepository

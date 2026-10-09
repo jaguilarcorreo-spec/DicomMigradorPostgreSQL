@@ -210,6 +210,11 @@ descargas de CSV/Excel también la requieren (contienen datos de paciente).
   `Auth__InitialAdminPassword`) antes del primer arranque, o cámbiala de inmediato.
 - **Primer login:** entra en la web como `admin`, y la aplicación te forzará a cambiar la
   contraseña antes de dejarte usar nada más.
+- **Sesiones:** desactivar un usuario, cambiarle el rol o la contraseña, o que cierre
+  sesión, invalida todas sus sesiones abiertas. Las páginas que se cargan y las descargas
+  se comprueban al momento; una pestaña ya abierta se revalida cada
+  `Auth:SessionRevalidationSeconds` segundos (por defecto 300, es decir, 5 minutos; mínimo
+  10). Para cambiarlo, añádelo en `appsettings.Production.json` dentro de `"Auth"`.
 - **Roles:** hay tres — **Administrador** (todo: nodos, borrados, usuarios, configuración
   local, licencia), **Operador** (lanzar descubrimientos, migraciones y verificaciones;
   exportar) y **Consulta** (solo lectura y exportar). Los botones y menús que no

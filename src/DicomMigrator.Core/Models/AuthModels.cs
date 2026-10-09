@@ -34,6 +34,13 @@ public class AppUser
     public DateTime? LockedUntil    { get; set; }
 
     public DateTime? LastLoginDate  { get; set; }
+
+    /// <summary>Sello de seguridad (SEC-2): valor aleatorio que viaja en la cookie de
+    /// sesión y cambia al cambiar el rol, desactivar el usuario, cambiar su contraseña o
+    /// cerrar sesión. Una sesión cuyo sello no coincide con el de la BD deja de valer, así
+    /// que esos cambios surten efecto al momento en vez de esperar a que caduque la
+    /// cookie (8 h). Lo gestiona UserRepository; no hay que asignarlo a mano.</summary>
+    public string    SecurityStamp  { get; set; } = string.Empty;
     public DateTime  CreatedDate    { get; set; } = DateTime.UtcNow;
 }
 

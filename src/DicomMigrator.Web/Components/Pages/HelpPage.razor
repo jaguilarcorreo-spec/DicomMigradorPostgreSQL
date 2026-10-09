@@ -317,6 +317,13 @@
             con un indicador amarillo («⏸ Auto-pausada · reintentando conexión…»). El servicio <strong>AutoResume</strong> sondea
             periódicamente el PACS y, en cuanto vuelve a responder, <strong>reanuda solo</strong> el proceso sin intervención manual.
         </p>
+        <p style="margin:0 0 10px 0;color:var(--text-dim);font-size:13px;line-height:1.6">
+            Los <strong>errores de configuración</strong> son distintos: el PACS origen no conoce el AE destino (0xA801) o rechaza
+            la conexión de forma permanente (AE no reconocido). Ahí reintentar no sirve, así que la migración se <strong>pausa al
+            primer error</strong>, sin gastar reintentos de ningún estudio, con un mensaje que indica qué dar de alta o revisar
+            (en el log, la auditoría y el correo). Esta pausa <strong>no se reanuda sola</strong>: reanúdala tras corregir la
+            configuración.
+        </p>
         <p style="margin:0;color:var(--text-muted);font-size:11px">
             El umbral (5) y el intervalo de sondeo se documentan en la pestaña <strong>📄 Config. por fichero</strong>
             (el intervalo es ajustable; el umbral está fijado en código).
@@ -377,7 +384,7 @@
                 <tr><td><strong>⏹ Parar</strong></td><td>Detiene el proceso por completo al terminar los hilos activos.</td></tr>
                 <tr><td><strong>↺ Reintentar fallidos de migración</strong></td><td>Marca los estudios en Failed como RetryPending para que vuelvan a la cola de migración.</td></tr>
                 <tr><td><strong>↺ Reintentar fallidos de verificación</strong></td><td>Devuelve los estudios en VerifyFailed a la cola de verificación.</td></tr>
-                <tr><td><strong>✎ Editar</strong></td><td>Modifica nombre, descripción, hilos, max. reintentos, delay de reintento, prioridad de modalidad y, si está en Draft o Paused, el orden por fecha.</td></tr>
+                <tr><td><strong>✎ Editar</strong></td><td>Modifica nombre, descripción, hilos, max. reintentos, delay de reintento, prioridad de modalidad y, si está en Draft o Paused, el orden por fecha. Un cambio de prioridad hecho con la migración en marcha se aplica al pausarla y reanudarla.</td></tr>
                 <tr><td><strong>🗑 Eliminar todos los estudios</strong></td><td>Vacía la lista de estudios manteniendo la configuración. Doble confirmación.</td></tr>
                 <tr><td><strong>🗑 Eliminar migración</strong></td><td>Borra la migración y todos sus datos. Doble confirmación. Bloqueado si Running.</td></tr>
             </tbody>
@@ -458,10 +465,13 @@
         <table class="data-table" style="width:100%;font-size:12px">
             <thead><tr><th>Código</th><th>Causa</th><th>Solución</th></tr></thead>
             <tbody>
-                <tr><td class="mono">0xA801</td><td>Move Destination Unknown</td><td>Añadir el AET migrador en <code>DicomModalities</code> del PACS origen.</td></tr>
-                <tr><td class="mono">0xC000</td><td>Unable to process</td><td>Mismo motivo: el origen no conoce el destino del C-MOVE.</td></tr>
+                <tr><td class="mono">0xA801</td><td>Move Destination Unknown: el PACS origen no conoce el AE <strong>destino</strong></td><td>Dar de alta en el PACS origen, como destino de C-MOVE, el AE, la IP y el puerto del nodo destino (en Orthanc, en <code>DicomModalities</code>). La migración se <strong>pausa al primer 0xA801</strong>, sin gastar reintentos, y no se reanuda sola: reanúdala tras corregirlo.</td></tr>
+                <tr><td class="mono">0xA7xx</td><td>Out of resources: el PACS origen está saturado</td><td>Transitorio: el estudio vuelve a la cola sin gastar reintento. Si se repite mucho, reduce los hilos de la migración.</td></tr>
+                <tr><td class="mono">0xC000</td><td>Unable to process</td><td>El origen no procesó el estudio (puede no existir en él). Se comprueba si el destino responde: si no, se reintenta sin penalizar.</td></tr>
+                <tr><td class="mono">0xB000</td><td>Terminado con avisos</td><td>Si no hubo fallos, cuenta como migrado.</td></tr>
+                <tr><td class="mono">Asociación rechazada</td><td>El PACS no acepta la conexión</td><td><strong>Permanente</strong> (AE del migrador no reconocido, AE del nodo mal escrito…): la migración se pausa al primero con el motivo; corrige la configuración y reanuda. <strong>Temporal</strong> (PACS ocupado o al límite de conexiones): se reintenta sin gastar intento; si se repite, reduce los hilos.</td></tr>
                 <tr><td class="mono">0x0110</td><td>Processing failure</td><td>El destino rechazó alguna instancia (compresión, SOP Class). Revisar logs del destino.</td></tr>
-                <tr><td class="mono">Timeout</td><td>El estudio es muy grande o la red lenta</td><td>Aumentar timeouts en la configuración del nodo.</td></tr>
+                <tr><td class="mono">Sin respuesta</td><td>El PACS origen deja de responder durante el tiempo de operación del nodo + 60 s (sin progreso)</td><td>El C-MOVE se da por cortado y el estudio se reintenta: nunca se marca como migrado sin la respuesta final del PACS. Un estudio grande no se corta mientras el PACS siga informando de su progreso. Si el PACS no informa de progreso, aumenta el tiempo de operación del nodo.</td></tr>
                 <tr><td class="mono">401</td><td>QIDO/WADO sin autenticación</td><td>Configurar usuario:contraseña en el campo "Usuario : Contraseña" del nodo.</td></tr>
                 <tr><td class="mono">404</td><td>QIDO/WADO en ruta incorrecta</td><td>Verificar Base URL (ej. <code>/dicom-web</code> para Orthanc con plugin DICOMweb).</td></tr>
             </tbody>
@@ -586,10 +596,19 @@
             se cambia no se puede usar nada más. La contraseña inicial se puede fijar con
             <code>Auth:InitialAdminPassword</code> en <code>appsettings.Production.json</code>.
         </p>
-        <p style="margin:0;color:var(--text-dim);font-size:13px;line-height:1.6">
+        <p style="margin:0 0 10px 0;color:var(--text-dim);font-size:13px;line-height:1.6">
             <strong>Bloqueo:</strong> tras 5 intentos fallidos seguidos la cuenta queda bloqueada
             15 minutos. Un administrador puede liberarla antes desde <em>Usuarios</em>, y resetear
             la contraseña también levanta el bloqueo.
+        </p>
+        <p style="margin:0;color:var(--text-dim);font-size:13px;line-height:1.6">
+            <strong>Sesiones:</strong> la sesión dura hasta 8 horas sin actividad y se renueva al usarla.
+            Deja de valer en cuanto se <strong>desactiva</strong> al usuario, se le <strong>cambia el rol</strong>
+            o la <strong>contraseña</strong>, o él <strong>cierra sesión</strong>. Cerrar sesión cierra también
+            las sesiones de ese usuario en otros equipos o navegadores. Las páginas que se abren y las
+            descargas se comprueban al momento; una pestaña que ya estaba abierta se revalida cada
+            <code>Auth:SessionRevalidationSeconds</code> segundos (5 minutos por defecto) y entonces pide
+            iniciar sesión de nuevo.
         </p>
     </HelpSection>
 
@@ -631,6 +650,7 @@
         <ul style="margin:0;padding-left:20px;color:var(--text-dim);font-size:13px;line-height:1.8">
             <li><strong>El nombre de acceso no se puede cambiar</strong> una vez creado: la auditoría histórica lo referencia y cambiarlo dejaría los registros antiguos sin poder atribuirse.</li>
             <li><strong>Desactivar en lugar de borrar.</strong> Un usuario desactivado no puede entrar, pero sigue existiendo para que sus acciones pasadas conserven autor.</li>
+            <li><strong>Los cambios cierran sus sesiones abiertas.</strong> Desactivar a un usuario, cambiarle el rol o resetearle la contraseña invalida las sesiones que tenga abiertas: tendrá que volver a entrar, ya con el rol nuevo (ver <em>Sesiones</em> más arriba).</li>
             <li><strong>Contraseñas:</strong> mínimo 8 caracteres. Nunca se almacenan en claro, solo su hash.</li>
         </ul>
     </HelpSection>
@@ -819,6 +839,16 @@
             <tbody>
                 <tr><td class="mono">AutoResume:Enabled</td><td>Activa o desactiva la reanudación automática. Si está en <code>false</code>, las migraciones auto-pausadas hay que reanudarlas a mano.</td><td class="mono" style="color:var(--accent)">true</td></tr>
                 <tr><td class="mono">AutoResume:CheckIntervalSeconds</td><td>Cada cuántos segundos comprueba si los procesos auto-pausados pueden reanudarse (sondeo C-ECHO).</td><td class="mono" style="color:var(--accent)">60</td></tr>
+            </tbody>
+        </table>
+    </HelpSection>
+
+    <HelpSection Title="Sección Auth — acceso y sesiones" Color="var(--purple)">
+        <table class="data-table" style="width:100%;font-size:12px">
+            <thead><tr><th>Clave</th><th>Descripción</th><th>Por defecto</th></tr></thead>
+            <tbody>
+                <tr><td class="mono">Auth:InitialAdminPassword</td><td>Contraseña inicial del usuario <code>admin</code>, que se crea en el primer arranque si no hay usuarios. Se obliga a cambiarla en el primer acceso. La escribe el instalador en <code>appsettings.Production.json</code>.</td><td class="mono">admin</td></tr>
+                <tr><td class="mono">Auth:SessionRevalidationSeconds</td><td>Cada cuántos segundos se revalida una pestaña ya abierta. Es el tiempo máximo que conserva el acceso tras desactivar al usuario, cambiarle el rol o la contraseña, o cerrar su sesión en otro sitio. Las páginas nuevas y las descargas se comprueban siempre al momento. Mínimo 10.</td><td class="mono" style="color:var(--accent)">300 (5 min)</td></tr>
             </tbody>
         </table>
     </HelpSection>

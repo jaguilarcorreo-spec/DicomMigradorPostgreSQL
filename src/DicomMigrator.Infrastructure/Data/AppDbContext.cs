@@ -164,6 +164,9 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             e.Property(x => x.DisplayName).HasMaxLength(120);
             e.Property(x => x.PasswordHash).IsRequired().HasMaxLength(256);
             e.Property(x => x.Role).IsRequired().HasMaxLength(20);
+            // Sello de seguridad de la sesión (SEC-2). Vacío en los usuarios existentes
+            // hasta su próximo acceso, que les asigna uno.
+            e.Property(x => x.SecurityStamp).IsRequired().HasMaxLength(64).HasDefaultValue("");
             // El nombre se guarda ya normalizado en minúsculas, así que el índice
             // único basta para impedir duplicados por diferencias de mayúsculas.
             e.HasIndex(x => x.UserName).IsUnique();

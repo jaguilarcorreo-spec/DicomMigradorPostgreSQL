@@ -132,6 +132,8 @@
             new(ClaimTypes.Name,           user.UserName),
             new(ClaimTypes.Role,           user.Role),
             new("display_name",            user.DisplayName ?? user.UserName),
+            // Sello de seguridad: la sesión deja de valer si cambia (SEC-2).
+            new(DicomMigrator.Web.Services.SessionValidator.StampClaim, user.SecurityStamp),
         };
 
         // Marca la sesión como "pendiente de cambiar contraseña". Se comprueba en el
