@@ -320,6 +320,57 @@ try
     // llegan a Serilog. Debe ejecutarse justo después de construir el host.
     DicomSetupBuilder.UseServiceProvider(app.Services);
 
+    // ── Modo de mantenimiento offline ────────────────────────────────────────
+    // Se atiende ANTES de inicializar la base y de reanudar procesos (OPS-1). Antes iba
+    // después: ejecutaba todo el arranque (liberar bloqueos de estudios en curso y
+    // reanudar migraciones y verificaciones) y, con el servicio en marcha, lanzaba un
+    // segundo juego de workers en otro proceso sobre los mismos estudios. Solo necesita
+    // la conexión a la base. Termina SIN levantar el servidor web. En PostgreSQL el mantenimiento de
+    // espacio lo hace autovacuum; este modo ejecuta un VACUUM + ANALYZE explícito
+    // bajo demanda, útil tras borrados masivos.
+    //   DicomMigrator.exe --maintenance       → VACUUM + ANALYZE
+    //   DicomMigrator.exe --maintenance-full  → igual (la "Fase D" de FKs era
+    //                                            específica de SQLite y ya no aplica)
+    var maintenanceMode = args.Any(a => string.Equals(a, "--maintenance", StringComparison.OrdinalIgnoreCase));
+    var maintenanceFull = args.Any(a => string.Equals(a, "--maintenance-full", StringComparison.OrdinalIgnoreCase));
+    if (maintenanceMode || maintenanceFull)
+    {
+        using var scope = app.Services.CreateScope();
+        var logger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
+        var maint  = scope.ServiceProvider
+            .GetRequiredService<DicomMigrator.Infrastructure.Data.DatabaseMaintenance>();
+
+        logger.LogInformation("=== MODO MANTENIMIENTO (PostgreSQL) ===");
+        try
+        {
+            // VACUUM (recupera espacio) — en Postgres no requiere fichero ni PRAGMAs.
+            logger.LogInformation("Ejecutando VACUUM...");
+            await maint.RunVacuumAsync(string.Empty);
+
+            // ANALYZE — refresca estadísticas del planificador.
+            logger.LogInformation("Ejecutando ANALYZE...");
+            await maint.OptimizeAsync();
+
+            // REINDEX de índices inflados — VACUUM no encoge un B-tree; solo REINDEX
+            // devuelve el espacio. Va después de ANALYZE porque la estimación del tamaño
+            // ideal usa pg_stats. CONCURRENTLY: no bloquea al servicio si está en marcha.
+            logger.LogInformation("Reconstruyendo índices inflados (REINDEX CONCURRENTLY)...");
+            var reindexed = await maint.ReindexBloatedAsync();
+            logger.LogInformation("Índices reconstruidos: {N}.", reindexed);
+
+            logger.LogInformation("✓ Mantenimiento finalizado correctamente.");
+        }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "Error durante el mantenimiento.");
+            Environment.ExitCode = 1;
+        }
+
+        Log.CloseAndFlush();
+        return; // No se levanta el servidor web
+    }
+
+
     // ── Base de datos ─────────────────────────────────────────────────────────
     using (var scope = app.Services.CreateScope())
     {
@@ -328,6 +379,25 @@ try
         try
         {
             await using var db = await factory.CreateDbContextAsync();
+
+            // ── Esperar a PostgreSQL (OPS-2) ──────────────────────────────────
+            // Tras un corte de luz o un reinicio del equipo, PostgreSQL puede tardar en
+            // aceptar conexiones (arranque o recuperación). Se espera un tiempo acotado:
+            // Windows da ~30 s a un servicio para arrancar, así que no se puede esperar
+            // minutos aquí. Si no responde, el proceso sale con código 1 y la acción de
+            // recuperación del servicio (reiniciar al minuto, ver el instalador) vuelve a
+            // intentarlo hasta que PostgreSQL esté listo.
+            var waitSeconds = Math.Clamp(builder.Configuration.GetValue("Database:StartupWaitSeconds", 20), 0, 25);
+            var dbDeadline  = DateTime.UtcNow.AddSeconds(waitSeconds);
+            for (var attempt = 1; !await db.Database.CanConnectAsync(); attempt++)
+            {
+                if (DateTime.UtcNow >= dbDeadline)
+                    throw new InvalidOperationException(
+                        $"PostgreSQL no acepta conexiones tras esperar {waitSeconds} s. El servicio se " +
+                        "reiniciará y lo volverá a intentar (recuperación del servicio de Windows).");
+                logger.LogWarning("PostgreSQL aún no acepta conexiones (intento {N}); se reintenta en 3 s.", attempt);
+                await Task.Delay(TimeSpan.FromSeconds(3));
+            }
 
             // PostgreSQL: aplicar las migraciones EF pendientes. Migrate() crea el
             // esquema en una base vacía y lo evoluciona en bases existentes, todo a
@@ -471,51 +541,6 @@ try
             logger2.LogError(ex, "Error al inicializar la base de datos.");
             throw; // Detener el arranque si la BD no está disponible
         }
-    }
-
-    // ── Modo de mantenimiento offline ────────────────────────────────────────
-    // Termina SIN levantar el servidor web. En PostgreSQL el mantenimiento de
-    // espacio lo hace autovacuum; este modo ejecuta un VACUUM + ANALYZE explícito
-    // bajo demanda, útil tras borrados masivos.
-    //   DicomMigrator.exe --maintenance       → VACUUM + ANALYZE
-    //   DicomMigrator.exe --maintenance-full  → igual (la "Fase D" de FKs era
-    //                                            específica de SQLite y ya no aplica)
-    var maintenanceMode = args.Any(a => string.Equals(a, "--maintenance", StringComparison.OrdinalIgnoreCase));
-    var maintenanceFull = args.Any(a => string.Equals(a, "--maintenance-full", StringComparison.OrdinalIgnoreCase));
-    if (maintenanceMode || maintenanceFull)
-    {
-        using var scope = app.Services.CreateScope();
-        var logger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
-        var maint  = scope.ServiceProvider
-            .GetRequiredService<DicomMigrator.Infrastructure.Data.DatabaseMaintenance>();
-
-        logger.LogInformation("=== MODO MANTENIMIENTO (PostgreSQL) ===");
-        try
-        {
-            // VACUUM (recupera espacio) — en Postgres no requiere fichero ni PRAGMAs.
-            logger.LogInformation("Ejecutando VACUUM...");
-            await maint.RunVacuumAsync(string.Empty);
-
-            // ANALYZE — refresca estadísticas del planificador.
-            logger.LogInformation("Ejecutando ANALYZE...");
-            await maint.OptimizeAsync();
-
-            // REINDEX de índices inflados — VACUUM no encoge un B-tree; solo REINDEX
-            // devuelve el espacio. Va después de ANALYZE porque la estimación del tamaño
-            // ideal usa pg_stats. CONCURRENTLY: no bloquea al servicio si está en marcha.
-            logger.LogInformation("Reconstruyendo índices inflados (REINDEX CONCURRENTLY)...");
-            var reindexed = await maint.ReindexBloatedAsync();
-            logger.LogInformation("Índices reconstruidos: {N}.", reindexed);
-
-            logger.LogInformation("✓ Mantenimiento finalizado correctamente.");
-        }
-        catch (Exception ex)
-        {
-            logger.LogError(ex, "Error durante el mantenimiento.");
-        }
-
-        Log.CloseAndFlush();
-        return; // No se levanta el servidor web
     }
 
     if (!app.Environment.IsDevelopment())
@@ -889,5 +914,11 @@ try
 
     app.Run();
 }
-catch (Exception ex) { Log.Fatal(ex, "DicomMigrator terminó inesperadamente"); }
+catch (Exception ex)
+{
+    Log.Fatal(ex, "DicomMigrator terminó inesperadamente");
+    // Código distinto de 0: el servicio de Windows lo trata como un fallo y aplica su
+    // acción de recuperación (reiniciar). Con 0 parecía una parada normal (OPS-2).
+    Environment.ExitCode = 1;
+}
 finally { Log.CloseAndFlush(); }

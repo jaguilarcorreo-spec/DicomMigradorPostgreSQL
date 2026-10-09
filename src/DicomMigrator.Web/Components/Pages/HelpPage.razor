@@ -875,6 +875,7 @@
             <thead><tr><th>Clave</th><th>Descripción</th><th>Por defecto</th></tr></thead>
             <tbody>
                 <tr><td class="mono">ConnectionStrings:Default</td><td>Cadena de conexión a PostgreSQL (host, puerto, base, usuario y contraseña). La contraseña no se versiona: usa appsettings.Development.json o variables de entorno.</td><td class="mono">Host=localhost;Port=5432;Database=dicommigrator;Username=postgres</td></tr>
+                <tr><td class="mono">Database:StartupWaitSeconds</td><td>Segundos que espera la aplicación al arrancar a que PostgreSQL acepte conexiones (p. ej. tras un corte de luz). Si no responde, sale con error y el servicio de Windows la reinicia al minuto hasta que esté lista. Máximo 25, porque Windows da unos 30 s a un servicio para arrancar.</td><td class="mono" style="color:var(--accent)">20</td></tr>
                 <tr><td class="mono">Kestrel:Endpoints:Http:Url</td><td>Dirección y puerto en los que escucha la interfaz web.</td><td class="mono" style="color:var(--accent)">http://localhost:5200</td></tr>
                 <tr><td class="mono">AllowedHosts</td><td>Hosts permitidos para servir la aplicación.</td><td class="mono">*</td></tr>
             </tbody>

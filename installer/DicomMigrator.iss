@@ -519,6 +519,42 @@ begin
       mbError, MB_OK);
 end;
 
+{ Host de PostgreSQL configurado: el introducido ahora o, si se conserva la configuración,
+  el de la instalación anterior. }
+function DbHost: String;
+begin
+  if KeptConfig then
+    Result := GetPreviousData('DbHost', 'localhost')
+  else
+    Result := Trim(DbPage.Values[0]);
+end;
+
+function IsLocalHost(const H: String): Boolean;
+begin
+  Result := (CompareText(H, 'localhost') = 0) or (H = '127.0.0.1') or (H = '::1') or (H = '.')
+            or (CompareText(H, GetComputerNameString) = 0);
+end;
+
+{ Si PostgreSQL está en esta máquina, el servicio depende del suyo: Windows arranca antes
+  PostgreSQL y no detiene PostgreSQL sin detener antes este servicio (OPS-2). Se busca el
+  servicio postgresql* (p. ej. postgresql-x64-18). Si no hay, no se toca la dependencia. }
+procedure SetPostgresDependency(const Sc: String);
+var
+  Output: TExecOutput;
+  Code: Integer;
+  Name: String;
+begin
+  if not IsLocalHost(DbHost) then Exit;
+  if not ExecAndCaptureOutput(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+       '-NoProfile -Command "(Get-Service -Name ''postgresql*'' | Select-Object -First 1).Name"',
+       '', SW_HIDE, ewWaitUntilTerminated, Code, Output) then Exit;
+  if (Code <> 0) or (GetArrayLength(Output.StdOut) = 0) then Exit;
+  Name := Trim(Output.StdOut[0]);
+  if Name = '' then Exit;
+  Log('Dependencia del servicio de PostgreSQL: ' + Name);
+  RunHidden(Sc, 'config {#ServiceName} depend= ' + Name);
+end;
+
 procedure InstallService;
 var Sc: String;
 begin
@@ -530,8 +566,18 @@ begin
       '" start= auto DisplayName= "DICOM Migrator"');
     RunHidden(Sc, 'description {#ServiceName} "Migración de estudios DICOM entre sistemas PACS."');
   end;
-  { Recuperación: reiniciar tras 1 min en los dos primeros fallos; el contador se reinicia al día. }
-  RunHidden(Sc, 'failure {#ServiceName} reset= 86400 actions= restart/60000/restart/60000//0');
+  { Recuperación (OPS-2): reiniciar al minuto en TODOS los fallos. Antes solo en los dos
+    primeros ("restart, restart, nada"): tras un corte de luz con PostgreSQL recuperándose
+    más de dos minutos, el servicio se quedaba parado hasta que alguien lo notara. La
+    tercera acción se repite para los fallos siguientes; el contador se reinicia al día. }
+  RunHidden(Sc, 'failure {#ServiceName} reset= 86400 actions= restart/60000/restart/60000/restart/60000');
+  { Que la recuperación se aplique también si el proceso termina con código de error
+    (p. ej. PostgreSQL no disponible al arrancar), no solo si se cuelga. }
+  RunHidden(Sc, 'failureflag {#ServiceName} 1');
+  { Arranque automático retrasado: tras reiniciar el equipo, da margen a que arranquen
+    antes la red y PostgreSQL. }
+  RunHidden(Sc, 'config {#ServiceName} start= delayed-auto');
+  SetPostgresDependency(Sc);
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);

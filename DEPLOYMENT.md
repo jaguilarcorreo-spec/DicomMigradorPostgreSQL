@@ -43,8 +43,11 @@ El instalador (ejecutar como administrador en la máquina destino):
   servicio ejecuta como SYSTEM. Para comprobarlo: `icacls C:\DicomMigrator`.
 - Opcionalmente crea el rol y la base (sección 1) con un superusuario que no se guarda,
   y comprueba la conexión (`DicomMigrator.Web.exe --setup-db`).
-- Registra y arranca el servicio `DicomMigrator` con reinicio automático ante fallos, y
-  abre el Firewall para el ejecutable (Storage SCP y web).
+- Registra y arranca el servicio `DicomMigrator` con arranque automático retrasado y
+  reinicio automático al minuto ante **cualquier** fallo (también si sale con error, p. ej.
+  porque PostgreSQL aún no acepta conexiones), y abre el Firewall para el ejecutable
+  (Storage SCP y web). Si PostgreSQL está en la misma máquina, el servicio pasa a depender
+  del de PostgreSQL (`postgresql-x64-NN`), para que Windows lo arranque después.
 - **Actualización:** al reinstalar una versión nueva detiene el servicio, sustituye los
   binarios y **conserva** `appsettings.Production.json`, la licencia y los logs.
 - **Desinstalación:** elimina el servicio y la regla de firewall; conserva configuración,
@@ -350,9 +353,12 @@ sc start DicomMigrator     # arrancar
 sc delete DicomMigrator    # eliminar el servicio (tras detenerlo)
 ```
 
-> Recuperación automática: para que Windows reinicie el servicio si falla, en
-> services.msc → DICOM Migrator → Propiedades → pestaña "Recuperación", configura
-> "Reiniciar el servicio" en los primeros/segundos fallos.
+> Recuperación automática: el instalador configura «Reiniciar el servicio» al minuto en
+> todos los fallos (services.msc → DICOM Migrator → Propiedades → «Recuperación»). Al
+> arrancar, la aplicación espera a PostgreSQL hasta `Database:StartupWaitSeconds` segundos
+> (20 por defecto, máximo 25: Windows da unos 30 s a un servicio para arrancar). Si no
+> responde, sale con error y Windows lo reintenta al minuto, una y otra vez, hasta que
+> PostgreSQL esté listo; por ejemplo, tras un corte de luz con la base en recuperación.
 
 ### 8.6 Si el servicio no arranca
 
@@ -418,6 +424,10 @@ DicomMigrator.Web.exe --setup-db           # prueba la conexión; con DICOMMIGRA
 ```
 
 (En desarrollo, con `dotnet run --project src/DicomMigrator.Web -- --maintenance`.)
+
+`--maintenance` no inicializa la aplicación ni reanuda migraciones: solo conecta con la
+base y ejecuta el mantenimiento, así que se puede lanzar con el servicio en marcha. Si
+falla, termina con código de salida 1.
 
 ## 11. Generar nuevas migraciones (al evolucionar el modelo)
 
