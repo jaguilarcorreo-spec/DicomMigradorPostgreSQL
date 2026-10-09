@@ -56,7 +56,9 @@ public class DimseService(ILogger<DimseService> logger, ILocalConfigRepository l
             DicomStatus  = result.DicomStatus,
             DurationMs   = result.DurationMs,
             ErrorMessage = result.ErrorMessage,
-            ConfigurationError = result.AssociationRejected,
+            // Solo el rechazo PERMANENTE es de configuración; el transitorio es un fallo
+            // de conexión que se reintenta (CONC-7).
+            ConfigurationError = result.AssociationRejected && !result.RejectionTransient,
             Logs         = result.Logs,
             Studies      = result.Studies.Select(s => new DicomStudyDto
             {
@@ -89,7 +91,7 @@ public class DimseService(ILogger<DimseService> logger, ILocalConfigRepository l
             DicomStatus  = r.DicomStatus,
             DurationMs   = r.DurationMs,
             ErrorMessage = r.ErrorMessage,
-            ConfigurationError = r.AssociationRejected,
+            ConfigurationError = r.AssociationRejected && !r.RejectionTransient,   // CONC-7
             Instances    = r.Instances.Select(i => new DicomInstanceRef
             {
                 SeriesInstanceUid = i.SeriesInstanceUid ?? string.Empty,
@@ -126,10 +128,13 @@ public class DimseService(ILogger<DimseService> logger, ILocalConfigRepository l
             msg.Contains("timeout", StringComparison.OrdinalIgnoreCase) ||
             msg.Contains("refused", StringComparison.OrdinalIgnoreCase) ||
             msg.Contains("unreachable", StringComparison.OrdinalIgnoreCase);
-        var connectionError = !result.AssociationRejected
-            && !result.Success
-            && result.Completed == 0
-            && (result.DicomStatus is null || looksLikeConnection);
+        // Un rechazo TRANSITORIO de la asociación (PACS ocupado o al límite de conexiones)
+        // cuenta como fallo de conexión: se reintenta sin gastar intento (CONC-7).
+        var connectionError = (result.AssociationRejected && result.RejectionTransient)
+            || (!result.AssociationRejected
+                && !result.Success
+                && result.Completed == 0
+                && (result.DicomStatus is null || looksLikeConnection));
 
         return new CMoveResult
         {
@@ -146,7 +151,7 @@ public class DimseService(ILogger<DimseService> logger, ILocalConfigRepository l
             DownloadDirectory = result.DownloadDirectory,
             ErrorMessage = result.ErrorMessage,
             ConnectionError = connectionError,
-            ConfigurationError = result.AssociationRejected,
+            ConfigurationError = result.AssociationRejected && !result.RejectionTransient,   // CONC-7
             Logs         = result.Logs,
         };
     }

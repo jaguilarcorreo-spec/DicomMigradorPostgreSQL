@@ -369,11 +369,11 @@ public class CMoveService(ILogger<CMoveService> logger)
         }
         catch (DicomAssociationRejectedException ex)
         {
-            // El PACS origen rechazó la asociación (AE Title no autorizado, etc.):
-            // problema de CONFIGURACIÓN permanente, no una caída de red transitoria.
+            // El PACS origen rechazó la asociación: permanente (configuración) o transitorio
+            // (ocupado / al límite de conexiones). Ver DescribeRejection (CONC-7).
             result.Success = false;
             result.AssociationRejected = true;
-            result.ErrorMessage = $"Asociación rechazada: {ex.Message}";
+            (result.RejectionTransient, result.ErrorMessage) = DimseTestService.DescribeRejection(ex, config);
             result.Logs.Add($"[ERROR] {result.ErrorMessage}");
         }
         catch (Exception ex)

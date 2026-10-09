@@ -68,6 +68,9 @@ public class TesterCFindResult
     /// <summary>True si el PACS remoto rechazó la asociación (AE Title no autorizado,
     /// etc.) — problema de configuración permanente, no una caída transitoria.</summary>
     public bool    AssociationRejected { get; set; }
+    /// <summary>True si el rechazo de la asociación es TRANSITORIO (PACS ocupado o al límite
+    /// de conexiones): se reintenta, no es error de configuración (CONC-7).</summary>
+    public bool    RejectionTransient { get; set; }
 }
 
 public class TesterStudyDto
@@ -111,6 +114,9 @@ public class TesterCMoveResult
     public List<string> Logs         { get; set; } = [];
     /// <summary>Ver TesterCFindResult.AssociationRejected.</summary>
     public bool    AssociationRejected { get; set; }
+    /// <summary>True si el rechazo de la asociación es TRANSITORIO (PACS ocupado o al límite
+    /// de conexiones): se reintenta, no es error de configuración (CONC-7).</summary>
+    public bool    RejectionTransient { get; set; }
 }
 
 // ── DimseTestService (copiado del Tester) ────────────────────────────────────
@@ -131,6 +137,9 @@ public class TesterCFindInstancesResult
     public List<string> Logs    { get; set; } = [];
     /// <summary>Ver TesterCFindResult.AssociationRejected.</summary>
     public bool    AssociationRejected { get; set; }
+    /// <summary>True si el rechazo de la asociación es TRANSITORIO (PACS ocupado o al límite
+    /// de conexiones): se reintenta, no es error de configuración (CONC-7).</summary>
+    public bool    RejectionTransient { get; set; }
 }
 
 public class DimseTestService(ILogger<DimseTestService> logger)
@@ -172,7 +181,7 @@ public class DimseTestService(ILogger<DimseTestService> logger)
                 : $"[WARN] C-ECHO status inesperado: {status}");
         }
         catch (DicomAssociationRejectedException ex)
-        { sw.Stop(); result.DurationMs = sw.ElapsedMilliseconds; result.Success = false; result.ErrorMessage = $"Asociación rechazada: {ex.Message}"; result.Logs.Add($"[ERROR] {result.ErrorMessage}"); }
+        { sw.Stop(); result.DurationMs = sw.ElapsedMilliseconds; result.Success = false; result.ErrorMessage = DescribeRejection(ex, config).Message; result.Logs.Add($"[ERROR] {result.ErrorMessage}"); }
         catch (OperationCanceledException)
         { sw.Stop(); result.DurationMs = sw.ElapsedMilliseconds; result.Success = false; result.ErrorMessage = $"Timeout tras {config.AssociationTimeoutSeconds}s"; result.Logs.Add($"[WARN] C-ECHO timeout"); }
         catch (Exception ex)
@@ -239,12 +248,12 @@ public class DimseTestService(ILogger<DimseTestService> logger)
         }
         catch (DicomAssociationRejectedException ex)
         {
-            // El PACS destino rechazó la asociación (AE Title no autorizado, etc.):
-            // problema de CONFIGURACIÓN permanente, no una caída de red transitoria —
-            // reintentar en bucle nunca lo arregla solo (ver VerifyStudyAsync).
+            // El PACS rechazó la asociación. Puede ser PERMANENTE (AE no autorizado o mal
+            // configurado: reintentar nunca lo arregla) o TRANSITORIO (PACS ocupado o al
+            // límite de conexiones: basta con esperar). Ver DescribeRejection (CONC-7).
             sw.Stop(); result.DurationMs = sw.ElapsedMilliseconds; result.Success = false;
             result.AssociationRejected = true;
-            result.ErrorMessage = $"Asociación rechazada: {ex.Message}";
+            (result.RejectionTransient, result.ErrorMessage) = DescribeRejection(ex, config);
             result.Logs.Add($"[ERROR] {result.ErrorMessage}");
         }
         catch (Exception ex)
@@ -315,13 +324,12 @@ public class DimseTestService(ILogger<DimseTestService> logger)
         }
         catch (DicomAssociationRejectedException ex)
         {
-            // Ver comentario equivalente en FindAsync: problema de configuración
-            // permanente, no una caída de red transitoria.
+            // Ver comentario equivalente en FindAsync: permanente o transitorio (CONC-7).
             sw.Stop();
             result.DurationMs = sw.ElapsedMilliseconds;
             result.Success = false;
             result.AssociationRejected = true;
-            result.ErrorMessage = $"Asociación rechazada: {ex.Message}";
+            (result.RejectionTransient, result.ErrorMessage) = DescribeRejection(ex, config);
             result.Logs.Add($"[ERROR] {result.ErrorMessage}");
         }
         catch (Exception ex)
@@ -344,6 +352,37 @@ public class DimseTestService(ILogger<DimseTestService> logger)
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
+    /// <summary>Clasifica un rechazo de asociación (A-ASSOCIATE-RJ) y lo explica (CONC-7).
+    /// Transitorio: resultado "transient" o motivo de congestión / límite de conexiones,
+    /// que se arregla esperando. Permanente: el PACS no reconoce o no admite al migrador,
+    /// y solo se arregla cambiando la configuración.</summary>
+    internal static (bool Transient, string Message) DescribeRejection(
+        DicomAssociationRejectedException ex, TesterDimseConfiguration config)
+    {
+        var who = $"El PACS {config.RemoteAet} ({config.RemoteHost}:{config.RemotePort})";
+        var transient = ex.RejectResult == DicomRejectResult.Transient
+                     || ex.RejectReason is DicomRejectReason.TemporaryCongestion or DicomRejectReason.LocalLimitExceeded;
+        if (transient)
+            return (true, $"{who} rechazó la conexión de forma temporal: está ocupado o al límite de conexiones " +
+                          $"simultáneas ({(ex.RejectReason == DicomRejectReason.LocalLimitExceeded ? "límite de asociaciones superado" : "congestión temporal")}). Se reintentará. Si se repite a menudo, reduce los hilos " +
+                          "de este proceso o amplía el límite de asociaciones del PACS.");
+        var detail = ex.RejectReason switch
+        {
+            DicomRejectReason.CallingAENotRecognized =>
+                $"no reconoce el AE llamante '{config.LocalAet}' (este migrador). Dalo de alta en el PACS " +
+                $"(AE '{config.LocalAet}' y la IP de este servidor).",
+            DicomRejectReason.CalledAENotRecognized =>
+                $"no reconoce el AE llamado '{config.RemoteAet}'. Revisa el AE configurado para este nodo.",
+            DicomRejectReason.ApplicationContextNotSupported =>
+                "no admite el contexto de aplicación DICOM propuesto.",
+            DicomRejectReason.ProtocolVersionNotSupported =>
+                "no admite la versión del protocolo DICOM propuesta.",
+            _ =>
+                $"sin indicar el motivo. Revisa que el PACS tenga dado de alta el AE '{config.LocalAet}' " +
+                $"(y la IP de este servidor) y que el AE '{config.RemoteAet}' del nodo sea correcto.",
+        };
+        return (false, $"{who} rechazó la conexión de forma permanente: {detail}");
+    }
     private static DicomCFindRequest BuildFindRequest(TesterCFindQueryInternal query)
     {
         var level = query.Level.ToUpperInvariant() switch

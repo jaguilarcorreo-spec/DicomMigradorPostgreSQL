@@ -583,7 +583,28 @@ public class MigrationWorker(
             logger.LogInformation("[{Worker}] C-MOVE result: {Msg} StudyUID={Uid}",
                 workerId, techMsg, study.StudyInstanceUid);
 
-            // ── Errores que NO son del estudio (DCM-4) ─────────────────────────
+            // ── Errores que NO son del estudio (DCM-4, CONC-7) ──────────────────
+            // Rechazo PERMANENTE de la asociación (el PACS origen no reconoce o no admite
+            // al migrador): antes caía en "el PACS no procesó ninguna instancia" y cada
+            // estudio gastaba sus reintentos hasta acabar "Failed". Ahora se pausa la
+            // migración entera, como con 0xA801. El rechazo TRANSITORIO llega como
+            // ConnectionError y lo trata la rama de conexión (sin gastar reintento).
+            if (!success && result.ConfigurationError)
+            {
+                await studyRepo.ReleaseMigrationLockAsync(study.Id);
+                await auditRepo.AddAsync(new MigrationAuditLog
+                {
+                    MigrationId      = migration.Id,
+                    Action           = "C-MOVE",
+                    Level            = "ERROR",
+                    Result           = "ERROR",
+                    StudyInstanceUid = study.StudyInstanceUid,
+                    UserOrProcess    = workerId,
+                    TechnicalMessage = $"Error de configuración (sin gastar reintento): {techMsg}",
+                });
+                return MoveOutcome.Config((result.ErrorMessage ?? "El PACS origen rechazó la conexión de forma permanente.") +
+                    " La migración se ha pausado; reanúdala cuando esté corregido.");
+            }
             // 0xA801 "Move Destination unknown": el PACS origen no tiene dado de alta el
             // AE destino. Es configuración, igual para todos los estudios: no se gasta
             // reintento (antes cada estudio agotaba sus intentos y acababa "Failed") y se
