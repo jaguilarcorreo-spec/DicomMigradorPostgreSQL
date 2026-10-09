@@ -71,6 +71,41 @@ public class UserRepository(IDbContextFactory<AppDbContext> factory) : IUserRepo
             .ExecuteUpdateAsync(s => s.SetProperty(u => u.SecurityStamp, NewStamp()));
     }
 
+    public async Task RecordFailedLoginAsync(int userId, DateTime? lockUntil)
+    {
+        await using var db = factory.CreateDbContext();
+        // Un solo UPDATE con FailedAttempts + 1 en la BD. Antes se leía el usuario, se
+        // sumaba en memoria y se guardaba la entidad entera: dos fallos simultáneos
+        // dejaban el contador en +1 (BD-6).
+        if (lockUntil is { } until)
+            await db.AppUsers.Where(u => u.Id == userId)
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(u => u.FailedAttempts, u => u.FailedAttempts + 1)
+                    .SetProperty(u => u.LockedUntil, until));
+        else
+            await db.AppUsers.Where(u => u.Id == userId)
+                .ExecuteUpdateAsync(s => s.SetProperty(u => u.FailedAttempts, u => u.FailedAttempts + 1));
+    }
+
+    public async Task RecordSuccessfulLoginAsync(int userId, string? rehashedPassword)
+    {
+        await using var db = factory.CreateDbContext();
+        var now = DateTime.UtcNow;
+        if (rehashedPassword is not null)
+            await db.AppUsers.Where(u => u.Id == userId)
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(u => u.FailedAttempts, 0)
+                    .SetProperty(u => u.LockedUntil, (DateTime?)null)
+                    .SetProperty(u => u.LastLoginDate, now)
+                    .SetProperty(u => u.PasswordHash, rehashedPassword));
+        else
+            await db.AppUsers.Where(u => u.Id == userId)
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(u => u.FailedAttempts, 0)
+                    .SetProperty(u => u.LockedUntil, (DateTime?)null)
+                    .SetProperty(u => u.LastLoginDate, now));
+    }
+
     private static string NewStamp() => Guid.NewGuid().ToString("N");
 
     public async Task<int> CountAsync()

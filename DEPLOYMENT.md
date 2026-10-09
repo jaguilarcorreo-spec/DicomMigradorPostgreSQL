@@ -226,8 +226,22 @@ descargas de CSV/Excel también la requieren (contienen datos de paciente).
   rol, reseteas contraseñas y desbloqueas cuentas. El nombre de acceso no se puede cambiar
   una vez creado (lo referencia la auditoría). Contraseñas: mínimo 8 caracteres, se
   almacenan solo como hash.
-- **Bloqueo:** tras **5 intentos fallidos** seguidos la cuenta se bloquea **15 minutos**;
-  un administrador puede liberarla antes desde *Usuarios*.
+- **Intentos fallidos:** se limitan por equipo (IP del navegador), no por cuenta, para que
+  nadie pueda dejar fuera al administrador tecleando contraseñas malas desde otro equipo:
+  - **5 fallos** con un usuario desde un mismo equipo bloquean **ese usuario en ese equipo**
+    durante **15 minutos**. El dueño de la cuenta sigue entrando desde el suyo.
+  - **20 fallos** desde un mismo equipo, con cualquier usuario, bloquean **ese equipo**
+    15 minutos (frena probar nombres o contraseñas en masa).
+  - **20 fallos** con un usuario sumando todos los equipos bloquean **la cuenta** 15 minutos
+    (ataque repartido entre al menos 4 equipos a la vez).
+
+  Un administrador puede liberar cualquiera de estos bloqueos antes desde *Usuarios*
+  (**Desbloquear**, o resetear la contraseña). Los mensajes no revelan si un usuario existe.
+  Se ajustan en `"Auth"` con `LoginMaxFailuresPerUser`, `LoginMaxFailuresPerIp` (0 = sin
+  límite por equipo), `LoginMaxFailuresPerAccount` y `LoginLockoutMinutes`. Los contadores
+  por equipo están en memoria y se vacían al reiniciar el servicio. Si todos los usuarios
+  entran a través de un mismo servidor (Citrix, escritorio remoto, proxy inverso), comparten
+  IP: sube `LoginMaxFailuresPerIp` o ponlo a 0.
 
 ## 6. Licencia
 
@@ -538,8 +552,10 @@ Notas:
 - **Licencia "Ligada a otra máquina"** — el fingerprint no coincide (típico al desplegar en
   un servidor nuevo o tras cambiar la placa base). Obtén el fingerprint actual con
   `--fingerprint` y pide una licencia nueva para esa máquina.
-- **Cuenta bloqueada por intentos fallidos** — con otro administrador, desbloquéala desde
-  *Usuarios*. Sin otro administrador, desde PostgreSQL:
+- **"Demasiados intentos fallidos"** — espera el tiempo indicado o, con otro administrador,
+  desbloquéala desde *Usuarios*. Si es el único administrador, prueba desde otro equipo (el
+  bloqueo suele ser solo del equipo donde se falló) o reinicia el servicio, que vacía los
+  bloqueos por equipo. Si la cuenta quedó bloqueada en la BD, desde PostgreSQL:
   `UPDATE "AppUsers" SET "FailedAttempts"=0, "LockedUntil"=NULL WHERE "UserName"='admin';`
 - **Contraseña de `admin` perdida y no hay otro administrador** — no se guarda en claro y no
   hay auto-servicio de reseteo. La contraseña no se puede fijar por SQL (el hash es PBKDF2,

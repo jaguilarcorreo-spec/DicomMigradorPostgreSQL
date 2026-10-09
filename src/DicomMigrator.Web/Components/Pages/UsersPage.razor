@@ -5,6 +5,7 @@
 @using DicomMigrator.Web.Services
 @inject IUserRepository UserRepo
 @inject UserAuthService Auth
+@inject LoginThrottle Throttle
 
 <PageTitle>Usuarios — MOVE</PageTitle>
 
@@ -131,7 +132,7 @@
                             @(u.LastLoginDate?.ToLocalTime().ToString("yyyy-MM-dd HH:mm") ?? "—")
                         </td>
                         <td style="text-align:right;white-space:nowrap">
-                            @if (u.LockedUntil is { } l && l > DateTime.UtcNow)
+                            @if (IsLocked(u))
                             {
                                 <button class="btn btn-ghost btn-sm" @onclick="() => UnlockAsync(u)"
                                         disabled="@_busy" title="Liberar el bloqueo por intentos fallidos">🔓 Desbloquear</button>
@@ -161,10 +162,10 @@
 
     /// <summary>Texto y color del estado, en el orden de prioridad con que importa:
     /// desactivado &gt; bloqueado &gt; cambio pendiente &gt; activo.</summary>
-    static (string Text, string Color) UserState(AppUser u)
+    (string Text, string Color) UserState(AppUser u)
     {
         if (!u.IsActive)                                              return ("Desactivado", "var(--text-muted)");
-        if (u.LockedUntil is { } lu && lu > DateTime.UtcNow)           return ("Bloqueado", "var(--yellow)");
+        if (IsLocked(u))                                              return ("Bloqueado", "var(--yellow)");
         if (u.MustChangePassword)                                     return ("Cambio pendiente", "var(--yellow)");
         return ("Activo", "var(--green)");
     }
@@ -235,6 +236,7 @@
                     // Al resetear la contraseña se libera cualquier bloqueo previo.
                     _editing.FailedAttempts = 0;
                     _editing.LockedUntil    = null;
+                    Throttle.Reset(_editing.UserName);
                 }
 
                 await UserRepo.UpdateAsync(_editing);
@@ -248,6 +250,11 @@
         finally { _busy = false; }
     }
 
+    /// <summary>Bloqueado en la BD (fallos desde varios equipos) o con los intentos
+    /// agotados desde algún equipo (en memoria, ver LoginThrottle).</summary>
+    bool IsLocked(AppUser u) =>
+        (u.LockedUntil is { } lu && lu > DateTime.UtcNow) || Throttle.IsBlocked(u.UserName);
+
     async Task UnlockAsync(AppUser u)
     {
         _busy = true;
@@ -255,6 +262,7 @@
         {
             u.LockedUntil = null; u.FailedAttempts = 0;
             await UserRepo.UpdateAsync(u);
+            Throttle.Reset(u.UserName);   // también los bloqueos por equipo (SEC-6)
             Show($"Usuario '{u.UserName}' desbloqueado.", true);
             await LoadAsync();
         }

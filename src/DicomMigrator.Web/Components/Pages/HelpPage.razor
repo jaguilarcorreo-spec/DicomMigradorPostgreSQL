@@ -597,9 +597,13 @@
             <code>Auth:InitialAdminPassword</code> en <code>appsettings.Production.json</code>.
         </p>
         <p style="margin:0 0 10px 0;color:var(--text-dim);font-size:13px;line-height:1.6">
-            <strong>Bloqueo:</strong> tras 5 intentos fallidos seguidos la cuenta queda bloqueada
-            15 minutos. Un administrador puede liberarla antes desde <em>Usuarios</em>, y resetear
-            la contraseña también levanta el bloqueo.
+            <strong>Intentos fallidos:</strong> se limitan por equipo, para que nadie pueda dejar fuera
+            a otro usuario desde su ordenador. 5 fallos con un usuario desde un equipo bloquean ese
+            usuario <strong>en ese equipo</strong> 15 minutos; 20 fallos desde un equipo con cualquier
+            usuario bloquean el equipo; y 20 fallos con un usuario sumando todos los equipos bloquean
+            la cuenta. El mensaje es siempre «Demasiados intentos fallidos» y no revela si el usuario
+            existe. Un administrador puede liberar el bloqueo antes desde <em>Usuarios</em>, y resetear
+            la contraseña también lo levanta.
         </p>
         <p style="margin:0;color:var(--text-dim);font-size:13px;line-height:1.6">
             <strong>Sesiones:</strong> la sesión dura hasta 8 horas sin actividad y se renueva al usarla.
@@ -848,6 +852,10 @@
             <thead><tr><th>Clave</th><th>Descripción</th><th>Por defecto</th></tr></thead>
             <tbody>
                 <tr><td class="mono">Auth:InitialAdminPassword</td><td>Contraseña inicial del usuario <code>admin</code>, que se crea en el primer arranque si no hay usuarios. Se obliga a cambiarla en el primer acceso. La escribe el instalador en <code>appsettings.Production.json</code>.</td><td class="mono">admin</td></tr>
+                <tr><td class="mono">Auth:LoginMaxFailuresPerUser</td><td>Fallos con un mismo usuario desde un mismo equipo (IP) antes de bloquear ese usuario en ese equipo.</td><td class="mono" style="color:var(--accent)">5</td></tr>
+                <tr><td class="mono">Auth:LoginMaxFailuresPerIp</td><td>Fallos desde un mismo equipo con cualquier usuario antes de bloquear el equipo. 0 = sin límite. Súbelo o ponlo a 0 si todos entran por un mismo servidor (Citrix, escritorio remoto, proxy), porque comparten IP.</td><td class="mono" style="color:var(--accent)">20</td></tr>
+                <tr><td class="mono">Auth:LoginMaxFailuresPerAccount</td><td>Fallos con un usuario sumando todos los equipos antes de bloquear la cuenta (queda guardado en la base y se ve en <em>Usuarios</em>).</td><td class="mono" style="color:var(--accent)">20</td></tr>
+                <tr><td class="mono">Auth:LoginLockoutMinutes</td><td>Ventana en la que se cuentan los fallos y duración del bloqueo. Los contadores por equipo están en memoria y se vacían al reiniciar el servicio.</td><td class="mono" style="color:var(--accent)">15</td></tr>
                 <tr><td class="mono">Auth:SessionRevalidationSeconds</td><td>Cada cuántos segundos se revalida una pestaña ya abierta. Es el tiempo máximo que conserva el acceso tras desactivar al usuario, cambiarle el rol o la contraseña, o cerrar su sesión en otro sitio. Las páginas nuevas y las descargas se comprueban siempre al momento. Mínimo 10.</td><td class="mono" style="color:var(--accent)">300 (5 min)</td></tr>
             </tbody>
         </table>

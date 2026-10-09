@@ -222,6 +222,7 @@ try
     builder.Services.AddScoped<IInstanceRepository, InstanceRepository>();
     builder.Services.AddScoped<IUserRepository, UserRepository>();
     builder.Services.AddScoped<UserAuthService>();
+    builder.Services.AddSingleton<LoginThrottle>();   // contadores de intentos de acceso (SEC-6)
 
     // ── Licencias ────────────────────────────────────────────────────────────
     // Verificación de firma Ed25519 con clave pública embebida, fingerprint de

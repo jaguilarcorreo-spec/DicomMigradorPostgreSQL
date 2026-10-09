@@ -282,6 +282,12 @@ public interface IUserRepository
     /// <summary>Cambia el sello de seguridad: invalida todas las sesiones del usuario
     /// (al cerrar sesión). Ver AppUser.SecurityStamp.</summary>
     Task RotateSecurityStampAsync(int userId);
+    /// <summary>Login fallido: suma 1 a FailedAttempts de forma atómica (los fallos en
+    /// paralelo no se pierden) y, si se indica, bloquea la cuenta hasta esa fecha (SEC-6).</summary>
+    Task RecordFailedLoginAsync(int userId, DateTime? lockUntil);
+    /// <summary>Login correcto: pone a cero los fallos, quita el bloqueo, anota la fecha y,
+    /// si se indica, guarda el hash regenerado de la MISMA contraseña (no cambia el sello).</summary>
+    Task RecordSuccessfulLoginAsync(int userId, string? rehashedPassword);
 }
 
 public interface IDiscoveryJobRepository

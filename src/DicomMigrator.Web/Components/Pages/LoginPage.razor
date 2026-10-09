@@ -119,7 +119,10 @@
 
     private async Task SubmitAsync()
     {
-        var (user, error) = await Auth.ValidateAsync(Input.UserName, Input.Password);
+        // IP del navegador: los intentos fallidos se limitan por equipo (SEC-6).
+        var ip = HttpContext.Connection.RemoteIpAddress;
+        if (ip is { IsIPv4MappedToIPv6: true }) ip = ip.MapToIPv4();
+        var (user, error) = await Auth.ValidateAsync(Input.UserName, Input.Password, ip?.ToString());
         if (user is null)
         {
             _error = error;
