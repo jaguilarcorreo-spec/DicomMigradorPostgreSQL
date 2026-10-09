@@ -151,8 +151,20 @@
         // antes de poder usar la aplicación.
         var target = user.MustChangePassword
             ? "/cambiar-password"
-            : (string.IsNullOrWhiteSpace(ReturnUrl) ? "/" : ReturnUrl);
+            : (IsLocalUrl(ReturnUrl) ? ReturnUrl! : "/");
 
         Nav.NavigateTo(target, forceLoad: true);
+    }
+
+    /// <summary>True solo para rutas locales de esta aplicación ("/migraciones?id=3").
+    /// Evita la redirección abierta (SEC-4): con /login?ReturnUrl=https://sitio-falso el
+    /// usuario, tras identificarse aquí, acababa en una copia que le volvía a pedir la
+    /// contraseña. Rechaza URLs absolutas y las que el navegador interpreta como de otro
+    /// host: "//sitio" y "/\sitio". Mismo criterio que IsLocalUrl de ASP.NET Core.</summary>
+    private static bool IsLocalUrl(string? url)
+    {
+        if (string.IsNullOrEmpty(url) || url[0] != '/') return false;
+        if (url.Length > 1 && (url[1] == '/' || url[1] == '\\')) return false;
+        return !url.Any(char.IsControl);   // sin saltos de línea ni caracteres de control
     }
 }
