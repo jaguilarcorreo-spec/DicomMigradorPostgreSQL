@@ -204,8 +204,10 @@ try
     builder.Services.AddDbContextFactory<AppDbContext>(opt => opt
         // EnableRetryOnFailure: reintenta las operaciones que fallan por un error transitorio
         // de PostgreSQL (reinicio, conexión cortada) en vez de propagarlo al primer intento.
-        // Es compatible porque el código no abre transacciones explícitas; las exportaciones
-        // leen por páginas, así que el buffering que impone la estrategia no carga tablas enteras.
+        // Las transacciones explícitas deben ir dentro de la estrategia de ejecución
+        // (db.Database.CreateExecutionStrategy().ExecuteAsync, como SetWindowsAsync), que repite
+        // el bloque entero; las exportaciones leen por páginas, así que el buffering que impone
+        // la estrategia no carga tablas enteras.
         .UseNpgsql(connStr, o => o
             .SetPostgresVersion(18, 0)
             .EnableRetryOnFailure(maxRetryCount: 3, maxRetryDelay: TimeSpan.FromSeconds(5), errorCodesToAdd: null))

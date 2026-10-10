@@ -118,19 +118,24 @@ public class MigrationRepository(IDbContextFactory<AppDbContext> factory, Deferr
     {
         await using var db = factory.CreateDbContext();
 
-        var existing = await db.ExecutionWindows
-            .Where(w => w.MigrationId == migrationId)
-            .ToListAsync();
-
-        if (existing.Count > 0)
+        // Todo en UNA transacción (BD-9). Antes se borraban los tramos en un guardado y se
+        // insertaban los nuevos en otro: si fallaba el segundo (corte de la BD justo
+        // entonces), la migración se quedaba sin tramos, es decir, sin restricción horaria,
+        // y lanzaba C-MOVE en pleno horario laboral. Ahora o se guarda el cambio completo o
+        // se quedan los tramos anteriores. Con reintentos de Npgsql activos, la transacción
+        // explícita tiene que ir dentro de la estrategia de ejecución, que la repite entera.
+        var strategy = db.Database.CreateExecutionStrategy();
+        await strategy.ExecuteAsync(async () =>
         {
+            db.ChangeTracker.Clear();   // un reintento parte de cero
+            await using var tx = await db.Database.BeginTransactionAsync();
+
+            var existing = await db.ExecutionWindows
+                .Where(w => w.MigrationId == migrationId)
+                .ToListAsync();
             db.ExecutionWindows.RemoveRange(existing);
-            await db.SaveChangesAsync();
-        }
 
-        foreach (var w in windows)
-        {
-            db.ExecutionWindows.Add(new ExecutionWindow
+            db.ExecutionWindows.AddRange(windows.Select(w => new ExecutionWindow
             {
                 MigrationId = migrationId,
                 Kind        = w.Kind,
@@ -139,14 +144,15 @@ public class MigrationRepository(IDbContextFactory<AppDbContext> factory, Deferr
                 EndTime     = w.EndTime,
                 AllDay      = w.AllDay,
                 TimeZoneId  = w.TimeZoneId,
-            });
-        }
+            }));
+            await db.SaveChangesAsync();
 
-        await db.SaveChangesAsync();
+            await db.Migrations
+                .Where(m => m.Id == migrationId)
+                .ExecuteUpdateAsync(s => s.SetProperty(m => m.UpdatedAt, DateTime.UtcNow));
 
-        await db.Migrations
-            .Where(m => m.Id == migrationId)
-            .ExecuteUpdateAsync(s => s.SetProperty(m => m.UpdatedAt, DateTime.UtcNow));
+            await tx.CommitAsync();
+        });
     }
 
     public async Task<bool> UpdateStatusAsync(int id, string status)
