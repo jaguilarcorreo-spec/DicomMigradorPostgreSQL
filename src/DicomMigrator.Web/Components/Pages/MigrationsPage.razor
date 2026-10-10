@@ -10,6 +10,7 @@
 @inject IConnectionHealthService HealthSvc
 @using Microsoft.Extensions.DependencyInjection
 @inject IMigrationWorker Worker
+@inject DicomMigrator.Infrastructure.Services.Licensing.LicenseStatusCache LicenseCache
 @inject NavigationManager Nav
 @inject ILogger<MigrationsPage> Logger
 @implements IDisposable
@@ -136,6 +137,13 @@
             <span style="margin-left:auto;font-size:11px;color:var(--yellow)"
                   title="Pausada automáticamente por errores de conexión con el origen. Se reanudará sola cuando vuelva a estar accesible.">
                 ⏸ Auto-pausada · reintentando conexión…
+            </span>
+        }
+        else if (_detail.Status == "Paused" && _detail.PausedByLicense)
+        {
+            <span style="margin-left:auto;font-size:11px;color:var(--yellow)"
+                  title="En pausa porque la licencia no es válida. Se reanudará sola en cuanto se instale una licencia válida (menú Licencia).">
+                🔒 Pausada por licencia · se reanudará al instalar una válida
             </span>
         }
         else if (_detail.Status == "Paused" && _detail.PausedByWindow)
@@ -1636,10 +1644,10 @@ else
         _actionBusy = true;
         try
         {
-            await Worker.StartAsync(_detail.Id);
+            var started = await Worker.StartAsync(_detail.Id);
             await RefreshDetailAsync();
             StartAutoRefresh();
-            ShowMsg("Migración iniciada.", true);
+            ShowStartResult(started, "iniciada");
         }
         catch (Exception ex) { ShowMsg($"Error: {ex.Message}", false); }
         finally { _actionBusy = false; }
@@ -1665,10 +1673,10 @@ else
         _actionBusy = true;
         try
         {
-            await Worker.ResumeAsync(_detail.Id);
+            var started = await Worker.ResumeAsync(_detail.Id);
             await RefreshDetailAsync();
             StartAutoRefresh();
-            ShowMsg("Migración reanudada.", true);
+            ShowStartResult(started, "reanudada");
         }
         catch (Exception ex) { ShowMsg($"Error: {ex.Message}", false); }
         finally { _actionBusy = false; }
@@ -1897,9 +1905,16 @@ else
     // Shortcut actions from list view
     // Con catch: una excepción sin capturar en un manejador de evento tumba el circuito de
     // Blazor (p. ej. StartAsync rechaza arrancar durante el poblado, CONC-5).
-    async Task StartAsync(Migration m)  { _actionBusy = true; try { await Worker.StartAsync(m.Id); m.Status = "Running"; } catch (Exception ex) { ShowMsg($"Error: {ex.Message}", false); } finally { _actionBusy = false; StateHasChanged(); } }
+    async Task StartAsync(Migration m)  { _actionBusy = true; try { var ok = await Worker.StartAsync(m.Id); m.Status = ok ? "Running" : "Paused"; m.PausedByLicense = !ok; if (!ok) ShowStartResult(false, "iniciada"); } catch (Exception ex) { ShowMsg($"Error: {ex.Message}", false); } finally { _actionBusy = false; StateHasChanged(); } }
     async Task PauseAsync(Migration m)  { _actionBusy = true; try { await Worker.PauseAsync(m.Id); m.Status = "Paused"; } catch (Exception ex) { ShowMsg($"Error: {ex.Message}", false); } finally { _actionBusy = false; StateHasChanged(); } }
-    async Task ResumeAsync(Migration m) { _actionBusy = true; try { await Worker.ResumeAsync(m.Id); m.Status = "Running"; } catch (Exception ex) { ShowMsg($"Error: {ex.Message}", false); } finally { _actionBusy = false; StateHasChanged(); } }
+    async Task ResumeAsync(Migration m) { _actionBusy = true; try { var ok = await Worker.ResumeAsync(m.Id); m.Status = ok ? "Running" : "Paused"; m.PausedByLicense = !ok; if (!ok) ShowStartResult(false, "reanudada"); } catch (Exception ex) { ShowMsg($"Error: {ex.Message}", false); } finally { _actionBusy = false; StateHasChanged(); } }
+
+    /// <summary>Resultado real del inicio (OPS-5): antes se mostraba «Migración iniciada»
+    /// aunque la licencia lo hubiese bloqueado.</summary>
+    void ShowStartResult(bool started, string what) => ShowMsg(started
+        ? $"Migración {what}."
+        : $"No se ha {(what == "iniciada" ? "iniciado" : "reanudado")}: la licencia no es válida ({LicenseCache.Current.Reason}). " +
+          "Queda en pausa y se iniciará sola al instalar una licencia válida (menú Licencia).", started);
 
     // ── Audit logs ────────────────────────────────────────────────────────────
     async Task LoadAuditAsync()

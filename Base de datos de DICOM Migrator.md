@@ -2,7 +2,7 @@ MOVE · DICOM Migrator 1.8.1 · PostgreSQL 16+ · EF Core 9
 
 # Base de datos de DICOM Migrator
 
-Esquema físico, índices, ciclo de vida de los estados y flujo de datos entre tablas. El esquema sale del snapshot de migraciones EF (20 migraciones, la última `PausaPorVentana`) y lo he contrastado con la base local. Los estados y flujos salen del código de los servicios y repositorios.
+Esquema físico, índices, ciclo de vida de los estados y flujo de datos entre tablas. El esquema sale del snapshot de migraciones EF (21 migraciones, la última `PausaPorLicencia`) y lo he contrastado con la base local. Los estados y flujos salen del código de los servicios y repositorios.
 
 **16** tablas **9** claves foráneas **9** relaciones sin clave foránea **23** índices · 5 únicos · 3 parciales **5** tablas de una sola fila
 
@@ -264,6 +264,7 @@ Migrations {
   text ModalityPriority
   varchar(200) Name
   bool OldestFirst
+  bool PausedByLicense
   bool PausedByWindow
   int PopulateDone
   text PopulateError "null"
@@ -443,6 +444,8 @@ stateDiagram-v2
   Running --> Paused : los workers salen con estudios por migrar
   Paused --> Running : Reanudar o auto-reanudar
   Paused --> Running : ventana abierta o sin ventanas, solo con PausedByWindow
+  Running --> Paused : licencia no válida, PausedByLicense = true
+  Paused --> Running : licencia válida de nuevo, solo con PausedByLicense
   Running --> Migrated : todo migrado sin fallos
   Running --> Failed : quedan estudios Failed
   Migrated --> Completed : no queda nada por migrar ni por verificar
@@ -457,6 +460,7 @@ El comentario del modelo lista `Ready`, pero ningún código lo asigna; y omite 
 
 - **Auto-pausa por conexión** (`MigrationAutoPaused = true`): 5 fallos transitorios seguidos (origen caído o saturado, destino que no responde). La auto-reanudación comprueba con C-ECHO el origen y el destino; si se reanuda y vuelve a pausarse sin migrar nada, no se repite el correo y cada intento espera el doble (1, 2, 4… hasta 30 min).
 - **Error de configuración:** pausa sin `MigrationAutoPaused`, así que no se reanuda sola.
+- **Licencia** (`PausedByLicense`): se evalúa al arrancar, cada `License:CheckIntervalHours` horas (12 por defecto) y al instalarla. Si no permite migrar, las migraciones en `Running` se pausan de forma ordenada con la marca, y un inicio o reanudación queda en `Paused` con la marca en vez de quedarse en `Running` sin workers. Al volver a ser válida, se reanudan las marcadas. Un inicio o una pausa manual borran la marca.
 - **Ventana horaria** (`PausedByWindow`): el planificador mira el estado cada minuto, no la transición. Si la migración está en `Running` con la ventana cerrada, la pausa y pone `PausedByWindow = true`; si está en `Paused` con esa marca y la ventana abierta (o ya no tiene ventanas), la reanuda. Cualquier inicio, reanudación o pausa manual borra la marca, así que una pausa manual no se reanuda al abrirse la ventana. Al estar en la base, sobrevive a un reinicio.
 - **Paso a `Completed`:** lo hace quien termine último. La verificación, al acabar sin nada pendiente con la migración ya en `Migrated`; o la migración, al terminar con la verificación al día.
 
@@ -608,4 +612,4 @@ La auditoría no se escribe en el momento: va a un búfer en memoria que se vuel
 
 El mantenimiento actúa sobre las siete tablas de más movimiento (`MigrationStudies`, `MigrationInstances`, `DiscoveredStudies`, `DiscoveredInstances`, `DiscoveryPartitions`, `DiscoveryRequests` y `AuditLogs`). El diagrama solo dibuja las flechas principales.
 
-Esquema: Infrastructure/Migrations/AppDbContextModelSnapshot.cs, contrastado con la base local (pg_constraint, pg_indexes, pg_stat_user_tables). Estados y flujos: repositorios y servicios de Infrastructure y páginas de Web, leídos del directorio de trabajo del proyecto (commit 5a08f4d más DISC-13, aún sin commit: borrado por lotes, 10 oct 2026).
+Esquema: Infrastructure/Migrations/AppDbContextModelSnapshot.cs, contrastado con la base local (pg_constraint, pg_indexes, pg_stat_user_tables). Estados y flujos: repositorios y servicios de Infrastructure y páginas de Web, leídos del directorio de trabajo del proyecto (commit 3ea344b más OPS-5, aún sin commit: pausa por licencia, 10 oct 2026).

@@ -8,6 +8,7 @@
 @inject ILicenseService License
 @inject DicomMigrator.Infrastructure.Services.Licensing.LicenseStatusCache LicenseCache
 @inject AuthenticationStateProvider AuthState
+@inject IMigrationWorker Worker
 
 <PageTitle>Licencia — MOVE</PageTitle>
 
@@ -108,6 +109,10 @@
                 _ok    = $"Licencia instalada correctamente para '{snap.Customer}'. " +
                          $"Caduca: {(snap.ExpiresUtc?.ToString("yyyy-MM-dd") ?? "nunca")}.";
                 _token = "";
+                // Reanudar las migraciones que estaban en pausa por licencia (OPS-5). Antes
+                // seguían «Running» sin workers y había que pausarlas y reanudarlas a mano.
+                var resumed = await Worker.EnforceLicenseAsync();
+                if (resumed > 0) _ok += $" Se han reanudado {resumed} migración(es) que estaban en pausa por licencia.";
             }
             else
             {

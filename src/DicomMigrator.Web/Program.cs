@@ -311,6 +311,7 @@ try
 
     // ── Auto-reanudación tras auto-pausa por errores de conexión ─────────────
     builder.Services.AddHostedService<AutoResumeHostedService>();
+    builder.Services.AddHostedService<LicenseMonitorHostedService>();   // reevaluación periódica (OPS-5)
     builder.Services.AddHostedService<DicomMigrator.Web.Services.AuditLogFlushService>();
     builder.Services.AddHostedService<DicomMigrator.Web.Services.NotificationDispatcherHostedService>();
 

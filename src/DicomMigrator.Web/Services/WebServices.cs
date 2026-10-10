@@ -147,6 +147,54 @@ public class WindowSchedulerHostedService(
 /// relevant node (origin for migration, destination for verification) with C-ECHO on
 /// an interval. When the node is reachable again, it resumes the affected process.
 /// </summary>
+/// <summary>
+/// Reevalúa la licencia periódicamente (OPS-5) y aplica el veredicto. Antes solo se evaluaba
+/// al arrancar: una licencia que caducaba con el servicio en marcha seguía valiendo durante
+/// meses, y la marca de agua del reloj (contra atrasarlo) no avanzaba. Cada
+/// <c>License:CheckIntervalHours</c> horas (12 por defecto): EvaluateAsync y, si la licencia ya
+/// no permite migrar, pausa ordenada de las migraciones en marcha; si vuelve a permitirlo,
+/// reanudación de las que estaban en pausa por licencia. Al minuto de arrancar se aplica una
+/// vez el veredicto del arranque, para reanudar las que quedaron en pausa por licencia si
+/// entretanto ya es válida.
+/// </summary>
+public class LicenseMonitorHostedService(
+    IServiceScopeFactory scopeFactory,
+    IMigrationWorker worker,
+    Microsoft.Extensions.Configuration.IConfiguration config,
+    ILogger<LicenseMonitorHostedService> logger)
+    : BackgroundService
+{
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        var hours = Math.Clamp(config.GetValue("License:CheckIntervalHours", 12), 1, 168);
+        logger.LogInformation("LicenseMonitorHostedService started · reevaluación cada {H} h", hours);
+
+        try { await Task.Delay(TimeSpan.FromMinutes(1), stoppingToken); } catch (OperationCanceledException) { return; }
+        try { await worker.EnforceLicenseAsync(stoppingToken); }
+        catch (Exception ex) when (ex is not OperationCanceledException) { logger.LogWarning(ex, "Licencia: no se pudo aplicar el veredicto inicial."); }
+
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            try { await Task.Delay(TimeSpan.FromHours(hours), stoppingToken); }
+            catch (OperationCanceledException) { break; }
+            try
+            {
+                using var scope = scopeFactory.CreateScope();
+                var snap = await scope.ServiceProvider.GetRequiredService<ILicenseService>().EvaluateAsync(stoppingToken);
+                logger.LogInformation("Licencia reevaluada: {Verdict} — {Reason}", snap.Verdict, snap.Reason);
+                var changed = await worker.EnforceLicenseAsync(stoppingToken);
+                if (changed > 0)
+                    logger.LogWarning("Licencia: {N} migración(es) {Action}.", changed,
+                        snap.CanMigrate ? "reanudada(s)" : "pausada(s)");
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                logger.LogWarning(ex, "Licencia: falló la reevaluación periódica (no crítico).");
+            }
+        }
+    }
+}
+
 public class AutoResumeHostedService(
     IServiceScopeFactory scopeFactory,
     Microsoft.Extensions.Configuration.IConfiguration config,

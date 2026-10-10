@@ -117,6 +117,12 @@ public class Migration
     /// a un reinicio del servicio.</summary>
     public bool     PausedByWindow  { get; set; }
 
+    /// <summary>True si está en pausa porque la licencia no es válida (caducada, ligada a
+    /// otra máquina…) (OPS-5). Se reanuda sola en cuanto vuelve a haber licencia válida: al
+    /// instalarla o en la reevaluación periódica. La pone MigrationWorker (verja de arranque
+    /// y EnforceLicenseAsync) y la borra cualquier inicio o pausa manual.</summary>
+    public bool     PausedByLicense { get; set; }
+
     // ── Poblado desde inventario en segundo plano (v225) ─────────────────────
     // Al crear una migración desde un inventario, la inserción de estudios y la copia
     // de UIDs Nivel 2 pueden mover millones de filas. En vez de bloquear la petición

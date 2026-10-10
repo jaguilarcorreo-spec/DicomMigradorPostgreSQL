@@ -880,6 +880,16 @@
         </p>
     </HelpSection>
 
+    <HelpSection Title="Sección License — licencia" Color="var(--red)">
+        <table class="data-table" style="width:100%;font-size:12px">
+            <thead><tr><th>Clave</th><th>Descripción</th><th>Por defecto</th></tr></thead>
+            <tbody>
+                <tr><td class="mono">License:Path</td><td>Fichero <code>.dmlic</code> que se importa al arrancar si aún no hay licencia instalada. Lo escribe el instalador.</td><td class="mono">—</td></tr>
+                <tr><td class="mono">License:CheckIntervalHours</td><td>Cada cuántas horas se reevalúa la licencia (además de al arrancar y al instalarla). Si deja de ser válida, las migraciones en marcha se pausan de forma ordenada («🔒 Pausada por licencia», con aviso); al volver a ser válida, o al instalar una nueva, se reanudan solas. Entre 1 y 168.</td><td class="mono" style="color:var(--accent)">12</td></tr>
+            </tbody>
+        </table>
+    </HelpSection>
+
     <HelpSection Title="Sección AutoResume — reanudación automática" Color="var(--yellow)">
         <p style="margin:0 0 12px 0;color:var(--text-dim);font-size:13px;line-height:1.6">
             Controla el servicio que reanuda solo las migraciones y verificaciones que se auto-pausaron por errores de

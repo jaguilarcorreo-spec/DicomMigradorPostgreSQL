@@ -60,6 +60,8 @@ public interface IMigrationRepository
     Task SetMigrationAutoPausedAsync(int id, bool autoPaused);
     /// <summary>Marca o desmarca la migración como pausada por su ventana horaria (CONC-8).</summary>
     Task SetPausedByWindowAsync(int id, bool pausedByWindow);
+    /// <summary>Marca o desmarca la migración como pausada por licencia no válida (OPS-5).</summary>
+    Task SetPausedByLicenseAsync(int id, bool pausedByLicense);
     /// <summary>Set/clear the flag marking the VERIFICATION as auto-paused by connection errors.</summary>
     Task SetVerificationAutoPausedAsync(int id, bool autoPaused);
     /// <summary>All migrations currently auto-paused (migration or verification) due to
@@ -466,8 +468,10 @@ public interface IVerificationService
 
 public interface IMigrationWorker
 {
-    /// <summary>Start worker threads for a migration.</summary>
-    Task StartAsync(int migrationId, CancellationToken ct = default);
+    /// <summary>Start worker threads for a migration. Devuelve false si la licencia no
+    /// permite migrar: la migración queda en pausa por licencia y se iniciará sola al haber
+    /// una licencia válida (OPS-5). True también si ya estaba en marcha.</summary>
+    Task<bool> StartAsync(int migrationId, CancellationToken ct = default);
 
     /// <summary>Cancela todos los workers activos al apagar el proceso (sin tocar BD).</summary>
     void CancelAllForShutdown();
@@ -477,8 +481,13 @@ public interface IMigrationWorker
     /// sola al abrirse; si no, es una pausa manual que solo se reanuda a mano.</summary>
     Task PauseAsync(int migrationId, bool byWindow = false);
 
-    /// <summary>Resume workers for a paused migration.</summary>
-    Task ResumeAsync(int migrationId, CancellationToken ct = default);
+    /// <summary>Resume workers for a paused migration. Mismo resultado que StartAsync.</summary>
+    Task<bool> ResumeAsync(int migrationId, CancellationToken ct = default);
+
+    /// <summary>Aplica el veredicto de licencia en caché (OPS-5): si no permite migrar, pausa
+    /// de forma ordenada las migraciones en marcha (pausa por licencia, con aviso); si lo
+    /// permite, reanuda las que estaban en pausa por licencia. Devuelve cuántas cambió.</summary>
+    Task<int> EnforceLicenseAsync(CancellationToken ct = default);
 }
 
 public interface IWindowScheduler

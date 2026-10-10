@@ -246,11 +246,17 @@ descargas de CSV/Excel también la requieren (contienen datos de paciente).
 ## 6. Licencia
 
 La aplicación requiere una **licencia válida** para operar. Verifica la licencia al
-arrancar y la gestiona la pantalla **Licencia** (solo Administrador).
+arrancar y **cada 12 horas** (`License:CheckIntervalHours` en `appsettings.Production.json`,
+entre 1 y 168), y la gestiona la pantalla **Licencia** (solo Administrador).
 
 - **Sin licencia válida:** la app **arranca y es navegable** —para poder instalarla—, pero
   **no se inician migraciones**; un banner rojo lo avisa en todas las pantallas. El
   descubrimiento y la verificación no se bloquean.
+- **Si caduca con migraciones en marcha:** en la siguiente reevaluación se **pausan de forma
+  ordenada** (los hilos terminan su estudio actual), con aviso por correo, y quedan como
+  «🔒 Pausada por licencia». Igual las que intenten iniciarse o reanudarse sin licencia.
+- **Al instalar una licencia válida** se reanudan solas las migraciones en pausa por
+  licencia; también si una reevaluación vuelve a encontrarla válida.
 
 ### 6.1 Obtener el fingerprint de la máquina
 

@@ -74,7 +74,7 @@ public class MigrationWorker(
     private IConnectionHealthService Health(IServiceScope scope) =>
         scope.ServiceProvider.GetRequiredService<IConnectionHealthService>();
 
-    public async Task StartAsync(int migrationId, CancellationToken ct = default)
+    public async Task<bool> StartAsync(int migrationId, CancellationToken ct = default)
     {
         // ── Verja de licencia ────────────────────────────────────────────────
         // Choke point ÚNICO de arranque de migraciones (incluye la auto-reanudación
@@ -83,11 +83,27 @@ public class MigrationWorker(
         var lic = licenseCache.Current;
         if (!lic.CanMigrate)
         {
+            // Ya tiene workers (doble clic, o un arranque anterior con licencia válida): no se
+            // toca su estado aquí; si la licencia ha dejado de valer, la pausa ordenada la hace
+            // EnforceLicenseAsync.
+            if (_cts.ContainsKey(migrationId)) return true;
+
             logger.LogError("Migración {Id} NO se inicia: licencia no válida ({Verdict}) — {Reason}",
                 migrationId, lic.Verdict, lic.Reason);
             try
             {
+                // Queda en pausa POR LICENCIA (OPS-5). Antes no se tocaba el estado: una
+                // migración que estaba en marcha al reiniciar el servicio seguía «Running» sin
+                // workers, y la pantalla decía «Migración iniciada». Ahora queda «Paused» con
+                // la marca, y se iniciará sola al instalar una licencia válida. Se quitan las
+                // marcas de auto-pausa y de ventana: así ni la auto-reanudación ni el
+                // planificador la reintentan en bucle mientras no haya licencia.
                 using var scope = scopeFactory.CreateScope();
+                var repo = MigrationRepo(scope);
+                await repo.UpdateStatusAsync(migrationId, "Paused");
+                await repo.SetPausedByLicenseAsync(migrationId, true);
+                await repo.SetMigrationAutoPausedAsync(migrationId, false);
+                await repo.SetPausedByWindowAsync(migrationId, false);
                 await AuditRepo(scope).AddAsync(new MigrationAuditLog
                 {
                     MigrationId      = migrationId,
@@ -95,11 +111,12 @@ public class MigrationWorker(
                     Level            = "WARN",
                     Result           = "ERROR",
                     UserOrProcess    = "LICENSE",
-                    TechnicalMessage = $"Inicio bloqueado por licencia: {lic.Verdict} — {lic.Reason}",
+                    TechnicalMessage = $"Inicio bloqueado por licencia: {lic.Verdict} — {lic.Reason}. " +
+                                       "Queda en pausa y se iniciará sola al instalar una licencia válida.",
                 });
             }
-            catch { /* el bloqueo nunca debe fallar por la auditoría */ }
-            return;
+            catch (Exception ex) { logger.LogWarning(ex, "Migración {Id}: no se pudo marcar la pausa por licencia.", migrationId); }
+            return false;
         }
 
         ConnBackoff.ResetPauseAnnouncement("MIGRATE", migrationId);
@@ -116,7 +133,7 @@ public class MigrationWorker(
         {
             cts.Dispose();
             logger.LogWarning("Migration {Id} already has active workers", migrationId);
-            return;
+            return true;
         }
 
         MigrationEntity migration;
@@ -168,8 +185,9 @@ public class MigrationWorker(
             await MigrationRepo(scope).UpdateStatusAsync(migrationId, "Running");
             // Acción manual: limpiar el flag de auto-pausa por conexión.
             await MigrationRepo(scope).SetMigrationAutoPausedAsync(migrationId, false);
-            // Y el de pausa por ventana: ya está en marcha (CONC-8).
+            // Y el de pausa por ventana (CONC-8) y por licencia (OPS-5): ya está en marcha.
             await MigrationRepo(scope).SetPausedByWindowAsync(migrationId, false);
+            await MigrationRepo(scope).SetPausedByLicenseAsync(migrationId, false);
             await AuditRepo(scope).AddAsync(new MigrationAuditLog
             {
                 MigrationId = migrationId, Action = "START", Result = "OK",
@@ -235,6 +253,66 @@ public class MigrationWorker(
         // Verificación que quedó en espera (al día con la migración parada o sin empezar):
         // ahora que llegan estudios migrados, relanzarla (CONC-4).
         await RelaunchWaitingVerificationAsync(migrationId, "la migración se ha iniciado");
+        return true;
+    }
+
+    /// <inheritdoc/>
+    public async Task<int> EnforceLicenseAsync(CancellationToken ct = default)
+    {
+        var lic = licenseCache.Current;
+        using var scope = scopeFactory.CreateScope();
+        var repo = MigrationRepo(scope);
+        var changed = 0;
+
+        foreach (var m in await repo.GetAllAsync())
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                if (!lic.CanMigrate && m.Status == "Running")
+                {
+                    // Licencia caducada (o inválida) con la migración en marcha: pausa
+                    // ORDENADA, como el botón Pausar (los workers terminan su estudio actual),
+                    // con la marca para reanudarla sola en cuanto vuelva a haber licencia.
+                    logger.LogWarning("Licencia no válida ({Verdict}): se pausa la migración {Id} ('{Name}').",
+                        lic.Verdict, m.Id, m.Name);
+                    await PauseAsync(m.Id);
+                    await repo.SetPausedByLicenseAsync(m.Id, true);
+                    await AuditRepo(scope).AddAsync(new MigrationAuditLog
+                    {
+                        MigrationId = m.Id, Action = "LICENSE", Level = "WARN", Result = "ERROR", UserOrProcess = "LICENSE",
+                        TechnicalMessage = $"Migración pausada: licencia no válida ({lic.Verdict} — {lic.Reason}). " +
+                                           "Se reanudará sola al instalar una licencia válida.",
+                    });
+                    try
+                    {
+                        await scope.ServiceProvider.GetRequiredService<INotificationService>()
+                            .RaiseAsync(NotificationEvents.AutoPaused, m.Name, new (string, string)[]
+                            {
+                                ("Origen → Destino", $"{m.OriginNode?.Alias ?? "?"} → {m.DestNode?.Alias ?? "?"}"),
+                                ("Proceso", "Migración"),
+                                ("Motivo",  $"Licencia no válida: {lic.Reason}. Instala una licencia válida (menú Licencia); " +
+                                            "la migración se reanudará sola."),
+                            }, m.Id, "migration");
+                    }
+                    catch (Exception nex) { logger.LogWarning(nex, "Notificación de pausa por licencia (migración {Id}) falló.", m.Id); }
+                    changed++;
+                }
+                else if (lic.CanMigrate && m.Status == "Paused" && m.PausedByLicense)
+                {
+                    logger.LogInformation("Licencia válida: se reanuda la migración {Id} ('{Name}'), que estaba en pausa por licencia.",
+                        m.Id, m.Name);
+                    if (await StartAsync(m.Id, ct)) changed++;
+                }
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // Una migración que no se puede pausar o reanudar (p. ej. se está poblando) no
+                // impide atender a las demás.
+                logger.LogWarning(ex, "Licencia: no se pudo aplicar el veredicto a la migración {Id}.", m.Id);
+            }
+        }
+        return changed;
     }
 
     /// <summary>
@@ -946,6 +1024,8 @@ public class MigrationWorker(
         // Solo la pausa del planificador se reanuda al abrirse la ventana; una pausa
         // manual hecha mientras estaba pausada por ventana anula esa reanudación (CONC-8).
         await MigrationRepo(scope).SetPausedByWindowAsync(migrationId, byWindow);
+        // Lo mismo con la pausa por licencia (OPS-5): EnforceLicenseAsync la vuelve a marcar.
+        await MigrationRepo(scope).SetPausedByLicenseAsync(migrationId, false);
         if (byWindow) return;   // el planificador deja su propia entrada (WINDOW_CLOSE)
         var paused = await MigrationRepo(scope).GetByIdAsync(migrationId);
         await AuditRepo(scope).AddAsync(new MigrationAuditLog
@@ -956,6 +1036,6 @@ public class MigrationWorker(
         });
     }
 
-    public Task ResumeAsync(int migrationId, CancellationToken ct = default)
+    public Task<bool> ResumeAsync(int migrationId, CancellationToken ct = default)
         => StartAsync(migrationId, ct);
 }
