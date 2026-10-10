@@ -229,6 +229,51 @@ public class MigrationWorker(
                 }
             }
         }, TaskScheduler.Default).Unwrap();
+
+        // Verificación que quedó en espera (al día con la migración parada o sin empezar):
+        // ahora que llegan estudios migrados, relanzarla (CONC-4).
+        await RelaunchWaitingVerificationAsync(migrationId, "la migración se ha iniciado");
+    }
+
+    /// <summary>
+    /// Relanza la verificación si quedó «al día» (VerificationStatus = Completed) y hay o
+    /// habrá estudios por verificar (CONC-4). Es lo que la interfaz y la Ayuda prometían
+    /// («se relanzará sola») y no ocurría: una verificación que vaciaba su cola con la
+    /// migración en pausa, o lanzada antes que ella, no volvía a arrancar, y la migración
+    /// se quedaba en «Migrated» sin pasar a «Completed».
+    ///
+    /// No toca una verificación pausada o detenida a mano (Paused/Idle), ni una que no se
+    /// llegó a lanzar. Si ya no queda nada por migrar ni por verificar y la migración acaba
+    /// de terminar sin fallos, la promueve a «Completed» (migrada y verificada).
+    /// Best-effort: un fallo aquí no afecta a la migración.
+    /// </summary>
+    private async Task RelaunchWaitingVerificationAsync(int migrationId, string reason)
+    {
+        try
+        {
+            using var scope = scopeFactory.CreateScope();
+            var mig = await MigrationRepo(scope).GetByIdAsync(migrationId);
+            if (mig?.VerificationStatus != "Completed") return;
+
+            var studies = StudyRepo(scope);
+            if (await studies.HasVerificationWorkPendingAsync(migrationId)
+                || await studies.HasMigrationWorkPendingAsync(migrationId))
+            {
+                logger.LogInformation("Migración {Id}: se relanza la verificación, que estaba en espera ({Reason}).",
+                    migrationId, reason);
+                await scope.ServiceProvider.GetRequiredService<IVerificationService>().StartVerificationAsync(migrationId);
+            }
+            else if (mig.Status == "Migrated")
+            {
+                await MigrationRepo(scope).UpdateStatusAsync(migrationId, "Completed");
+                logger.LogInformation("Migración {Id} promovida a Completed (migrada y verificada).", migrationId);
+            }
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Migración {Id}: no se pudo relanzar la verificación en espera ({Reason}). " +
+                "Lánzala a mano desde la ficha.", migrationId, reason);
+        }
     }
 
     // Intentos del cierre de una ejecución ante errores de BD (esperas de ConnBackoff).
@@ -277,6 +322,10 @@ public class MigrationWorker(
                 $"Migrados={stats.Migrated} Verificados={stats.Verified} Fallidos={stats.Failed}"
         });
         logger.LogInformation("Migration {Id} finished with status {Status}", migrationId, finalStatus);
+
+        // Verificación en espera: verificar lo que quede o, si ya está todo verificado,
+        // promover la migración a Completed (CONC-4).
+        await RelaunchWaitingVerificationAsync(migrationId, "la migración ha terminado");
 
         // ── Notificación por correo (v227) ──
         try

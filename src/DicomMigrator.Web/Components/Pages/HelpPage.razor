@@ -246,10 +246,14 @@
             <li><span style="color:var(--purple);font-weight:600">Verificación (púrpura)</span> — porcentaje de estudios confirmados en destino. Puede ser <strong>Nivel 1</strong> (coincidencia de conteos de series/instancias vía C-FIND/QIDO) o <strong>Nivel 2</strong> (comparación de los conjuntos de <code>SOPInstanceUID</code>), según la migración tenga o no UIDs capturados. Ver la sección «Verificación Nivel 2» más abajo.</li>
         </ul>
         <p style="margin:10px 0 0 0;color:var(--text-dim);font-size:13px;line-height:1.6">
-            La verificación puede correr a la vez que la migración o lanzarse después. Como vacía su cola de estudios
-            <em>Migrados</em> de forma autónoma, puede marcarse <code>Completed</code> y volver a relanzarse sola cuando la
-            migración produce nuevos migrados. Mientras eso ocurre, el panel muestra
-            <strong>«⏳ En espera · pendiente de migración»</strong> en lugar de <code>Completed</code>, para no confundir.
+            La verificación puede correr a la vez que la migración o lanzarse después. Si se queda sin estudios
+            <em>Migrados</em> que verificar mientras la migración sigue en marcha, <strong>espera</strong> a que lleguen
+            más (el panel muestra <strong>«⏳ En espera · verificará lo que se vaya migrando»</strong>). Si se queda al día
+            con la migración en pausa, o se lanzó antes que ella, queda <strong>«⏳ En espera · pendiente de migración»</strong>
+            y se relanza sola al iniciar, reanudar o terminar la migración. En esos casos no se envía el correo de
+            «verificación completada»: solo llega cuando de verdad no queda nada por migrar ni por verificar, y entonces la
+            migración pasa de <code>Migrated</code> a <code>Completed</code> (si terminó con estudios fallidos queda en
+            <code>Failed</code>). Una verificación pausada o detenida a mano no se relanza sola.
         </p>
     </HelpSection>
 

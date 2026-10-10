@@ -195,7 +195,19 @@
         }
 
         @* Indicador de actividad *@
-        @if (_detail.VerificationStatus == "Running")
+        @if (_detail.VerificationStatus == "Running"
+             && _detail.Status == "Running"
+             && _stats is not null
+             && _stats.Migrated + _stats.VerificationPending + _stats.VerifyRetryPending == 0)
+        {
+            @* En marcha pero sin nada que verificar todavía: sus hilos esperan a que la
+               migración complete más estudios (CONC-4). *@
+            <span style="margin-left:auto;font-size:11px;color:var(--text-muted)"
+                  title="La verificación está en marcha y al día. Verificará los estudios a medida que la migración los complete.">
+                ⏳ En espera · verificará lo que se vaya migrando
+            </span>
+        }
+        else if (_detail.VerificationStatus == "Running")
         {
             <div style="margin-left:auto;display:flex;align-items:center;gap:6px">
                 <div style="width:7px;height:7px;border-radius:50%;background:#a78bfa;
@@ -211,17 +223,17 @@
             </span>
         }
         else if (_detail.VerificationStatus == "Completed"
-                 && _detail.Status is "Running" or "Paused"
                  && _stats is not null
                  && (_stats.Pending + _stats.Queued + _stats.Migrating
                      + _stats.Migrated + _stats.VerificationPending
                      + _stats.RetryPending) > 0)
         {
-            @* La verificación vació su cola, pero la migración sigue activa y aún
-               quedan estudios que generarán más trabajo de verificación. Se
-               relanzará sola; "Completed" aquí confundiría. *@
+            @* La verificación está al día, pero la migración (en pausa o sin iniciar)
+               aún tiene estudios que generarán más trabajo de verificación.
+               MigrationWorker la relanza al iniciar, reanudar o terminar la migración
+               (CONC-4); "Completed" aquí confundiría. *@
             <span style="margin-left:auto;font-size:11px;color:var(--text-muted)"
-                  title="Esta tanda de verificación ha terminado. Se reanudará automáticamente a medida que la migración complete más estudios.">
+                  title="La verificación está al día. Se relanzará sola al iniciar, reanudar o terminar la migración.">
                 ⏳ En espera · pendiente de migración
             </span>
         }

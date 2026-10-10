@@ -328,6 +328,19 @@ public class VerificationService(
 
                 await migR.UpdateVerificationStatusAsync(migrationId, "Completed");
                 await migR.SetVerificationAutoPausedAsync(migrationId, false);
+
+                // Verificación AL DÍA, no terminada (CONC-4): la migración aún tiene
+                // estudios por migrar (está en pausa, o la verificación se lanzó antes que
+                // ella). Queda en "Completed" sin correo ni promoción; MigrationWorker la
+                // relanza al iniciar o reanudar la migración, y al terminarla. El panel la
+                // muestra como «En espera · pendiente de migración».
+                if (await studyRepo.HasMigrationWorkPendingAsync(migrationId))
+                {
+                    logger.LogInformation("Verificación de la migración {Id} al día: no quedan estudios migrados " +
+                        "por verificar, pero sí por migrar. En espera: se relanzará cuando la migración continúe.",
+                        migrationId);
+                    return;
+                }
                 logger.LogInformation("Verificación completada · migración {Id}", migrationId);
 
                 var mig = await migR.GetByIdAsync(migrationId);
@@ -412,11 +425,13 @@ public class VerificationService(
 
     // Loop de un worker de verificación: adquiere 'Migrated' de uno en uno con el
     // lock de verificación separado, los verifica, reintenta según MaxRetries, y
-    // sale cuando la cola está vacía (auto-completado).
+    // sale cuando la cola está vacía (auto-completado), salvo que la migración siga en
+    // marcha con estudios por migrar: entonces espera a que lleguen (CONC-4).
     private async Task VerificationWorkerLoopAsync(int migrationId, string workerId, CancellationTokenSource cts)
     {
         var ct = cts.Token;
         int emptyPolls = 0;
+        bool waitingLogged = false;   // aviso «esperando a la migración» ya escrito (CONC-4)
         int connErrors = 0;   // errores de conexión consecutivos (PACS destino inaccesible)
         int unexpectedErrors = 0;   // errores inesperados seguidos (BD caída, etc.)
         // Estudio que este worker tiene en 'VerificationPending' y aún no ha cerrado
@@ -500,6 +515,23 @@ public class VerificationService(
                         var workLeft = await studyR.HasVerificationWorkPendingAsync(migrationId);
                         if (!workLeft)
                         {
+                            // Con la migración en marcha seguirán llegando estudios migrados:
+                            // esperar en vez de salir (CONC-4). Antes, una verificación lanzada
+                            // junto a la migración (o más rápida que ella) vaciaba la cola,
+                            // salía, se daba por «completada» con 0 y nada la relanzaba: la
+                            // migración se quedaba en «Migrated» para siempre.
+                            if ((await migR.GetByIdAsync(migrationId))?.Status == "Running"
+                                && await studyR.HasMigrationWorkPendingAsync(migrationId))
+                            {
+                                if (!waitingLogged)
+                                {
+                                    logger.LogInformation("Verificación worker {W}: nada que verificar por ahora; " +
+                                        "la migración sigue en marcha, se espera a que migre más estudios.", workerId);
+                                    waitingLogged = true;
+                                }
+                                await Task.Delay(30_000, ct);
+                                continue;
+                            }
                             logger.LogInformation("Verificación worker {W}: cola vacía, saliendo", workerId);
                             break;
                         }
@@ -508,6 +540,7 @@ public class VerificationService(
                         continue;
                     }
                     emptyPolls = 0;
+                    waitingLogged = false;
                     heldStudyId = study.Id;
 
                     try
