@@ -170,11 +170,11 @@
                     <div class="advanced-body">
                         <div class="form-row-3">
                             <div class="form-group">
-                                <label class="form-label">Timeout asociación (s)</label>
+                                <label class="form-label" title="Tiempo máximo para conectar con el PACS y que acepte la asociación.">Timeout asociación (s)</label>
                                 <input class="form-input mono" type="number" @bind="_assocTimeout" />
                             </div>
                             <div class="form-group">
-                                <label class="form-label">Timeout operación (s)</label>
+                                <label class="form-label" title="Tiempo máximo sin ninguna respuesta del PACS durante una consulta o transferencia. Cada respuesta reinicia la cuenta: una consulta larga que no para de recibir resultados no se corta.">Timeout operación (s)</label>
                                 <input class="form-input mono" type="number" @bind="_opTimeout" />
                             </div>
                             <div class="form-group">

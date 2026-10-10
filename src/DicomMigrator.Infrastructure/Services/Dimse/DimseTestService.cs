@@ -144,22 +144,69 @@ public class TesterCFindInstancesResult
 
 public class DimseTestService(ILogger<DimseTestService> logger)
 {
+    // ── Tiempos de espera de una operación DIMSE (DCM-3) ──────────────────────
+    /// <summary>
+    /// Vigilante de tiempos de C-ECHO / C-FIND, con el mismo esquema que el C-MOVE:
+    ///   · Timeout asociación del nodo → tiempo máximo para CONECTAR y que el PACS acepte la
+    ///     asociación (se configura además en fo-dicom, que antes usaba su valor por defecto).
+    ///   · Timeout operación del nodo → tiempo máximo SIN NINGUNA RESPUESTA del PACS; cada
+    ///     respuesta (cada resultado de una C-FIND) lo rearma.
+    /// Antes el "timeout de asociación" (30 s) cortaba la consulta ENTERA aunque el PACS no
+    /// parase de enviar resultados: un día con miles de estudios o un estudio con miles de
+    /// imágenes nunca terminaba, y el "timeout de operación" casi nunca actuaba.
+    /// fo-dicom NO lanza excepción al cancelar: SendAsync vuelve con normalidad, así que tras
+    /// él hay que mirar si saltó el vigilante (Fired) o una cancelación real. Se cancela
+    /// ABORTANDO la asociación: liberarla de forma ordenada esperaba hasta 10 s más la
+    /// respuesta de un PACS que precisamente se ha quedado colgado.
+    /// </summary>
+    private sealed class DimseWatchdog : IDisposable
+    {
+        private readonly TimeSpan _assoc, _idle;
+        public CancellationTokenSource Cts { get; }
+        public bool Associated { get; private set; }
+
+        public DimseWatchdog(TesterDimseConfiguration config, IDicomClient client, CancellationToken ct)
+        {
+            _assoc = TimeSpan.FromSeconds(Math.Max(1, config.AssociationTimeoutSeconds));
+            _idle  = TimeSpan.FromSeconds(Math.Max(1, config.ResponseTimeoutSeconds));
+            Cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            client.ClientOptions.AssociationRequestTimeoutInMs = (int)_assoc.TotalMilliseconds;
+            client.ClientOptions.MaximumNumberOfConsecutiveTimedOutAssociationRequests = 1;   // sin reintentos encadenados
+            client.ServiceOptions.RequestTimeout = _idle;
+            // Conexión TCP + aceptación de la asociación, con un pequeño margen para que el
+            // propio timeout de fo-dicom actúe antes si el PACS no contesta a la petición.
+            Cts.CancelAfter(_assoc + TimeSpan.FromSeconds(5));
+            client.AssociationAccepted += (_, _) => { Associated = true; Activity(); };
+        }
+
+        /// <summary>El PACS ha respondido: rearmar la espera por inactividad.</summary>
+        public void Activity() { try { Cts.CancelAfter(_idle); } catch (ObjectDisposedException) { } }
+
+        public bool Fired => Cts.IsCancellationRequested;
+
+        public string TimeoutMessage(int received, string unit) => Associated
+            ? $"El PACS dejó de responder durante {_idle.TotalSeconds:0} s (timeout de operación del nodo); " +
+              $"{received} {unit} recibido(s) antes del corte."
+            : $"No se pudo establecer la asociación con el PACS en {_assoc.TotalSeconds:0} s (timeout de asociación del nodo).";
+
+        public void Dispose() => Cts.Dispose();
+    }
+
     // ── C-ECHO ────────────────────────────────────────────────────────────────
     public async Task<TesterEchoResult> EchoAsync(TesterDimseConfiguration config, CancellationToken ct = default)
     {
         var result = new TesterEchoResult();
         var sw = Stopwatch.StartNew();
+        DimseWatchdog? echoWatchdog = null;
         try
         {
             logger.LogInformation("C-ECHO → {Aet} @ {Host}:{Port}", config.RemoteAet, config.RemoteHost, config.RemotePort);
             result.Logs.Add($"[INFO] Iniciando C-ECHO → {config.RemoteAet} @ {config.RemoteHost}:{config.RemotePort}");
             result.Logs.Add($"[DEBUG] Calling AET: {config.LocalAet}, Called AET: {config.RemoteAet}");
 
-            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            cts.CancelAfter(TimeSpan.FromSeconds(config.AssociationTimeoutSeconds));
-
             var client = DicomClientFactory.Create(config.RemoteHost, config.RemotePort, config.UseTls, config.LocalAet, config.RemoteAet);
-            client.ServiceOptions.RequestTimeout = TimeSpan.FromSeconds(config.ResponseTimeoutSeconds);
+            using var watchdog = new DimseWatchdog(config, client, ct);
+            echoWatchdog = watchdog;
 
             var echoRequest = new DicomCEchoRequest();
             DicomStatus? status = null;
@@ -170,20 +217,22 @@ public class DimseTestService(ILogger<DimseTestService> logger)
             };
 
             await client.AddRequestAsync(echoRequest);
-            await client.SendAsync(cts.Token);
+            await client.SendAsync(watchdog.Cts.Token, DicomClientCancellationMode.ImmediatelyAbortAssociation);
+            ct.ThrowIfCancellationRequested();
 
             sw.Stop();
             result.DurationMs = sw.ElapsedMilliseconds;
             result.DicomStatus = status?.Code;
             result.Success = status == DicomStatus.Success;
+            if (status is null && watchdog.Fired) result.ErrorMessage = watchdog.TimeoutMessage(0, "respuesta(s)");
             result.Logs.Add(result.Success
                 ? $"[INFO] C-ECHO completado. Status: 0x0000 (Success). RTT: {result.DurationMs}ms"
-                : $"[WARN] C-ECHO status inesperado: {status}");
+                : $"[WARN] C-ECHO sin éxito: {result.ErrorMessage ?? status?.ToString()}");
         }
         catch (DicomAssociationRejectedException ex)
         { sw.Stop(); result.DurationMs = sw.ElapsedMilliseconds; result.Success = false; result.ErrorMessage = DescribeRejection(ex, config).Message; result.Logs.Add($"[ERROR] {result.ErrorMessage}"); }
-        catch (OperationCanceledException)
-        { sw.Stop(); result.DurationMs = sw.ElapsedMilliseconds; result.Success = false; result.ErrorMessage = $"Timeout tras {config.AssociationTimeoutSeconds}s"; result.Logs.Add($"[WARN] C-ECHO timeout"); }
+        catch (Exception ex) when ((ex is OperationCanceledException && !ct.IsCancellationRequested) || ex is DicomAssociationRequestTimedOutException)
+        { sw.Stop(); result.DurationMs = sw.ElapsedMilliseconds; result.Success = false; result.ErrorMessage = echoWatchdog?.TimeoutMessage(0, "respuesta(s)") ?? "Tiempo de espera agotado"; result.Logs.Add($"[WARN] {result.ErrorMessage}"); }
         catch (Exception ex)
         { sw.Stop(); result.DurationMs = sw.ElapsedMilliseconds; result.Success = false; result.ErrorMessage = ex.Message; result.Logs.Add($"[ERROR] {ex.Message}"); }
         return result;
@@ -194,21 +243,21 @@ public class DimseTestService(ILogger<DimseTestService> logger)
     {
         var result = new TesterCFindResult();
         var sw = Stopwatch.StartNew();
+        DimseWatchdog? findWatchdog = null;
         try
         {
             logger.LogInformation("C-FIND {Level} → {Aet}", query.Level, config.RemoteAet);
             result.Logs.Add($"[INFO] C-FIND {query.Level} → {config.RemoteAet} @ {config.RemoteHost}:{config.RemotePort}");
 
-            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            cts.CancelAfter(TimeSpan.FromSeconds(config.AssociationTimeoutSeconds));
-
             var client = DicomClientFactory.Create(config.RemoteHost, config.RemotePort, config.UseTls, config.LocalAet, config.RemoteAet);
-            client.ServiceOptions.RequestTimeout = TimeSpan.FromSeconds(config.ResponseTimeoutSeconds);
+            using var watchdog = new DimseWatchdog(config, client, ct);
+            findWatchdog = watchdog;
 
             var request = BuildFindRequest(query);
             int pending = 0;
             request.OnResponseReceived += (req, resp) =>
             {
+                watchdog.Activity();   // cada resultado rearma la espera (DCM-3)
                 // Por ESTADO, no por código (DCM-1): Pending agrupa 0xFF00 y 0xFF01
                 // ("Pending, alguna clave opcional no soportada"). Comparando con
                 // DicomStatus.Pending (0xFF00), cada 0xFF01 caía en la rama de respuesta
@@ -229,22 +278,34 @@ public class DimseTestService(ILogger<DimseTestService> logger)
             };
 
             await client.AddRequestAsync(request);
-            await client.SendAsync(cts.Token);
+            await client.SendAsync(watchdog.Cts.Token, DicomClientCancellationMode.ImmediatelyAbortAssociation);
+            // fo-dicom no lanza al cancelar: una pausa/parada real se propaga aquí (antes se
+            // devolvía como una C-FIND fallida más); si saltó el vigilante sin respuesta final,
+            // se dice cuál de los dos tiempos se agotó y cuánto llegó.
+            ct.ThrowIfCancellationRequested();
             sw.Stop();
             result.DurationMs = sw.ElapsedMilliseconds;
+            if (result.DicomStatus is null && watchdog.Fired)
+            {
+                result.Success = false;
+                result.ErrorMessage = watchdog.TimeoutMessage(result.Studies.Count, "resultado(s)");
+                result.Logs.Add($"[WARN] C-FIND cortado: {result.ErrorMessage}");
+            }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
-            // Cancelación real (pausa/parada del usuario), no el timeout interno de
-            // 'cts': propagarla para que el llamador la trate como cancelación, no
-            // como un C-FIND fallido (ver VerifyStudyAsync).
+            // Cancelación real (pausa/parada del usuario), no el vigilante de tiempos:
+            // propagarla para que el llamador la trate como cancelación, no como un
+            // C-FIND fallido (ver VerifyStudyAsync).
             throw;
         }
-        catch (OperationCanceledException)
+        catch (Exception ex) when (ex is OperationCanceledException or DicomAssociationRequestTimedOutException)
         {
+            // Vigilante de tiempos, o el PACS no aceptó la asociación a tiempo (fo-dicom lanza
+            // su propia excepción, con un texto en inglés que no dice qué ajuste del nodo es).
             sw.Stop(); result.DurationMs = sw.ElapsedMilliseconds; result.Success = false;
-            result.ErrorMessage = $"Timeout tras {config.AssociationTimeoutSeconds}s";
-            result.Logs.Add("[WARN] C-FIND timeout");
+            result.ErrorMessage = findWatchdog?.TimeoutMessage(result.Studies.Count, "resultado(s)") ?? "Tiempo de espera agotado";
+            result.Logs.Add($"[WARN] C-FIND cortado: {result.ErrorMessage}");
         }
         catch (DicomAssociationRejectedException ex)
         {
@@ -267,16 +328,15 @@ public class DimseTestService(ILogger<DimseTestService> logger)
     {
         var result = new TesterCFindInstancesResult();
         var sw = Stopwatch.StartNew();
+        DimseWatchdog? enumWatchdog = null;
         try
         {
             logger.LogInformation("C-FIND IMAGE StudyUID={Uid} → {Aet}", studyInstanceUid, config.RemoteAet);
             result.Logs.Add($"[INFO] C-FIND IMAGE StudyUID={studyInstanceUid} → {config.RemoteAet} @ {config.RemoteHost}:{config.RemotePort}");
 
-            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            cts.CancelAfter(TimeSpan.FromSeconds(config.AssociationTimeoutSeconds));
-
             var client = DicomClientFactory.Create(config.RemoteHost, config.RemotePort, config.UseTls, config.LocalAet, config.RemoteAet);
-            client.ServiceOptions.RequestTimeout = TimeSpan.FromSeconds(config.ResponseTimeoutSeconds);
+            using var watchdog = new DimseWatchdog(config, client, ct);
+            enumWatchdog = watchdog;
 
             var request = new DicomCFindRequest(DicomQueryRetrieveLevel.Image);
             var ds = request.Dataset;
@@ -286,6 +346,7 @@ public class DimseTestService(ILogger<DimseTestService> logger)
 
             request.OnResponseReceived += (req, resp) =>
             {
+                watchdog.Activity();   // cada instancia rearma la espera (DCM-3)
                 if (resp.Status.State == DicomState.Pending && resp.Dataset is not null)   // 0xFF00 y 0xFF01 (DCM-1)
                 {
                     result.Instances.Add(new TesterInstanceDto
@@ -303,24 +364,32 @@ public class DimseTestService(ILogger<DimseTestService> logger)
             };
 
             await client.AddRequestAsync(request);
-            await client.SendAsync(cts.Token);
+            await client.SendAsync(watchdog.Cts.Token, DicomClientCancellationMode.ImmediatelyAbortAssociation);
+            ct.ThrowIfCancellationRequested();   // ver FindAsync
             sw.Stop();
             result.DurationMs = sw.ElapsedMilliseconds;
+            if (result.DicomStatus is null && watchdog.Fired)
+            {
+                result.Success = false;
+                result.ErrorMessage = watchdog.TimeoutMessage(result.Instances.Count, "instancia(s)");
+                result.Logs.Add($"[WARN] C-FIND IMAGE cortado: {result.ErrorMessage}");
+            }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
-            // Cancelación real (pausa/parada del usuario), no el timeout interno de
-            // 'cts': propagarla para que el llamador la trate como cancelación, no
-            // como un C-FIND IMAGE fallido (ver VerifyStudyAsync).
+            // Cancelación real (pausa/parada del usuario), no el vigilante de tiempos:
+            // propagarla para que el llamador la trate como cancelación, no como un
+            // C-FIND IMAGE fallido (ver VerifyStudyAsync).
             throw;
         }
-        catch (OperationCanceledException)
+        catch (Exception ex) when (ex is OperationCanceledException or DicomAssociationRequestTimedOutException)
         {
+            // Ver FindAsync.
             sw.Stop();
             result.DurationMs = sw.ElapsedMilliseconds;
             result.Success = false;
-            result.ErrorMessage = $"Timeout tras {config.AssociationTimeoutSeconds}s";
-            result.Logs.Add("[WARN] C-FIND IMAGE timeout");
+            result.ErrorMessage = enumWatchdog?.TimeoutMessage(result.Instances.Count, "instancia(s)") ?? "Tiempo de espera agotado";
+            result.Logs.Add($"[WARN] C-FIND IMAGE cortado: {result.ErrorMessage}");
         }
         catch (DicomAssociationRejectedException ex)
         {

@@ -775,6 +775,16 @@
         </table>
     </HelpSection>
 
+    <HelpSection Title="Tiempos de espera de un nodo DICOM" Color="var(--yellow)">
+        <table class="data-table" style="width:100%;font-size:12px">
+            <thead><tr><th>Campo</th><th>Qué controla</th><th>Por defecto</th></tr></thead>
+            <tbody>
+                <tr><td><strong>Timeout asociación</strong></td><td>Tiempo máximo para <strong>conectar</strong> con el PACS y que acepte la asociación. Si se agota: «No se pudo establecer la asociación con el PACS en N s».</td><td class="mono" style="color:var(--accent)">30 s</td></tr>
+                <tr><td><strong>Timeout operación</strong></td><td>Tiempo máximo <strong>sin ninguna respuesta</strong> del PACS durante una C-ECHO, C-FIND o C-MOVE. Cada resultado que llega reinicia la cuenta, así que una consulta larga que no para de recibir resultados (un día con miles de estudios, un estudio con miles de imágenes) termina bien; un PACS que se queda mudo se corta: «El PACS dejó de responder durante N s; X resultados recibidos». En el C-MOVE se añaden 60 s de margen.</td><td class="mono" style="color:var(--accent)">120 s</td></tr>
+            </tbody>
+        </table>
+    </HelpSection>
+
     <HelpSection Title="Parámetros configurables de una migración" Color="#3B82F6">
         <table class="data-table" style="width:100%;font-size:12px">
             <thead><tr><th>Parámetro</th><th>Descripción</th><th>Valor habitual</th></tr></thead>
