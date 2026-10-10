@@ -202,7 +202,7 @@
                 <tr><td><strong>⏸ Pausar</strong></td><td>Detiene los workers. Las particiones en curso terminan limpiamente.</td></tr>
                 <tr><td><strong>✎ Editar</strong></td><td>Modifica nombre, descripción, rango de fechas, método, límite y workers. Si cambias el rango deberás reiniciar el descubrimiento.</td></tr>
                 <tr><td><strong>🧹 Limpiar</strong></td><td>Resetea todas las particiones a Pendiente y borra los estudios descubiertos. <strong>Mantiene la configuración.</strong> Bloqueado si el job está Running.</td></tr>
-                <tr><td><strong>🗑 Eliminar</strong></td><td>Borra el job y toda su información (particiones, estudios, peticiones). Doble confirmación. Bloqueado si el job está Running.</td></tr>
+                <tr><td><strong>🗑 Eliminar</strong></td><td>Borra el job y toda su información (particiones, estudios, peticiones). Doble confirmación. Bloqueado si el job está Running. Con un inventario grande tarda unos minutos y muestra cuántos estudios lleva borrados; si se interrumpe, volver a eliminarlo continúa donde se quedó.</td></tr>
             </tbody>
         </table>
     </HelpSection>
@@ -423,7 +423,7 @@
                 <tr><td><strong>✎ Editar</strong></td><td>Modifica nombre, descripción, hilos, max. reintentos, delay de reintento, prioridad de modalidad y, si está en Draft o Paused, el orden por fecha. Un cambio de prioridad hecho con la migración en marcha se aplica al pausarla y reanudarla.</td></tr>
                 <tr><td><strong>Acciones de un estudio</strong> (pestaña Estudios)</td><td><strong>▷ Reiniciar</strong> (desde Failed, Cancelled, Migrated o Verified): vuelve a Pending como nuevo, sin intentos gastados ni resultado de verificación. <strong>↺ Reintentar</strong> (desde Failed): pasa a RetryPending. <strong>✕ Cancelar</strong> (desde Pending o RetryPending): pasa a Cancelled. Se comprueba el estado en el momento de pulsar: si un proceso ya ha tomado el estudio (por ejemplo, lo está migrando), no se hace nada y se avisa.</td></tr>
                 <tr><td><strong>🗑 Eliminar todos los estudios</strong></td><td>Vacía la lista de estudios manteniendo la configuración. Doble confirmación.</td></tr>
-                <tr><td><strong>🗑 Eliminar migración</strong></td><td>Borra la migración y todos sus datos. Doble confirmación. Bloqueado si Running.</td></tr>
+                <tr><td><strong>🗑 Eliminar migración</strong></td><td>Borra la migración y todos sus datos. Doble confirmación. Bloqueado si Running. Con muchos estudios tarda unos minutos y muestra el avance; si se interrumpe, volver a eliminarla continúa donde se quedó.</td></tr>
             </tbody>
         </table>
     </HelpSection>

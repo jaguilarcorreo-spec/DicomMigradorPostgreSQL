@@ -1157,7 +1157,7 @@ else
         try
         {
             StopAutoRefresh();
-            await JobRepo.ResetJobAsync(_detail.Id);
+            await JobRepo.ResetJobAsync(_detail.Id, DeleteProgress("Limpiando"));
             _resetStep = 0;
             _partPage = 1;
             _actionMsg = "Job limpiado. Las particiones están listas para un nuevo descubrimiento.";
@@ -1166,6 +1166,14 @@ else
         catch (Exception ex) { _deleteMsg = ex.Message; _resetStep = 0; }
         finally { _busy = false; }
     }
+
+    /// <summary>Avance de un borrado por lotes (DISC-13): con millones de instancias tarda
+    /// minutos, así que se va mostrando cuántos estudios lleva.</summary>
+    IProgress<long> DeleteProgress(string verb) => new Progress<long>(n =>
+    {
+        _actionMsg = $"{verb}… {n:N0} estudios borrados (con sus instancias). No cierres esta página.";
+        _ = InvokeAsync(StateHasChanged);
+    });
 
     // ── Delete job (double confirmation, blocked while Running) ──────────────
     void RequestDeleteJob()
@@ -1196,7 +1204,7 @@ else
         try
         {
             StopAutoRefresh();
-            await JobRepo.DeleteAsync(_detail.Id);
+            await JobRepo.DeleteAsync(_detail.Id, DeleteProgress("Eliminando"));
             _deleteStep = 0;
             _detail = null;
             await LoadJobsAsync();

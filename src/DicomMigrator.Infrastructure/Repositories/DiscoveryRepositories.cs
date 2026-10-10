@@ -271,28 +271,26 @@ public class DiscoveryJobRepository(IDbContextFactory<AppDbContext> factory, Def
         return (ins, upd);
     }
 
-    public async Task DeleteAsync(int id)
+    public async Task DeleteAsync(int id, IProgress<long>? progress = null)
     {
+        // Por lotes (DISC-13): primero el inventario (cada estudio arrastra sus instancias),
+        // luego las peticiones y por último particiones y job. El job se borra AL FINAL: si
+        // algo falla a mitad, sigue existiendo y volver a borrarlo continúa donde se quedó.
+        await BatchDelete.RunAsync(factory, "DiscoveredStudies", "DiscoveryJobId", id, BatchDelete.StudiesPerBatch, progress);
+        await BatchDelete.RunAsync(factory, "DiscoveryRequests", "DiscoveryJobId", id, BatchDelete.RowsPerBatch);
         await using var db = factory.CreateDbContext();
-        // Remove all data associated with this job from the database:
-        // - DiscoveredStudies discovered by this job
-        // - DiscoveryRequests logged for this job
-        // - DiscoveryPartitions (also cascade-deleted, but explicit for clarity)
-        // - the DiscoveryJob itself
-        await db.DiscoveredStudies.Where(s => s.DiscoveryJobId == id).ExecuteDeleteAsync();
-        await db.DiscoveryRequests.Where(r => r.DiscoveryJobId == id).ExecuteDeleteAsync();
         await db.DiscoveryPartitions.Where(p => p.DiscoveryJobId == id).ExecuteDeleteAsync();
         await db.DiscoveryJobs.Where(j => j.Id == id).ExecuteDeleteAsync();
         vacuum.Request("DiscoveredStudies", "DiscoveredInstances", "DiscoveryRequests", "DiscoveryPartitions");
     }
 
-    public async Task ResetJobAsync(int id)
+    public async Task ResetJobAsync(int id, IProgress<long>? progress = null)
     {
-        await using var db = factory.CreateDbContext();
+        // 1) Remove discovered studies and request logs for this job, por lotes (DISC-13)
+        await BatchDelete.RunAsync(factory, "DiscoveredStudies", "DiscoveryJobId", id, BatchDelete.StudiesPerBatch, progress);
+        await BatchDelete.RunAsync(factory, "DiscoveryRequests", "DiscoveryJobId", id, BatchDelete.RowsPerBatch);
 
-        // 1) Remove discovered studies and request logs for this job
-        await db.DiscoveredStudies.Where(s => s.DiscoveryJobId == id).ExecuteDeleteAsync();
-        await db.DiscoveryRequests.Where(r => r.DiscoveryJobId == id).ExecuteDeleteAsync();
+        await using var db = factory.CreateDbContext();
 
         // 2) Remove subdivided child partitions (those created adaptively on truncation).
         //    Only the original day-level partitions are kept and reset.

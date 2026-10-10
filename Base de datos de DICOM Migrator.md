@@ -590,7 +590,7 @@ flowchart LR
   pMnt([Mantenimiento diario]) -- purga INFO de más de 90 días --> tAud
   pMnt -- VACUUM y REINDEX de índices inflados --> tMI
   pMnt -- VACUUM y REINDEX de índices inflados --> tDI
-  pBorr([Borrar migración o job]) --> pVac([VACUUM diferido])
+  pBorr([Borrar o limpiar migración o job, por lotes]) --> pVac([VACUUM diferido])
   pVac -.-> tMS
   pVac -.-> tDS
   pWrk --> pNot([NotificationService])
@@ -602,8 +602,10 @@ flowchart LR
   pUsr([Pantalla Usuarios]) --> tUsr
 ```
 
+**Borrado por lotes:** borrar o limpiar un job, o borrar una migración o vaciar sus estudios, se hace en tandas de 1.000 estudios (cada uno arrastra sus instancias) y de 20.000 filas de auditoría o peticiones, cada tanda en su propia sentencia con un límite de 10 minutos. El job o la migración se borran al final: si algo falla a mitad, lo ya borrado no se pierde y repetir la operación continúa. Antes era un único `DELETE` en cascada con el límite de 30 s: con unos 13 millones de instancias fallaba y se revertía entero.
+
 La auditoría no se escribe en el momento: va a un búfer en memoria que se vuelca por lotes. Si el proceso muere de golpe, se pierden las entradas aún no volcadas.
 
 El mantenimiento actúa sobre las siete tablas de más movimiento (`MigrationStudies`, `MigrationInstances`, `DiscoveredStudies`, `DiscoveredInstances`, `DiscoveryPartitions`, `DiscoveryRequests` y `AuditLogs`). El diagrama solo dibuja las flechas principales.
 
-Esquema: Infrastructure/Migrations/AppDbContextModelSnapshot.cs, contrastado con la base local (pg_constraint, pg_indexes, pg_stat_user_tables). Estados y flujos: repositorios y servicios de Infrastructure y páginas de Web, leídos del directorio de trabajo del proyecto (commit 41f5c53 más CONC-10, aún sin commit: transiciones condicionadas de los estudios, 10 oct 2026).
+Esquema: Infrastructure/Migrations/AppDbContextModelSnapshot.cs, contrastado con la base local (pg_constraint, pg_indexes, pg_stat_user_tables). Estados y flujos: repositorios y servicios de Infrastructure y páginas de Web, leídos del directorio de trabajo del proyecto (commit 5a08f4d más DISC-13, aún sin commit: borrado por lotes, 10 oct 2026).

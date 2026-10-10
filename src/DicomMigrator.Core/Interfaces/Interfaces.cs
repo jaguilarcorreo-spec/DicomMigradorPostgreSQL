@@ -79,7 +79,9 @@ public interface IMigrationRepository
     /// ventanas: UpdateAsync nunca las borra, para que un guardado de otros campos no
     /// se lleve por delante la configuración horaria.</summary>
     Task SetWindowsAsync(int migrationId, IReadOnlyList<ExecutionWindow> windows);
-    Task DeleteAsync(int id);
+    /// <summary>Borra la migración con sus estudios, instancias y auditoría, por lotes (DISC-13).
+    /// <paramref name="progress"/> recibe los estudios borrados hasta el momento.</summary>
+    Task DeleteAsync(int id, IProgress<long>? progress = null);
 }
 
 /// <summary>Poblado de una migración desde el inventario de un Discovery Job, en segundo
@@ -268,7 +270,7 @@ public interface IStudyRepository
     Task ExportToCsvAsync(int migrationId, StudyFilter filter, Stream output);
 
     /// <summary>Delete all studies of a migration (reset to pre-discovery state).</summary>
-    Task DeleteAllAsync(int migrationId);
+    Task DeleteAllAsync(int migrationId, IProgress<long>? progress = null);
 }
 
 public interface IAuditLogRepository
@@ -322,12 +324,14 @@ public interface IDiscoveryJobRepository
     /// <summary>Fija el estado final de la enumeración (Completed|Failed) y la marca de fin.</summary>
     Task<bool> FinishCaptureAsync(int id, string captureStatus);
     /// <summary>Reset a job to as-if-never-started: partitions back to Pending, counters zeroed, discovered studies and request logs removed. Config preserved.</summary>
-    Task ResetJobAsync(int id);
+    Task ResetJobAsync(int id, IProgress<long>? progress = null);
     /// <summary>Reset all Failed partitions back to Pending so workers pick them up on the next run. Returns number of partitions reset.</summary>
     Task<int> RetryFailedPartitionsAsync(int jobId);
     /// <summary>Parse a CSV stream and upsert studies into the discovery inventory. Returns (inserted, updated, skipped, errors).</summary>
     Task<CsvImportStats> ImportFromCsvAsync(int jobId, Stream csvStream, CancellationToken ct = default);
-    Task DeleteAsync(int id);
+    /// <summary>Borra el job con su inventario (estudios e instancias), peticiones y particiones,
+    /// por lotes (DISC-13). <paramref name="progress"/> recibe los estudios borrados.</summary>
+    Task DeleteAsync(int id, IProgress<long>? progress = null);
 
     // Partitions
     Task<List<DiscoveryPartition>> GetPartitionsAsync(int jobId);

@@ -396,6 +396,10 @@
                         <button class="btn btn-sm" style="background:var(--red);color:#fff;border:1px solid var(--red)"
                                 @onclick="DeleteMigrationConfirmed" disabled="@_deleting">🗑 Eliminar definitivamente</button>
                     </div>
+                    @if (_deleting && !string.IsNullOrEmpty(_delProgress))
+                    {
+                        <div style="font-size:12px;color:var(--text-muted);margin-top:8px">@_delProgress</div>
+                    }
                 }
             </div>
         </div>
@@ -1124,6 +1128,7 @@ else
     private int    _delStep;          // 0=none, 1=first, 2=final
     private string _delMsg = "";
     private bool   _deleting;         // dedicated flag — independent of _actionBusy
+    private string _delProgress = ""; // avance del borrado por lotes (DISC-13)
     private bool   _editingMig;
     private string _editMigError = "";
     private string _emName = "", _emDesc = "", _emPriority = "";
@@ -1740,7 +1745,12 @@ else
         {
             // Borrar una migración libera muchas filas (estudios, instancias, auditoría):
             // el propio repositorio encola un VACUUM en segundo plano (DeferredVacuum).
-            await MigrationRepo.DeleteAsync(id);
+            await MigrationRepo.DeleteAsync(id, new Progress<long>(n =>
+            {
+                // Avance del borrado por lotes (DISC-13): con millones de instancias tarda minutos.
+                _delProgress = $"Eliminando… {n:N0} estudios borrados (con sus instancias). No cierres esta página.";
+                _ = InvokeAsync(StateHasChanged);
+            }));
 
             _delStep = 0;
             BackToList();
@@ -1754,6 +1764,7 @@ else
         {
             // Always reset — ensures the button is re-enabled if delete fails
             _deleting = false;
+            _delProgress = "";
         }
     }
 

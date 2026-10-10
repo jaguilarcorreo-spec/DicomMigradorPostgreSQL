@@ -253,13 +253,17 @@ public class MigrationRepository(IDbContextFactory<AppDbContext> factory, Deferr
             .ToListAsync();
     }
 
-    public async Task DeleteAsync(int id)
+    public async Task DeleteAsync(int id, IProgress<long>? progress = null)
     {
+        // Por lotes (DISC-13 / BD-8): estudios (cada uno arrastra sus instancias) y auditoría
+        // antes que la migración. Antes era un único borrado en cascada que, con volumen real,
+        // superaba el límite de 30 s y se revertía entero. La migración se borra AL FINAL: si
+        // algo falla a mitad, sigue existiendo y volver a borrarla continúa donde se quedó.
+        await BatchDelete.RunAsync(factory, "MigrationStudies", "MigrationId", id, BatchDelete.StudiesPerBatch, progress);
+        await BatchDelete.RunAsync(factory, "AuditLogs", "MigrationId", id, BatchDelete.RowsPerBatch);
         await using var db = factory.CreateDbContext();
-        var m = await db.Migrations.FindAsync(id);
-        if (m is not null) { db.Migrations.Remove(m); await db.SaveChangesAsync(); }
-        // El borrado arrastra en cascada estudios, instancias y auditoría: VACUUM en
-        // segundo plano para que una nueva migración reutilice las páginas de índice.
+        await db.Migrations.Where(m => m.Id == id).ExecuteDeleteAsync();   // tramos horarios en cascada
+        // VACUUM en segundo plano para que una nueva migración reutilice las páginas de índice.
         vacuum.Request("MigrationStudies", "MigrationInstances", "AuditLogs");
     }
 }
@@ -1046,12 +1050,10 @@ RETURNING m.*";
                 .SetProperty(s => s.LastUpdateDate, DateTime.UtcNow));
     }
 
-    public async Task DeleteAllAsync(int migrationId)
+    public async Task DeleteAllAsync(int migrationId, IProgress<long>? progress = null)
     {
-        await using var db = factory.CreateDbContext();
-        await db.MigrationStudies
-            .Where(s => s.MigrationId == migrationId)
-            .ExecuteDeleteAsync();
+        // Por lotes (DISC-13): cada estudio arrastra sus instancias.
+        await BatchDelete.RunAsync(factory, "MigrationStudies", "MigrationId", migrationId, BatchDelete.StudiesPerBatch, progress);
         vacuum.Request("MigrationStudies", "MigrationInstances");
     }
 
