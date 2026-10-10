@@ -1,0 +1,25 @@
+@* Aviso flotante para los errores que se escapan de un manejador de la página (UI-7, ver
+   GuardedPage). Fijo abajo a la derecha para que se vea aunque la página esté desplazada. *@
+@if (!string.IsNullOrEmpty(Message))
+{
+    <div role="alert"
+         style="position:fixed;right:16px;bottom:16px;z-index:1000;max-width:min(480px,calc(100vw - 32px));
+                background:var(--surface,#1e1e2a);border:1px solid var(--red);border-left:4px solid var(--red);
+                border-radius:8px;padding:12px 14px;box-shadow:0 6px 24px rgba(0,0,0,.35);font-size:13px;color:var(--text)">
+        <div style="display:flex;gap:10px;align-items:flex-start">
+            <div style="flex:1">
+                <div style="font-weight:600;color:var(--red);margin-bottom:4px">⚠ No se pudo completar la acción</div>
+                <div style="color:var(--text-dim);word-break:break-word">@Message</div>
+                <div style="color:var(--text-muted);font-size:11px;margin-top:6px">
+                    La página sigue funcionando. Si se repite, recárgala; el detalle queda en el log.
+                </div>
+            </div>
+            <button class="btn btn-ghost btn-sm" title="Cerrar" @onclick="OnDismiss">✕</button>
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public string? Message { get; set; }
+    [Parameter] public EventCallback OnDismiss { get; set; }
+}

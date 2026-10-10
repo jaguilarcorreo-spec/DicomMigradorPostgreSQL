@@ -1,12 +1,14 @@
 @page "/usuarios"
 @attribute [Authorize(Roles = AppRoles.Administrador)]
 @rendermode InteractiveServer
+@inherits GuardedPage
 
 @using DicomMigrator.Web.Services
 @inject IUserRepository UserRepo
 @inject UserAuthService Auth
 @inject LoginThrottle Throttle
 
+<ActionErrorToast Message="@GuardError" OnDismiss="ClearGuardError" />
 <PageTitle>Usuarios — MOVE</PageTitle>
 
 <div class="page-header">

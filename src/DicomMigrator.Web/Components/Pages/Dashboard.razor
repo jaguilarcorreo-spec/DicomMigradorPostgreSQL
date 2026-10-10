@@ -1,11 +1,13 @@
 @page "/"
 @rendermode InteractiveServer
+@inherits GuardedPage
 @implements IDisposable
 @inject IMigrationRepository MigrationRepo
 @inject IStudyRepository StudyRepo
 @inject INodeRepository NodeRepo
 @inject ILogger<Dashboard> Logger
 
+<ActionErrorToast Message="@GuardError" OnDismiss="ClearGuardError" />
 <PageTitle>Dashboard — MOVE</PageTitle>
 
 <div class="page-header">

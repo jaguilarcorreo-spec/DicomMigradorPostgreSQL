@@ -1,11 +1,13 @@
 @page "/notificaciones"
 @rendermode InteractiveServer
+@inherits GuardedPage
 @using DicomMigrator.Core.Interfaces
 @using DicomMigrator.Core.Models
 @attribute [Authorize(Roles = AppRoles.Administrador)]
 @inject INotificationRepository NotifRepo
 @inject INotificationService NotifSvc
 
+<ActionErrorToast Message="@GuardError" OnDismiss="ClearGuardError" />
 <PageTitle>Notificaciones — MOVE</PageTitle>
 
 <div class="page-header">

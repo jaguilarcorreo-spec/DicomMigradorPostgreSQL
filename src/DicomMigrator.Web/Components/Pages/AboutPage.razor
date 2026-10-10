@@ -1,11 +1,13 @@
 @page "/about"
 @rendermode InteractiveServer
+@inherits GuardedPage
 @inject ILocalConfigRepository ConfigRepo
 @inject INodeRepository NodeRepo
 @inject IMigrationRepository MigrationRepo
 @inject IStudyRepository StudyRepo
 @inject IConfiguration Configuration
 
+<ActionErrorToast Message="@GuardError" OnDismiss="ClearGuardError" />
 <PageTitle>Acerca de — MOVE</PageTitle>
 
 <div class="page-header">

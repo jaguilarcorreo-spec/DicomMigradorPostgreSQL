@@ -1,5 +1,6 @@
 @page "/discovery"
 @rendermode InteractiveServer
+@inherits GuardedPage
 @using DicomMigrator.Core.Interfaces
 @using DicomMigrator.Core.Models
 @inject IDiscoveryJobRepository JobRepo
@@ -17,6 +18,7 @@
 @inject NavigationManager Nav
 @implements IDisposable
 
+<ActionErrorToast Message="@GuardError" OnDismiss="ClearGuardError" />
 <PageTitle>Discovery Engine — Migrator</PageTitle>
 
 @if (_detail is not null)
@@ -1004,6 +1006,7 @@ else
         if (_detail is null) return;
         _busy = true;
         try { await Engine.StartAsync(_detail.Id); _actionMsg = "Descubrimiento iniciado."; await RefreshDetailAsync(); StartAutoRefresh(); }
+        catch (Exception ex) { _actionMsg = ""; _deleteMsg = $"No se pudo iniciar el descubrimiento: {ex.Message}"; }   // UI-7
         finally { _busy = false; }
     }
 
@@ -1048,6 +1051,7 @@ else
         if (_detail is null) return;
         _busy = true;
         try { await Engine.PauseAsync(_detail.Id); _actionMsg = "Descubrimiento pausado."; await RefreshDetailAsync(); }
+        catch (Exception ex) { _actionMsg = ""; _deleteMsg = $"No se pudo pausar el descubrimiento: {ex.Message}"; }   // UI-7
         finally { _busy = false; }
     }
 
@@ -1056,6 +1060,7 @@ else
         if (_detail is null) return;
         _busy = true;
         try { await Engine.ResumeAsync(_detail.Id); _actionMsg = "Descubrimiento reanudado."; await RefreshDetailAsync(); StartAutoRefresh(); }
+        catch (Exception ex) { _actionMsg = ""; _deleteMsg = $"No se pudo reanudar el descubrimiento: {ex.Message}"; }   // UI-7
         finally { _busy = false; }
     }
 

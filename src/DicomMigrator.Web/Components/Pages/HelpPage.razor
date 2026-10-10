@@ -1,7 +1,9 @@
 @page "/ayuda"
 @rendermode InteractiveServer
+@inherits GuardedPage
 @inject ILocalConfigRepository ConfigRepo
 
+<ActionErrorToast Message="@GuardError" OnDismiss="ClearGuardError" />
 <PageTitle>Ayuda — MOVE</PageTitle>
 
 <div class="page-header">

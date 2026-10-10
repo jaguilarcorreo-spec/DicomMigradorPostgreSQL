@@ -1,5 +1,6 @@
 @page "/migraciones"
 @rendermode @(new InteractiveServerRenderMode(prerender: false))
+@inherits GuardedPage
 @inject IMigrationRepository MigrationRepo
 @inject INodeRepository NodeRepo
 @inject IStudyRepository StudyRepo
@@ -15,6 +16,7 @@
 @inject ILogger<MigrationsPage> Logger
 @implements IDisposable
 
+<ActionErrorToast Message="@GuardError" OnDismiss="ClearGuardError" />
 <PageTitle>Migraciones — MOVE</PageTitle>
 
 @* ══════════════════════════════════════════════════════════════════════
@@ -1257,6 +1259,14 @@ else
 
     // ── Lifecycle ────────────────────────────────────────────────────────────
     protected override async Task OnInitializedAsync()
+    {
+        // La carga inicial no pasa por los manejadores de eventos (GuardedPage no la cubre):
+        // si la base no responde, avisar en vez de cerrar la sesión de la interfaz (UI-7).
+        try { await LoadListAsync(); }
+        catch (Exception ex) { ShowMsg($"Error cargando las migraciones: {ex.GetBaseException().Message}. Recarga la página.", false); }
+    }
+
+    async Task LoadListAsync()
     {
         _migrations = await MigrationRepo.GetAllAsync();
         _nodes      = await NodeRepo.GetAllAsync();

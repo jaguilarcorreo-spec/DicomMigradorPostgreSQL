@@ -1,10 +1,12 @@
 @page "/logs"
 @rendermode InteractiveServer
+@inherits GuardedPage
 @inject IAuditLogRepository AuditRepo
 @inject IMigrationRepository MigrationRepo
 @inject DicomMigrator.Web.Services.LogLevelService LogLevel
 @implements IDisposable
 
+<ActionErrorToast Message="@GuardError" OnDismiss="ClearGuardError" />
 <PageTitle>Logs y Auditoría — MOVE</PageTitle>
 
 <div class="page-header">

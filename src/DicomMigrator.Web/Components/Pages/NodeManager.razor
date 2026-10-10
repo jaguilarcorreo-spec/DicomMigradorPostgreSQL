@@ -1,12 +1,14 @@
 @page "/nodos"
 @attribute [Authorize(Roles = AppRoles.Administrador)]
 @rendermode InteractiveServer
+@inherits GuardedPage
 @inject INodeRepository NodeRepo
 @inject IMigrationRepository MigrationRepo
 @inject IMigrationWorker Worker
 @inject IDimseService DimseService
 @inject ILocalConfigRepository ConfigRepo
 
+<ActionErrorToast Message="@GuardError" OnDismiss="ClearGuardError" />
 <PageTitle>Nodos DICOM — Migrator</PageTitle>
 
 @* ══════════════════ FORMULARIO ══════════════════ *@

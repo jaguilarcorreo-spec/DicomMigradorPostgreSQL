@@ -1,6 +1,7 @@
 @page "/licencia"
 @attribute [Authorize(Roles = AppRoles.Administrador)]
 @rendermode InteractiveServer
+@inherits GuardedPage
 
 @using DicomMigrator.Core.Interfaces
 @using DicomMigrator.Core.Models
@@ -10,6 +11,7 @@
 @inject AuthenticationStateProvider AuthState
 @inject IMigrationWorker Worker
 
+<ActionErrorToast Message="@GuardError" OnDismiss="ClearGuardError" />
 <PageTitle>Licencia — MOVE</PageTitle>
 
 <style>

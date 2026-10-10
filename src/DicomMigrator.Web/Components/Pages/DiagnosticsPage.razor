@@ -1,10 +1,12 @@
 @page "/diagnostico"
 @rendermode InteractiveServer
+@inherits GuardedPage
 @inject ILocalConfigRepository ConfigRepo
 @inject INodeRepository NodeRepo
 @inject IDimseService DimseService
 @inject IJSRuntime JS
 
+<ActionErrorToast Message="@GuardError" OnDismiss="ClearGuardError" />
 <PageTitle>Diagnóstico — MOVE</PageTitle>
 
 <div class="page-header">
