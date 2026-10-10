@@ -19,7 +19,10 @@ public class WindowScheduler(
     IMigrationWorker worker,
     ILogger<WindowScheduler> logger) : IWindowScheduler
 {
-    private readonly Dictionary<int, bool> _lastWindowState = new();
+    // Reanudación por ventana que no llegó a arrancar (licencia no válida, poblado en
+    // curso…): no reintentar cada minuto, para no llenar el log y la auditoría.
+    private readonly Dictionary<int, DateTime> _resumeRetryAfter = new();
+    private static readonly TimeSpan ResumeRetryInterval = TimeSpan.FromMinutes(15);
 
     /// <summary>Evalúa el conjunto de tramos de una migración. Abierto = lo está
     /// CUALQUIERA de ellos. Sin tramos definidos → sin restricción horaria (true).</summary>
@@ -104,49 +107,77 @@ public class WindowScheduler(
 
                 var migrations = await migrationRepo.GetAllAsync();
 
-                // Prune _lastWindowState entries for migrations that no longer exist.
-                // Without this, deleted migrations leave permanent entries in the dictionary
-                // and the dictionary grows over the process lifetime.
                 var liveIds = migrations.Select(m => m.Id).ToHashSet();
-                foreach (var orphanId in _lastWindowState.Keys.Where(k => !liveIds.Contains(k)).ToList())
-                    _lastWindowState.Remove(orphanId);
+                foreach (var orphanId in _resumeRetryAfter.Keys.Where(k => !liveIds.Contains(k)).ToList())
+                    _resumeRetryAfter.Remove(orphanId);
 
-                foreach (var m in migrations.Where(m => m is { Status: "Running" or "Paused" }
-                                                     && m.Windows.Count > 0))
+                // ── Decisión por ESTADO, no por transición (CONC-8) ──────────────────
+                // Antes se recordaba en memoria si la ventana estaba abierta en la vuelta
+                // anterior y se actuaba al cambiar. Tres fallos: al abrirse reanudaba
+                // CUALQUIER migración en pausa (también las pausadas a mano o por un error
+                // de configuración); tras reiniciar el servicio con la ventana ya abierta no
+                // veía el cambio y la migración pausada por la ventana se quedaba parada
+                // (perdía la noche o el fin de semana); y si se quitaban todas las ventanas,
+                // la pausada por ventana no se reanudaba nunca.
+                // Ahora, cada minuto:
+                //   · En marcha con la ventana cerrada → pausar y marcar PausedByWindow.
+                //   · Pausada POR LA VENTANA con la ventana abierta (o sin ventanas) → reanudar.
+                // PausedByWindow está en la base, así que esto también vale tras un reinicio.
+                foreach (var m in migrations)
                 {
-                    var open = IsWindowOpen(m.Windows);
-                    // Default to "was open" so that a migration started OUTSIDE its window
-                    // is detected as a close transition on the first tick and gets paused.
-                    // Without this, the first tick initializes wasOpen=open and the
-                    // close transition is never detected.
-                    var wasOpen = _lastWindowState.GetValueOrDefault(m.Id, true);
-
-                    if (open && !wasOpen)
+                    try
                     {
-                        logger.LogInformation("Window OPENED for migration {Id}", m.Id);
-                        await auditRepo.AddAsync(new MigrationAuditLog
+                        var open = IsWindowOpen(m.Windows);   // sin ventanas: siempre abierta
+
+                        if (m.Status == "Running" && !open)
                         {
-                            MigrationId = m.Id, Action = "WINDOW_OPEN", Result = "OK",
-                            UserOrProcess = "SCHEDULER",
-                            TechnicalMessage = "Ventana abierta. Reanudando workers."
-                        });
-                        if (m.Status == "Paused")
+                            logger.LogInformation("Ventana cerrada: se pausa la migración {Id}.", m.Id);
+                            await auditRepo.AddAsync(new MigrationAuditLog
+                            {
+                                MigrationId = m.Id, Action = "WINDOW_CLOSE", Result = "OK",
+                                UserOrProcess = "SCHEDULER",
+                                TechnicalMessage = "Ventana cerrada. Pausando workers; se reanudará al abrirse."
+                            });
+                            await worker.PauseAsync(m.Id, byWindow: true);
+                        }
+                        else if (m.Status == "Paused" && m.PausedByWindow && open)
+                        {
+                            if (_resumeRetryAfter.TryGetValue(m.Id, out var after) && DateTime.UtcNow < after)
+                                continue;
+
+                            var why = m.Windows.Count == 0
+                                ? "Ya no tiene ventanas horarias. Reanudando workers."
+                                : "Ventana abierta. Reanudando workers.";
+                            logger.LogInformation("{Why} Migración {Id}.", why, m.Id);
+                            await auditRepo.AddAsync(new MigrationAuditLog
+                            {
+                                MigrationId = m.Id, Action = "WINDOW_OPEN", Result = "OK",
+                                UserOrProcess = "SCHEDULER", TechnicalMessage = why
+                            });
                             await worker.ResumeAsync(m.Id, ct);
-                    }
-                    else if (!open && wasOpen)
-                    {
-                        logger.LogInformation("Window CLOSED for migration {Id}", m.Id);
-                        await auditRepo.AddAsync(new MigrationAuditLog
-                        {
-                            MigrationId = m.Id, Action = "WINDOW_CLOSE", Result = "OK",
-                            UserOrProcess = "SCHEDULER",
-                            TechnicalMessage = "Ventana cerrada. Pausando workers."
-                        });
-                        if (m.Status == "Running")
-                            await worker.PauseAsync(m.Id);
-                    }
 
-                    _lastWindowState[m.Id] = open;
+                            // Si no arrancó (licencia no válida…), sigue pausada y marcada:
+                            // reintentar más tarde en vez de en cada vuelta.
+                            var after2 = await migrationRepo.GetByIdAsync(m.Id);
+                            if (after2 is { Status: "Paused", PausedByWindow: true })
+                            {
+                                _resumeRetryAfter[m.Id] = DateTime.UtcNow + ResumeRetryInterval;
+                                logger.LogWarning("Migración {Id}: la ventana está abierta pero no se pudo reanudar; " +
+                                    "se reintentará en {Min} min.", m.Id, (int)ResumeRetryInterval.TotalMinutes);
+                            }
+                            else
+                                _resumeRetryAfter.Remove(m.Id);
+                        }
+                    }
+                    catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+                    catch (Exception ex)
+                    {
+                        // Un fallo con una migración (p. ej. StartAsync rechaza arrancar porque
+                        // se está poblando) no debe impedir atender a las demás.
+                        _resumeRetryAfter[m.Id] = DateTime.UtcNow + ResumeRetryInterval;
+                        logger.LogWarning(ex, "Planificador de ventanas: no se pudo atender la migración {Id}; " +
+                            "se reintentará en {Min} min.", m.Id, (int)ResumeRetryInterval.TotalMinutes);
+                    }
                 }
             }
             catch (Exception ex)

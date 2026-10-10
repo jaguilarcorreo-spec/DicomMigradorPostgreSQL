@@ -99,6 +99,9 @@ public class MigrationRepository(IDbContextFactory<AppDbContext> factory, Deferr
 
         migration.UpdatedAt = DateTime.UtcNow;
         db.Entry(existing).CurrentValues.SetValues(migration);
+        // Lo gestiona el planificador de ventanas, no el formulario de edición: no pisarlo
+        // con el valor de una migración cargada en pantalla hace un rato (CONC-8).
+        db.Entry(existing).Property(m => m.PausedByWindow).IsModified = false;
 
         // Los tramos horarios NO se tocan aquí: se editan por SetWindowsAsync. Así un
         // guardado de otros campos (nombre, reintentos, workers…) hecho sobre una
@@ -205,6 +208,15 @@ public class MigrationRepository(IDbContextFactory<AppDbContext> factory, Deferr
         return await db.Migrations
             .Where(m => m.PopulateStatus == "Running")
             .ToListAsync();
+    }
+
+    public async Task SetPausedByWindowAsync(int id, bool pausedByWindow)
+    {
+        await using var db = factory.CreateDbContext();
+        await db.Migrations.Where(m => m.Id == id)
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(m => m.PausedByWindow, pausedByWindow)
+                .SetProperty(m => m.UpdatedAt, DateTime.UtcNow));
     }
 
     public async Task SetMigrationAutoPausedAsync(int id, bool autoPaused)

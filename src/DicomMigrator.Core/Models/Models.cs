@@ -110,6 +110,13 @@ public class Migration
     /// (destination unreachable).</summary>
     public bool     VerificationAutoPaused { get; set; }
 
+    /// <summary>True si la pausó el planificador al cerrarse su ventana horaria (CONC-8).
+    /// Solo estas se reanudan al abrirse la ventana (o al quitar todas las ventanas); una
+    /// pausa manual, por conexión o por configuración no. Lo pone WindowScheduler y lo
+    /// borra cualquier inicio, reanudación o pausa manual. Al estar en la base, sobrevive
+    /// a un reinicio del servicio.</summary>
+    public bool     PausedByWindow  { get; set; }
+
     // ── Poblado desde inventario en segundo plano (v225) ─────────────────────
     // Al crear una migración desde un inventario, la inserción de estudios y la copia
     // de UIDs Nivel 2 pueden mover millones de filas. En vez de bloquear la petición

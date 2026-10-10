@@ -2,11 +2,11 @@ MOVE · DICOM Migrator 1.8.1 · PostgreSQL 16+ · EF Core 9
 
 # Base de datos de DICOM Migrator
 
-Esquema físico, ciclo de vida de los estados y flujo de datos entre tablas. El esquema sale del snapshot de migraciones EF (19 migraciones, la última `SelloSeguridadUsuarios`) y lo he contrastado con la base local. Los estados y flujos salen del código de los servicios y repositorios.
+Esquema físico, índices, ciclo de vida de los estados y flujo de datos entre tablas. El esquema sale del snapshot de migraciones EF (20 migraciones, la última `PausaPorVentana`) y lo he contrastado con la base local. Los estados y flujos salen del código de los servicios y repositorios.
 
 **16** tablas **9** claves foráneas **9** relaciones sin clave foránea **23** índices · 5 únicos · 3 parciales **5** tablas de una sola fila
 
-[1 · Esquema físico](#er) [2 · Estados](#estados) [3 · Flujo de datos](#flujo)
+[1 · Esquema físico](#er) [2 · Índices](#indices) [3 · Estados](#estados) [4 · Flujo de datos](#flujo)
 
 ## 1 · Esquema físico
 
@@ -264,6 +264,7 @@ Migrations {
   text ModalityPriority
   varchar(200) Name
   bool OldestFirst
+  bool PausedByWindow
   int PopulateDone
   text PopulateError "null"
   text PopulateStatus
@@ -353,7 +354,42 @@ DiscoveredStudies |o..o{ MigrationStudies : "copia por StudyInstanceUid"
 
 `ModalityRank` es la posición de la primera modalidad del estudio en la lista de prioridad de la migración (999 si no está). Se recalcula al iniciar o reanudar la migración, solo en las filas `Pending` o `RetryPending` cuyo valor cambia, y es la primera columna del orden de la cola.
 
-## 2 · Ciclo de vida de los estados
+## 2 · Índices
+
+23 índices
+
+Además de las claves primarias. Los marcados como *convención* no están en `AppDbContext`: EF los crea solo para cada clave foránea.
+
+| Tabla | Índice | Columnas | Tipo | Para qué sirve |
+| --- | --- | --- | --- | --- |
+| MigrationStudies | IX_MigrationStudies_MigrationId_StudyInstanceUid | MigrationId, StudyInstanceUid | único | Un estudio no puede estar dos veces en la misma migración. |
+| MigrationStudies | IX_MigrationStudies_MigrationId_MigrationStatus | MigrationId, MigrationStatus | normal | Recuentos por estado del panel y comprobaciones de trabajo pendiente. |
+| MigrationStudies | IX_MigStudies_queue_newest | MigrationId, ModalityRank, RetryCount, StudyDate DESC, Id | parcial | Solo filas `Pending`. Cola de migración con los estudios más recientes primero: el worker toma el primero libre recorriendo el índice en orden, sin ordenar los pendientes. |
+| MigrationStudies | IX_MigStudies_queue_oldest | MigrationId, ModalityRank, RetryCount, StudyDate, Id | parcial | Igual, para las migraciones con «más antiguos primero». |
+| MigrationStudies | IX_MigStudies_verify_queue | MigrationId, Id | parcial | Solo filas `Migrated`: cola de verificación. |
+| MigrationStudies | IX_MigStudies_Mig_Patient | MigrationId, PatientId | normal | Búsqueda por paciente en la tabla de migración. |
+| MigrationStudies | IX_MigStudies_Mig_Accession | MigrationId, AccessionNumber | normal | Búsqueda por número de acceso. |
+| MigrationStudies | IX_MigStudies_Mig_DiscDate | MigrationId, DiscoveryDate | normal | Orden y paginación por fecha de alta. |
+| MigrationInstances | IX_MigInstances_Study_Sop | MigrationStudyId, SopInstanceUid | único | UID de origen por estudio para la verificación de nivel 2; evita duplicados al copiar. |
+| DiscoveredStudies | IX_DiscoveredStudies_DiscoveryJobId_StudyInstanceUid | DiscoveryJobId, StudyInstanceUid | único | Un estudio una sola vez por job: es la clave del upsert del descubrimiento. |
+| DiscoveredStudies | IX_DiscoveredStudies_SourcePacsId_StudyDate | SourcePacsId, StudyDate | normal | Rango de fechas del inventario por PACS de origen. |
+| DiscoveredStudies | IX_DiscoveredStudies_PartitionId | PartitionId | normal | Estadísticas de estudios por partición. |
+| DiscoveredInstances | IX_DiscInstances_Study_Sop | DiscoveredStudyId, SopInstanceUid | único | UID capturados por estudio (nivel 2), sin duplicados. |
+| DiscoveryPartitions | IX_DiscoveryPartitions_DiscoveryJobId_Status | DiscoveryJobId, Status | normal | Los workers toman la siguiente partición `Pending` del job. |
+| DiscoveryRequests | IX_DiscoveryRequests_DiscoveryJobId | DiscoveryJobId | normal | Registro de consultas al PACS por job. |
+| AuditLogs | IX_AuditLogs_MigrationId_Timestamp | MigrationId, Timestamp | normal | Auditoría de una migración ordenada por fecha. |
+| AuditLogs | IX_AuditLogs_Timestamp | Timestamp | normal | Purga de entradas antiguas y vista global reciente. |
+| AppUsers | IX_AppUsers_UserName | UserName | único | Inicio de sesión; nombres de usuario no repetidos. |
+| NotificationOutbox | IX_NotificationOutbox_Status_Id | Status, Id | normal | El repartidor toma los correos `Pending` en orden de llegada. |
+| Migrations | IX_Migrations_OriginNodeId | OriginNodeId | convención | Clave foránea al nodo de origen. |
+| Migrations | IX_Migrations_DestNodeId | DestNodeId | convención | Clave foránea al nodo de destino. |
+| ExecutionWindows | IX_ExecutionWindows_MigrationId | MigrationId | convención | Clave foránea a la migración. |
+| DiscoveryJobs | IX_DiscoveryJobs_SourcePacsId | SourcePacsId | convención | Clave foránea al PACS de origen. |
+
+- **Cola de migración:** los dos índices tienen las mismas columnas con distinto orden de fecha, por eso llevan nombre propio en `AppDbContext` (sin él, EF los fundiría en uno). Los `RetryPending` no están en ellos: se toman con una segunda consulta solo cuando no queda ningún `Pending`.
+- **Sin índice a propósito:** `ModalitiesInStudy`. El filtro de modalidad busca por subcadena (filtrar por `CT` trae también `RTSTRUCT`), y un B-tree no resuelve búsquedas en mitad del texto; `pg_trgm` necesitaría al menos tres caracteres. El filtro va casi siempre acotado por job, que sí usa índice.
+
+## 3 · Ciclo de vida de los estados
 
 Repositorios y servicios
 
@@ -397,10 +433,12 @@ stateDiagram-v2
 stateDiagram-v2
   [*] --> Draft : creada
   Draft --> Running : Iniciar
-  Running --> Paused : Pausar, cierre de ventana o auto-pausa por conexión
+  Running --> Paused : Pausar o auto-pausa por conexión
+  Running --> Paused : ventana cerrada, PausedByWindow = true
   Running --> Paused : error de configuración (0xA801, rechazo permanente)
   Running --> Paused : los workers salen con estudios por migrar
-  Paused --> Running : Reanudar, apertura de ventana o auto-reanudar
+  Paused --> Running : Reanudar o auto-reanudar
+  Paused --> Running : ventana abierta o sin ventanas, solo con PausedByWindow
   Running --> Migrated : todo migrado sin fallos
   Running --> Failed : quedan estudios Failed
   Migrated --> Completed : no queda nada por migrar ni por verificar
@@ -415,6 +453,7 @@ El comentario del modelo lista `Ready`, pero ningún código lo asigna; y omite 
 
 - **Auto-pausa por conexión** (`MigrationAutoPaused = true`): 5 fallos transitorios seguidos (origen caído o saturado, destino que no responde). La auto-reanudación comprueba con C-ECHO el origen y el destino; si se reanuda y vuelve a pausarse sin migrar nada, no se repite el correo y cada intento espera el doble (1, 2, 4… hasta 30 min).
 - **Error de configuración:** pausa sin `MigrationAutoPaused`, así que no se reanuda sola.
+- **Ventana horaria** (`PausedByWindow`): el planificador mira el estado cada minuto, no la transición. Si la migración está en `Running` con la ventana cerrada, la pausa y pone `PausedByWindow = true`; si está en `Paused` con esa marca y la ventana abierta (o ya no tiene ventanas), la reanuda. Cualquier inicio, reanudación o pausa manual borra la marca, así que una pausa manual no se reanuda al abrirse la ventana. Al estar en la base, sobrevive a un reinicio.
 - **Paso a `Completed`:** lo hace quien termine último. La verificación, al acabar sin nada pendiente con la migración ya en `Migrated`; o la migración, al terminar con la verificación al día.
 
 ### Migrations.VerificationStatus
@@ -511,7 +550,7 @@ stateDiagram-v2
   Pending --> Failed : 5 intentos fallidos
 ```
 
-## 3 · Flujo de datos entre tablas
+## 4 · Flujo de datos entre tablas
 
 Procesos → tablas
 
@@ -557,4 +596,4 @@ La auditoría no se escribe en el momento: va a un búfer en memoria que se vuel
 
 El mantenimiento actúa sobre las siete tablas de más movimiento (`MigrationStudies`, `MigrationInstances`, `DiscoveredStudies`, `DiscoveredInstances`, `DiscoveryPartitions`, `DiscoveryRequests` y `AuditLogs`). El diagrama solo dibuja las flechas principales.
 
-Esquema: Infrastructure/Migrations/AppDbContextModelSnapshot.cs, contrastado con la base local (pg_constraint, pg_indexes, pg_stat_user_tables). Estados y flujos: repositorios y servicios de Infrastructure y páginas de Web, leídos del directorio de trabajo del proyecto (commit 7025f0e, 10 oct 2026).
+Esquema: Infrastructure/Migrations/AppDbContextModelSnapshot.cs, contrastado con la base local (pg_constraint, pg_indexes, pg_stat_user_tables). Estados y flujos: repositorios y servicios de Infrastructure y páginas de Web, leídos del directorio de trabajo del proyecto (commit 7025f0e más CONC-8, aún sin commit: pausa por ventana, 10 oct 2026).

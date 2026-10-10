@@ -168,6 +168,8 @@ public class MigrationWorker(
             await MigrationRepo(scope).UpdateStatusAsync(migrationId, "Running");
             // Acción manual: limpiar el flag de auto-pausa por conexión.
             await MigrationRepo(scope).SetMigrationAutoPausedAsync(migrationId, false);
+            // Y el de pausa por ventana: ya está en marcha (CONC-8).
+            await MigrationRepo(scope).SetPausedByWindowAsync(migrationId, false);
             await AuditRepo(scope).AddAsync(new MigrationAuditLog
             {
                 MigrationId = migrationId, Action = "START", Result = "OK",
@@ -911,7 +913,7 @@ public class MigrationWorker(
         catch (OperationCanceledException) { /* fin normal del C-MOVE */ }
     }
 
-    public async Task PauseAsync(int migrationId)
+    public async Task PauseAsync(int migrationId, bool byWindow = false)
     {
         if (_cts.TryRemove(migrationId, out var cts))
         {
@@ -922,6 +924,10 @@ public class MigrationWorker(
         await MigrationRepo(scope).UpdateStatusAsync(migrationId, "Paused");
         // Pausa/parada manual: limpiar el flag de auto-pausa (no debe auto-reanudar).
         await MigrationRepo(scope).SetMigrationAutoPausedAsync(migrationId, false);
+        // Solo la pausa del planificador se reanuda al abrirse la ventana; una pausa
+        // manual hecha mientras estaba pausada por ventana anula esa reanudación (CONC-8).
+        await MigrationRepo(scope).SetPausedByWindowAsync(migrationId, byWindow);
+        if (byWindow) return;   // el planificador deja su propia entrada (WINDOW_CLOSE)
         var paused = await MigrationRepo(scope).GetByIdAsync(migrationId);
         await AuditRepo(scope).AddAsync(new MigrationAuditLog
         {

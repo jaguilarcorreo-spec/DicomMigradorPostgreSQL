@@ -138,6 +138,13 @@
                 ⏸ Auto-pausada · reintentando conexión…
             </span>
         }
+        else if (_detail.Status == "Paused" && _detail.PausedByWindow)
+        {
+            <span style="margin-left:auto;font-size:11px;color:var(--text-muted)"
+                  title="La pausó el planificador al cerrarse su ventana horaria. Se reanudará sola al abrirse. Si la pausas a mano, ya no se reanudará sola.">
+                🕒 Pausada por ventana · se reanudará al abrirse
+            </span>
+        }
         else
         {
             <span style="margin-left:auto;font-size:11px;color:var(--text-muted)">@StatusText.Es(_detail.Status)</span>

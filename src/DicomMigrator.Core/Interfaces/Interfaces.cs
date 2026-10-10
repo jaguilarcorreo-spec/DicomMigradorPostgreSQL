@@ -58,6 +58,8 @@ public interface IMigrationRepository
     Task<bool> UpdateVerificationStatusAsync(int id, string verificationStatus);
     /// <summary>Set/clear the flag marking the MIGRATION as auto-paused by connection errors.</summary>
     Task SetMigrationAutoPausedAsync(int id, bool autoPaused);
+    /// <summary>Marca o desmarca la migración como pausada por su ventana horaria (CONC-8).</summary>
+    Task SetPausedByWindowAsync(int id, bool pausedByWindow);
     /// <summary>Set/clear the flag marking the VERIFICATION as auto-paused by connection errors.</summary>
     Task SetVerificationAutoPausedAsync(int id, bool autoPaused);
     /// <summary>All migrations currently auto-paused (migration or verification) due to
@@ -448,8 +450,10 @@ public interface IMigrationWorker
     /// <summary>Cancela todos los workers activos al apagar el proceso (sin tocar BD).</summary>
     void CancelAllForShutdown();
 
-    /// <summary>Pause all workers for a migration gracefully.</summary>
-    Task PauseAsync(int migrationId);
+    /// <summary>Pause all workers for a migration gracefully. <paramref name="byWindow"/>:
+    /// la pausa la hace el planificador al cerrarse la ventana horaria, y se reanudará
+    /// sola al abrirse; si no, es una pausa manual que solo se reanuda a mano.</summary>
+    Task PauseAsync(int migrationId, bool byWindow = false);
 
     /// <summary>Resume workers for a paused migration.</summary>
     Task ResumeAsync(int migrationId, CancellationToken ct = default);

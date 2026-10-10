@@ -365,10 +365,22 @@
         </ul>
         <p style="margin:0 0 10px 0;color:var(--text-dim);font-size:13px;line-height:1.6">
             La <strong>zona horaria</strong> es común a los dos tramos. El servicio comprueba cada minuto si hay
-            algún tramo abierto: si se cierra, <strong>pausa</strong> automáticamente migración y verificación
-            (evento <code>WINDOW_CLOSE</code> en el log de auditoría); cuando se vuelve a abrir, <strong>reanuda</strong>
-            (evento <code>WINDOW_OPEN</code>). <strong>Sin ningún tramo activo no hay restricción horaria.</strong>
+            algún tramo abierto. Con la ventana cerrada, una migración en marcha se <strong>pausa</strong>
+            (evento <code>WINDOW_CLOSE</code> en el log de auditoría) y la ficha muestra
+            <strong>«🕒 Pausada por ventana · se reanudará al abrirse»</strong>; al abrirse, se <strong>reanuda</strong>
+            (evento <code>WINDOW_OPEN</code>). La verificación no cambia de estado: sus hilos esperan a que se abra.
+            <strong>Sin ningún tramo activo no hay restricción horaria.</strong>
         </p>
+        <ul style="margin:0 0 10px 0;padding-left:20px;color:var(--text-dim);font-size:13px;line-height:1.8">
+            <li>Solo se reanudan solas las migraciones que pausó la ventana. Una pausa <strong>manual</strong>, por
+                conexión o por un error de configuración no se reanuda al abrirse la ventana. Si pausas a mano una
+                migración que estaba pausada por la ventana, tampoco.</li>
+            <li>La marca de «pausada por ventana» se guarda en la base: si el servicio se reinicia con la ventana ya
+                abierta, la migración se reanuda igualmente.</li>
+            <li>Si se quitan todos los tramos de una migración pausada por la ventana, se reanuda, porque ya no
+                tiene restricción horaria.</li>
+            <li>Si la iniciaste fuera de su ventana, se pausa en menos de un minuto y arrancará al abrirse.</li>
+        </ul>
         <div style="padding:10px 12px;background:var(--bg);border:1px solid var(--yellow);border-radius:8px;margin-bottom:6px">
             <div style="font-weight:600;font-size:12px;color:var(--yellow);margin-bottom:4px">⏱ Cómo funciona el cruce de medianoche</div>
             <p style="margin:0;color:var(--text-dim);font-size:12.5px;line-height:1.6">
