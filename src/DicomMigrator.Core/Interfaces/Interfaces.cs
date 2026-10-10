@@ -182,8 +182,9 @@ public interface IStudyRepository
         int retryDelaySeconds = 60);
 
     /// <summary>Finalize a verification attempt with retry logic mirroring migration:
-    /// Verified on success; VerifyRetryPending if retries remain; Failed if exhausted.</summary>
-    Task CompleteVerificationAsync(long id, bool success, int maxRetries,
+    /// Verified on success; VerifyRetryPending if retries remain; Failed if exhausted.
+    /// Solo si el estudio sigue 'VerificationPending' (CONC-10); false si cambió entretanto.</summary>
+    Task<bool> CompleteVerificationAsync(long id, bool success, int maxRetries,
         int? targetSeries, int? targetInstances, string? error = null,
         int missingCount = 0, int extraCount = 0, string? missingUids = null,
         string? verifiedBy = null);
@@ -206,7 +207,10 @@ public interface IStudyRepository
     /// modalidades de la migración (CONC-9). Devuelve cuántos cambiaron.</summary>
     Task<int> RecomputeModalityRankAsync(int migrationId, IReadOnlyList<string> modalityPriority);
 
-    Task UpdateStatusAsync(long id, string status, string? error = null);
+    /// <summary>Cierra un intento de migración: solo si el estudio sigue 'Migrating' y
+    /// bloqueado por <paramref name="workerId"/> (CONC-10). False si cambió entretanto (lo
+    /// rescató otro proceso, o lo reinició o canceló una acción manual): no se pisa.</summary>
+    Task<bool> UpdateStatusAsync(long id, string status, string workerId, string? error = null);
     Task UpdateVerificationAsync(long id, string status, int? targetSeries, int? targetInstances);
     Task UpdateVerificationStartAsync(long id);
     /// <summary>Return up to 'limit' studies currently in VerificationPending state.
@@ -219,8 +223,9 @@ public interface IStudyRepository
     /// <summary>Mark study as VerificationPending without setting VerificationStartDate — timer starts when worker picks it up.</summary>
     Task EnqueueForVerificationAsync(long id);
     /// <summary>Marca el estudio 'Migrating' CONSERVANDO el lock del worker (LockedByWorker
-    /// + LockDate renovado), para que un 'Migrating' huérfano tras una caída sea rescatable.</summary>
-    Task MarkMigratingAsync(long id, string workerId);
+    /// + LockDate renovado), para que un 'Migrating' huérfano tras una caída sea rescatable.
+    /// False si el estudio ya no está 'Queued' para ese worker (CONC-10): no hay que migrarlo.</summary>
+    Task<bool> MarkMigratingAsync(long id, string workerId);
     /// <summary>Latido del C-MOVE: renueva LockDate si el estudio sigue 'Migrating' y
     /// bloqueado por ese worker. False si ya no lo tiene.</summary>
     Task<bool> RenewMigrationLockAsync(long id, string workerId);
@@ -244,7 +249,17 @@ public interface IStudyRepository
     /// <summary>Requeue studies that FAILED VERIFICATION (VerifyFailed) back to
     /// 'Migrated' so the verification workers retry them, resetting VerifyRetryCount.</summary>
     Task RetryVerifyFailedAsync(int migrationId);
-    Task CancelStudyAsync(long id);
+    // ── Acciones manuales sobre un estudio (CONC-10) ─────────────────────────
+    // Atómicas y solo desde estados de reposo: comprueban el estado en el mismo UPDATE. Así
+    // no pisan a un worker que acaba de tomar el estudio (antes la pantalla decidía con el
+    // estado que tenía cargado y se escribía solo por Id). False = el estudio ya no estaba
+    // en un estado que lo permita.
+    /// <summary>Pending / RetryPending → Cancelled.</summary>
+    Task<bool> CancelStudyAsync(long id);
+    /// <summary>Failed / Cancelled / Migrated / Verified → Pending, como nuevo (contadores a 0).</summary>
+    Task<bool> ResetStudyAsync(long id);
+    /// <summary>Failed → RetryPending (sin gastar intento, como «Reintentar fallidos»).</summary>
+    Task<bool> RetryStudyAsync(long id);
     Task<MigrationStats> GetStatsAsync(int migrationId);
     /// <summary>Recuentos por estado de TODAS las migraciones en una sola consulta
     /// (índice MigrationId+MigrationStatus). Sin tiempos: para listas y totales. Las

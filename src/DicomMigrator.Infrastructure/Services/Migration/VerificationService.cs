@@ -738,7 +738,7 @@ public class VerificationService(
                             ? (result.StudyFoundInDest && result.MissingCount == 0)
                             : (result.StudyFoundInDest && result.SeriesCountMatch && result.InstanceCountMatch));
 
-                        await studyR.CompleteVerificationAsync(study.Id, success, maxRetries,
+                        var recorded = await studyR.CompleteVerificationAsync(study.Id, success, maxRetries,
                             result.DestSeriesCount, result.DestInstanceCount,
                             success ? null : (result.ErrorMessage ?? (result.Level2Checked
                                 ? $"Faltan {result.MissingCount} UIDs en destino"
@@ -747,6 +747,9 @@ public class VerificationService(
                             result.MissingUids.Count > 0 ? string.Join("\n", result.MissingUids) : null,
                             result.VerifiedBy);
                         heldStudyId = null;   // resultado registrado: ya no está en vuelo
+                        if (!recorded)
+                            logger.LogWarning("Verificación worker {W}: {Uid} cambió de estado mientras se verificaba " +
+                                "(reiniciado a mano); no se registra el resultado.", workerId, study.StudyInstanceUid);
 
                         await auditR.AddAsync(new MigrationAuditLog
                         {

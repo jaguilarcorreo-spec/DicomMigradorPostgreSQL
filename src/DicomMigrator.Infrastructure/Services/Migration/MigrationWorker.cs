@@ -613,7 +613,15 @@ public class MigrationWorker(
         // mientras dura el C-MOVE: si el proceso muere a mitad, el estudio es rescatable
         // (caducidad en AcquireNextPendingAsync, o ReleaseOrphanMigrationLocksAsync al
         // arrancar) en vez de quedarse en 'Migrating' para siempre.
-        await studyRepo.MarkMigratingAsync(study.Id, workerId);
+        if (!await studyRepo.MarkMigratingAsync(study.Id, workerId))
+        {
+            // Entre tomarlo y empezar, el estudio dejó de ser nuestro (CONC-10): no se lanza
+            // el C-MOVE. Con las acciones manuales ya atómicas es muy raro; puede pasar si lo
+            // rescató la caducidad de bloqueos.
+            logger.LogWarning("[{Worker}] {Uid}: el estudio ya no está en cola para este worker; no se migra.",
+                workerId, study.StudyInstanceUid);
+            return MoveOutcome.Done;
+        }
         logger.LogInformation("[{Worker}] Migrating {Uid}", workerId, study.StudyInstanceUid);
 
         using var heartbeatCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -735,7 +743,7 @@ public class MigrationWorker(
 
             if (success)
             {
-                await studyRepo.UpdateStatusAsync(study.Id, "Migrated");
+                await RecordAttemptAsync(studyRepo, study, workerId, "Migrated", null);
                 await auditRepo.AddAsync(new MigrationAuditLog
                 {
                     MigrationId      = migration.Id,
@@ -803,7 +811,7 @@ public class MigrationWorker(
                 var retries      = (currentStudy?.RetryCount ?? study.RetryCount) + 1;
                 var nextStatus   = retries >= migration.MaxRetries ? "Failed" : "RetryPending";
 
-                await studyRepo.UpdateStatusAsync(study.Id, nextStatus,
+                await RecordAttemptAsync(studyRepo, study, workerId, nextStatus,
                     $"[Intento {retries}/{migration.MaxRetries}] {techMsg}");
 
                 await auditRepo.AddAsync(new MigrationAuditLog
@@ -828,7 +836,7 @@ public class MigrationWorker(
                 var retries      = (currentStudy?.RetryCount ?? study.RetryCount) + 1;
                 var nextStatus   = retries >= migration.MaxRetries ? "Failed" : "RetryPending";
 
-                await studyRepo.UpdateStatusAsync(study.Id, nextStatus,
+                await RecordAttemptAsync(studyRepo, study, workerId, nextStatus,
                     $"[Intento {retries}/{migration.MaxRetries}] {techMsg}");
 
                 await auditRepo.AddAsync(new MigrationAuditLog
@@ -868,6 +876,17 @@ public class MigrationWorker(
             heartbeatCts.Cancel();
             await heartbeat;   // nunca lanza: traga sus propios errores y la cancelación
         }
+    }
+
+    /// <summary>Registra el resultado del intento solo si el estudio sigue siendo de este worker
+    /// (CONC-10). Si no, otro proceso lo tiene ya (rescate de bloqueo caducado): se deja
+    /// constancia en el log en vez de pisar su estado.</summary>
+    private async Task RecordAttemptAsync(IStudyRepository studyRepo, MigrationStudy study, string workerId,
+        string status, string? error)
+    {
+        if (!await studyRepo.UpdateStatusAsync(study.Id, status, workerId, error))
+            logger.LogWarning("[{Worker}] {Uid}: el estudio cambió de estado durante el C-MOVE; no se registra " +
+                "«{Status}» para no pisarlo.", workerId, study.StudyInstanceUid, status);
     }
 
     /// <summary>Lista de prioridad de modalidades de la migración ("CT,MR,…"), sin

@@ -743,15 +743,15 @@
                                                         title="Reiniciar estudio a Pending"
                                                         @onclick="@(() => ResetStudyAsync(s))">▷</button>
                                             }
-                                            @* Retry: Failed or RetryPending *@
-                                            @if (s.MigrationStatus is "Failed" or "RetryPending")
+                                            @* Retry: Failed (un RetryPending ya se reintenta solo) *@
+                                            @if (s.MigrationStatus is "Failed")
                                             {
                                                 <button class="btn btn-ghost btn-sm"
                                                         title="@s.LastError"
                                                         @onclick="@(() => RetryStudyAsync(s))">↺</button>
                                             }
-                                            @* Cancel: anything still in queue *@
-                                            @if (s.MigrationStatus is "Pending" or "Queued" or "RetryPending")
+                                            @* Cancel: lo que aún no ha tomado ningún worker *@
+                                            @if (s.MigrationStatus is "Pending" or "RetryPending")
                                             {
                                                 <button class="btn btn-ghost btn-sm"
                                                         title="Cancelar este estudio"
@@ -1481,28 +1481,32 @@ else
             await GoToStudyPage(p);
     }
 
-    async Task RetryStudyAsync(MigrationStudy s)
-    {
-        await StudyRepo.UpdateStatusAsync(s.Id, "RetryPending");
-        s.MigrationStatus = "RetryPending";
-        StateHasChanged();
-    }
+    // Acciones por estudio (CONC-10): el repositorio comprueba el estado ACTUAL en el mismo
+    // UPDATE. La lista puede estar desfasada (un worker acaba de tomar el estudio); antes se
+    // escribía igualmente y el worker lo pisaba, o se lanzaban dos C-MOVE del mismo estudio.
+    async Task RetryStudyAsync(MigrationStudy s) =>
+        await StudyActionAsync(s, () => StudyRepo.RetryStudyAsync(s.Id), "reintentar");
 
     /// <summary>Resetea el estudio a Pending como si nunca se hubiese intentado migrar.</summary>
-    async Task ResetStudyAsync(MigrationStudy s)
-    {
-        await StudyRepo.UpdateStatusAsync(s.Id, "Pending");
-        s.MigrationStatus = "Pending";
-        // Clear destination counts so verification is clean next time
-        if (_detail is not null)
-            _stats = await StudyRepo.GetStatsAsync(_detail.Id);
-        StateHasChanged();
-    }
+    async Task ResetStudyAsync(MigrationStudy s) =>
+        await StudyActionAsync(s, () => StudyRepo.ResetStudyAsync(s.Id), "reiniciar");
 
-    async Task CancelStudyAsync(MigrationStudy s)
+    async Task CancelStudyAsync(MigrationStudy s) =>
+        await StudyActionAsync(s, () => StudyRepo.CancelStudyAsync(s.Id), "cancelar");
+
+    async Task StudyActionAsync(MigrationStudy s, Func<Task<bool>> action, string verb)
     {
-        await StudyRepo.CancelStudyAsync(s.Id);
-        await SearchStudiesAsync();
+        try
+        {
+            if (!await action())
+                ShowMsg($"No se puede {verb} {s.StudyInstanceUid}: su estado ha cambiado (ya lo ha tomado " +
+                        "un proceso). Se ha actualizado la lista.", false);
+            await SearchStudiesAsync();
+            if (_detail is not null)
+                _stats = await StudyRepo.GetStatsAsync(_detail.Id);
+        }
+        catch (Exception ex) { ShowMsg($"Error: {ex.Message}", false); }
+        StateHasChanged();
     }
 
     void ExportSummaryExcel()

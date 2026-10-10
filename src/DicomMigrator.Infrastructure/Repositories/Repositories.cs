@@ -821,14 +821,16 @@ RETURNING m.*";
                 .SetProperty(s => s.LastUpdateDate, DateTime.UtcNow));
     }
 
-    public async Task CompleteVerificationAsync(long id, bool success, int maxRetries,
+    public async Task<bool> CompleteVerificationAsync(long id, bool success, int maxRetries,
         int? targetSeries, int? targetInstances, string? error = null,
         int missingCount = 0, int extraCount = 0, string? missingUids = null,
         string? verifiedBy = null)
     {
         await using var db = factory.CreateDbContext();
-        await db.MigrationStudies
-            .Where(s => s.Id == id)
+        // Solo si sigue en verificación (CONC-10): si entretanto se reinició a mano, el
+        // resultado de esta verificación ya no vale y no debe pisar el nuevo estado.
+        return 0 < await db.MigrationStudies
+            .Where(s => s.Id == id && s.MigrationStatus == "VerificationPending")
             .ExecuteUpdateAsync(u => u
                 .SetProperty(s => s.MigrationStatus,
                     s => success ? "Verified"
@@ -850,11 +852,14 @@ RETURNING m.*";
                 .SetProperty(s => s.LastUpdateDate, DateTime.UtcNow));
     }
 
-    public async Task UpdateStatusAsync(long id, string status, string? error = null)
+    public async Task<bool> UpdateStatusAsync(long id, string status, string workerId, string? error = null)
     {
         await using var db = factory.CreateDbContext();
-        await db.MigrationStudies
-            .Where(s => s.Id == id)
+        // Solo el worker que lo tiene en 'Migrating' cierra el intento (CONC-10). Antes se
+        // escribía por Id: un worker cuyo estudio había rescatado otro proceso (o cuyo estado
+        // había cambiado a mano) pisaba ese estado al terminar su C-MOVE.
+        return 0 < await db.MigrationStudies
+            .Where(s => s.Id == id && s.MigrationStatus == "Migrating" && s.LockedByWorker == workerId)
             .ExecuteUpdateAsync(u => u
                 .SetProperty(s => s.MigrationStatus, status)
                 .SetProperty(s => s.LastError, error)
@@ -870,15 +875,17 @@ RETURNING m.*";
                          s.MigrationDate));
     }
 
-    public async Task MarkMigratingAsync(long id, string workerId)
+    public async Task<bool> MarkMigratingAsync(long id, string workerId)
     {
         // A diferencia de UpdateStatusAsync, CONSERVA el lock del worker y renueva
         // LockDate: así un estudio 'Migrating' siempre tiene dueño y fecha, y si el
         // proceso muere a mitad del C-MOVE la limpieza de caducados / huérfanos lo
         // puede rescatar (sin lock, quedaría atascado en 'Migrating' para siempre).
+        // Solo desde 'Queued' de ESTE worker (CONC-10): si entretanto se canceló o se
+        // rescató, no se migra (antes se pasaba a 'Migrating' igualmente y se lanzaba el C-MOVE).
         await using var db = factory.CreateDbContext();
-        await db.MigrationStudies
-            .Where(s => s.Id == id)
+        return 0 < await db.MigrationStudies
+            .Where(s => s.Id == id && s.MigrationStatus == "Queued" && s.LockedByWorker == workerId)
             .ExecuteUpdateAsync(u => u
                 .SetProperty(s => s.MigrationStatus, "Migrating")
                 .SetProperty(s => s.LastError, (string?)null)
@@ -1074,15 +1081,56 @@ RETURNING m.*";
                 .SetProperty(s => s.LastUpdateDate, DateTime.UtcNow));
     }
 
-    public async Task CancelStudyAsync(long id)
+    public async Task<bool> CancelStudyAsync(long id)
     {
+        // Solo si nadie lo ha tomado aún. 'Queued' ya no: el worker lo tiene y está a punto de
+        // lanzar el C-MOVE; cancelarlo entonces se perdía (CONC-10).
         await using var db = factory.CreateDbContext();
-        await db.MigrationStudies
-            .Where(s => s.Id == id)
+        return 0 < await db.MigrationStudies
+            .Where(s => s.Id == id && (s.MigrationStatus == "Pending" || s.MigrationStatus == "RetryPending")
+                     && s.LockedByWorker == null)
             .ExecuteUpdateAsync(u => u
                 .SetProperty(s => s.MigrationStatus, "Cancelled")
+                .SetProperty(s => s.LastUpdateDate, DateTime.UtcNow));
+    }
+
+    public async Task<bool> ResetStudyAsync(long id)
+    {
+        // Como nuevo: estado Pending, sin errores ni contadores de intentos ni resultado de
+        // verificación. Solo desde estados de reposo, comprobado en el mismo UPDATE: un
+        // 'Migrated' que un verificador acaba de tomar ya no se toca (CONC-10).
+        await using var db = factory.CreateDbContext();
+        return 0 < await db.MigrationStudies
+            .Where(s => s.Id == id
+                     && (s.MigrationStatus == "Failed" || s.MigrationStatus == "Cancelled"
+                      || s.MigrationStatus == "Migrated" || s.MigrationStatus == "Verified"))
+            .ExecuteUpdateAsync(u => u
+                .SetProperty(s => s.MigrationStatus, "Pending")
+                .SetProperty(s => s.RetryCount, 0)
+                .SetProperty(s => s.VerifyRetryCount, 0)
+                .SetProperty(s => s.LastError, (string?)null)
                 .SetProperty(s => s.LockedByWorker, (string?)null)
                 .SetProperty(s => s.LockDate, (DateTime?)null)
+                .SetProperty(s => s.MigrationStartDate, (DateTime?)null)
+                .SetProperty(s => s.MigrationDate, (DateTime?)null)
+                .SetProperty(s => s.VerificationStartDate, (DateTime?)null)
+                .SetProperty(s => s.VerificationDate, (DateTime?)null)
+                .SetProperty(s => s.VerifiedBy, (string?)null)
+                .SetProperty(s => s.TargetSeriesCount, (int?)null)
+                .SetProperty(s => s.TargetInstanceCount, (int?)null)
+                .SetProperty(s => s.VerifyMissingCount, 0)
+                .SetProperty(s => s.VerifyExtraCount, 0)
+                .SetProperty(s => s.VerifyMissingUids, (string?)null)
+                .SetProperty(s => s.LastUpdateDate, DateTime.UtcNow));
+    }
+
+    public async Task<bool> RetryStudyAsync(long id)
+    {
+        await using var db = factory.CreateDbContext();
+        return 0 < await db.MigrationStudies
+            .Where(s => s.Id == id && s.MigrationStatus == "Failed")
+            .ExecuteUpdateAsync(u => u
+                .SetProperty(s => s.MigrationStatus, "RetryPending")
                 .SetProperty(s => s.LastUpdateDate, DateTime.UtcNow));
     }
 

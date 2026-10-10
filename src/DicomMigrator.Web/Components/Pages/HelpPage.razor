@@ -421,6 +421,7 @@
                 <tr><td><strong>↺ Reintentar fallidos de migración</strong></td><td>Marca los estudios en Failed como RetryPending para que vuelvan a la cola de migración.</td></tr>
                 <tr><td><strong>↺ Reintentar fallidos de verificación</strong></td><td>Devuelve los estudios en VerifyFailed a la cola de verificación.</td></tr>
                 <tr><td><strong>✎ Editar</strong></td><td>Modifica nombre, descripción, hilos, max. reintentos, delay de reintento, prioridad de modalidad y, si está en Draft o Paused, el orden por fecha. Un cambio de prioridad hecho con la migración en marcha se aplica al pausarla y reanudarla.</td></tr>
+                <tr><td><strong>Acciones de un estudio</strong> (pestaña Estudios)</td><td><strong>▷ Reiniciar</strong> (desde Failed, Cancelled, Migrated o Verified): vuelve a Pending como nuevo, sin intentos gastados ni resultado de verificación. <strong>↺ Reintentar</strong> (desde Failed): pasa a RetryPending. <strong>✕ Cancelar</strong> (desde Pending o RetryPending): pasa a Cancelled. Se comprueba el estado en el momento de pulsar: si un proceso ya ha tomado el estudio (por ejemplo, lo está migrando), no se hace nada y se avisa.</td></tr>
                 <tr><td><strong>🗑 Eliminar todos los estudios</strong></td><td>Vacía la lista de estudios manteniendo la configuración. Doble confirmación.</td></tr>
                 <tr><td><strong>🗑 Eliminar migración</strong></td><td>Borra la migración y todos sus datos. Doble confirmación. Bloqueado si Running.</td></tr>
             </tbody>
