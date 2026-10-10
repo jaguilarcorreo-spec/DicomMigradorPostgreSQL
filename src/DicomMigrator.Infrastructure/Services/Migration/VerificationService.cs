@@ -569,8 +569,20 @@ public class VerificationService(
 
                                 if (ConnBackoff.TryAnnouncePause("VERIFY", migrationId))
                                 {
+                                    // Pausa NORMAL, no auto-pausa (CONC-6): la auto-reanudación
+                                    // sondea el destino, que responde, y la relanzaba en bucle
+                                    // (pausa, correo, reanuda, falla…) sin arreglar nada. Se
+                                    // reanuda a mano tras corregir la configuración, como en la
+                                    // migración con 0xA801 o un rechazo permanente.
                                     await migR.UpdateVerificationStatusAsync(migrationId, "Paused");
-                                    await migR.SetVerificationAutoPausedAsync(migrationId, true);
+                                    await migR.SetVerificationAutoPausedAsync(migrationId, false);
+                                    await auditR.AddAsync(new MigrationAuditLog
+                                    {
+                                        MigrationId = migrationId, Action = "PAUSE", Level = "ERROR", Result = "ERROR",
+                                        UserOrProcess = $"VERIFY-{workerId}",
+                                        TechnicalMessage = $"Verificación pausada por error de configuración con el destino: " +
+                                            $"{result.ErrorMessage}. Reanúdala a mano cuando esté corregido.",
+                                    });
                                     try
                                     {
                                         await scope.ServiceProvider.GetRequiredService<INotificationService>()
@@ -578,7 +590,8 @@ public class VerificationService(
                                             {
                                                 ("Origen → Destino", $"{migration.OriginNode?.Alias ?? "?"} → {migration.DestNode?.Alias ?? "?"}"),
                                                 ("Proceso", "Verificación"),
-                                                ("Motivo",  "Error de configuración (credenciales/AE Title rechazados por el destino)"),
+                                                ("Motivo",  $"Error de configuración (credenciales o AE Title rechazados por el destino): {result.ErrorMessage}. " +
+                                                            "No se reanuda sola: corrígelo y reanúdala a mano."),
                                                 ("Nodo",    migration.DestNode?.Alias ?? "destino"),
                                             }, migrationId, "migration");
                                     }
@@ -599,22 +612,34 @@ public class VerificationService(
                             {
                                 if (ConnBackoff.TryAnnouncePause("VERIFY", migrationId))
                                 {
-                                    logger.LogError("Verificación: {N} errores de conexión consecutivos. " +
-                                        "Pausando verificación de la migración {Id} (se reanudará sola).", connErrors, migrationId);
+                                    // Un correo por incidente (CONC-6): si la auto-reanudación
+                                    // vuelve a fallar sin haber verificado nada, no se avisa otra vez.
+                                    var newIncident = AutoPauseIncidents.RegisterPause("VERIFY", migrationId);
+                                    if (newIncident)
+                                        logger.LogError("Verificación: {N} errores de conexión consecutivos con el destino ({Err}). " +
+                                            "Pausando verificación de la migración {Id} (se reanudará sola).",
+                                            connErrors, result.ErrorMessage, migrationId);
+                                    else
+                                        logger.LogError("Verificación de la migración {Id} pausada otra vez ({N}.ª del mismo incidente, " +
+                                            "sin aviso nuevo): {Err}.", migrationId,
+                                            AutoPauseIncidents.Pauses("VERIFY", migrationId), result.ErrorMessage);
                                     await migR.UpdateVerificationStatusAsync(migrationId, "Paused");
                                     await migR.SetVerificationAutoPausedAsync(migrationId, true);
-                                    try
+                                    if (newIncident)
                                     {
-                                        await scope.ServiceProvider.GetRequiredService<INotificationService>()
-                                            .RaiseAsync(NotificationEvents.AutoPaused, migration.Name, new (string, string)[]
-                                            {
-                                                ("Origen → Destino", $"{migration.OriginNode?.Alias ?? "?"} → {migration.DestNode?.Alias ?? "?"}"),
-                                                ("Proceso", "Verificación"),
-                                                ("Motivo",  $"{connErrors} errores de conexión con el destino"),
-                                                ("Nodo",    migration.DestNode?.Alias ?? "destino"),
-                                            }, migrationId, "migration");
+                                        try
+                                        {
+                                            await scope.ServiceProvider.GetRequiredService<INotificationService>()
+                                                .RaiseAsync(NotificationEvents.AutoPaused, migration.Name, new (string, string)[]
+                                                {
+                                                    ("Origen → Destino", $"{migration.OriginNode?.Alias ?? "?"} → {migration.DestNode?.Alias ?? "?"}"),
+                                                    ("Proceso", "Verificación"),
+                                                    ("Motivo",  $"{connErrors} errores de conexión con el destino; el último: {result.ErrorMessage}"),
+                                                    ("Nodo",    migration.DestNode?.Alias ?? "destino"),
+                                                }, migrationId, "migration");
+                                        }
+                                        catch (Exception nex) { logger.LogWarning(nex, "Notificación de auto-pausa (verificación {Id}) falló.", migrationId); }
                                     }
-                                    catch (Exception nex) { logger.LogWarning(nex, "Notificación de auto-pausa (verificación {Id}) falló.", migrationId); }
                                 }
                                 // Cancelar el token compartido: detiene a los demás workers de
                                 // inmediato y hace que el handler de finalización NO marque
@@ -626,6 +651,7 @@ public class VerificationService(
                             continue;
                         }
                         connErrors = 0;  // reset al verificar con éxito de operación
+                        AutoPauseIncidents.Resolve("VERIFY", migrationId);   // el destino responde: fin del incidente
 
                         // Nivel 2 (si se comparó por conjuntos): aprobado ⇔ estudio presente y
                         // sin UIDs faltantes (los sobrantes solo avisan). Si no, Nivel 1 por conteos.

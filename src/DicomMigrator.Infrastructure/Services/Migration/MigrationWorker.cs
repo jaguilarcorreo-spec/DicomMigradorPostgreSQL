@@ -374,7 +374,8 @@ public class MigrationWorker(
         var ct = cts.Token;
         logger.LogInformation("Worker {Id} started for migration {MigId}", workerId, migration.Id);
         int emptyPolls = 0;
-        int connErrors = 0;   // errores de conexión consecutivos con el PACS origen
+        int connErrors = 0;   // fallos de conexión consecutivos (origen caído o saturado, destino caído)
+        string? lastCause = null, lastNode = null;   // el último, para el aviso de auto-pausa
         int unexpectedErrors = 0;   // errores inesperados seguidos (BD caída, etc.)
         bool releasePending = false; // la liberación de sus estudios falló (BD caída): repetirla
 
@@ -487,6 +488,8 @@ public class MigrationWorker(
                     if (outcome.IsTransient)
                     {
                         connErrors++;
+                        lastCause = outcome.Cause;
+                        lastNode  = outcome.Node;
                         // Si se acumulan unos pocos errores de conexión seguidos, el destino
                         // (o el origen) está caído: pausar pronto para no machacar en bucle.
                         // El servicio de auto-reanudación lo retomará cuando vuelva la conexión.
@@ -494,22 +497,39 @@ public class MigrationWorker(
                         {
                             if (ConnBackoff.TryAnnouncePause("MIGRATE", migration.Id))
                             {
-                                logger.LogError("Migración: {N} errores de conexión consecutivos. " +
-                                    "Pausando migración {Id} (se reanudará sola al recuperarse la conexión).",
-                                    connErrors, migration.Id);
+                                // Un correo por incidente (CONC-6): si la auto-reanudación
+                                // vuelve a fallar sin haber migrado nada, no se avisa otra vez.
+                                var newIncident = AutoPauseIncidents.RegisterPause("MIGRATE", migration.Id);
+                                var reason = $"{connErrors} fallos de conexión seguidos; el último: {lastCause}";
+                                var node   = lastNode ?? "el nodo";
+                                if (newIncident)
+                                    logger.LogError("Migración {Id} pausada: {Reason}. Se reanudará sola cuando responda {Node}.",
+                                        migration.Id, reason, node);
+                                else
+                                    logger.LogError("Migración {Id} pausada otra vez ({N}.ª del mismo incidente, sin aviso nuevo): {Reason}.",
+                                        migration.Id, AutoPauseIncidents.Pauses("MIGRATE", migration.Id), reason);
                                 await MigrationRepo(scope).UpdateStatusAsync(migration.Id, "Paused");
-                                try
+                                await AuditRepo(scope).AddAsync(new MigrationAuditLog
                                 {
-                                    await scope.ServiceProvider.GetRequiredService<INotificationService>()
-                                        .RaiseAsync(NotificationEvents.AutoPaused, migration.Name, new (string, string)[]
-                                        {
-                                            ("Origen → Destino", $"{migration.OriginNode?.Alias ?? "?"} → {migration.DestNode?.Alias ?? "?"}"),
-                                            ("Proceso", "Migración"),
-                                            ("Motivo",  $"{connErrors} errores de conexión con el origen"),
-                                            ("Nodo",    migration.OriginNode?.Alias ?? "origen"),
-                                        }, migration.Id, "migration");
+                                    MigrationId = migration.Id, Action = "PAUSE", Level = "WARN", Result = "ERROR",
+                                    UserOrProcess = workerId,
+                                    TechnicalMessage = $"Auto-pausa: {reason}. Se reanudará sola cuando responda {node}.",
+                                });
+                                if (newIncident)
+                                {
+                                    try
+                                    {
+                                        await scope.ServiceProvider.GetRequiredService<INotificationService>()
+                                            .RaiseAsync(NotificationEvents.AutoPaused, migration.Name, new (string, string)[]
+                                            {
+                                                ("Origen → Destino", $"{migration.OriginNode?.Alias ?? "?"} → {migration.DestNode?.Alias ?? "?"}"),
+                                                ("Proceso", "Migración"),
+                                                ("Motivo",  reason),
+                                                ("Nodo",    node),
+                                            }, migration.Id, "migration");
+                                    }
+                                    catch (Exception nex) { logger.LogWarning(nex, "Notificación de auto-pausa (migración {Id}) falló.", migration.Id); }
                                 }
-                                catch (Exception nex) { logger.LogWarning(nex, "Notificación de auto-pausa (migración {Id}) falló.", migration.Id); }
                                 await MigrationRepo(scope).SetMigrationAutoPausedAsync(migration.Id, true);
                             }
                             // Cancelar el token compartido: detiene a los demás workers de
@@ -526,6 +546,9 @@ public class MigrationWorker(
                     else
                     {
                         connErrors = 0;
+                        // El origen respondió (estudio migrado o fallo propio del estudio):
+                        // la conexión funciona, se cierra el incidente de auto-pausa si lo había.
+                        AutoPauseIncidents.Resolve("MIGRATE", migration.Id);
                     }
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -561,10 +584,14 @@ public class MigrationWorker(
     /// estudio volvió a Pending sin gastar reintento y cuenta para la auto-pausa.</param>
     /// <param name="ConfigurationError">Error de configuración permanente (p. ej. 0xA801):
     /// motivo para pausar la migración entera. Null si no lo hubo.</param>
-    private readonly record struct MoveOutcome(bool IsTransient, string? ConfigurationError)
+    /// <param name="Cause">Fallo transitorio: qué falló, para el aviso de auto-pausa
+    /// («el destino X no responde»…). Antes el aviso decía siempre «origen» (CONC-6).</param>
+    /// <param name="Node">Fallo transitorio: alias del nodo que falló.</param>
+    private readonly record struct MoveOutcome(bool IsTransient, string? ConfigurationError,
+        string? Cause = null, string? Node = null)
     {
-        public static readonly MoveOutcome Done      = new(false, null);
-        public static readonly MoveOutcome Transient = new(true, null);
+        public static readonly MoveOutcome Done = new(false, null);
+        public static MoveOutcome Transient(string cause, string? node) => new(true, null, cause, node);
         public static MoveOutcome Config(string reason) => new(false, reason);
     }
 
@@ -699,7 +726,9 @@ public class MigrationWorker(
                     UserOrProcess    = workerId,
                     TechnicalMessage = $"PACS origen sin recursos (reintento sin penalizar): {techMsg}",
                 });
-                return MoveOutcome.Transient;
+                return MoveOutcome.Transient(
+                    $"el origen {freshMigration.OriginNode?.Alias} está saturado (0x{result.DicomStatus:X4})",
+                    freshMigration.OriginNode?.Alias);
             }
 
             if (success)
@@ -735,7 +764,9 @@ public class MigrationWorker(
                     UserOrProcess    = workerId,
                     TechnicalMessage = $"Error de conexión con el origen (reintento sin penalizar): {techMsg}",
                 });
-                return MoveOutcome.Transient;   // fue error de conexión
+                return MoveOutcome.Transient(   // fue error de conexión
+                    $"no se pudo conectar con el origen {freshMigration.OriginNode?.Alias}",
+                    freshMigration.OriginNode?.Alias);
             }
             else if (result.Completed == 0)
             {
@@ -761,7 +792,9 @@ public class MigrationWorker(
                         UserOrProcess    = workerId,
                         TechnicalMessage = $"Destino inaccesible (reintento sin penalizar): {techMsg}",
                     });
-                    return MoveOutcome.Transient;   // tratar como error de conexión (transitorio)
+                    return MoveOutcome.Transient(   // tratar como error de conexión (transitorio)
+                        $"el destino {freshMigration.DestNode!.Alias} no responde (C-ECHO)",
+                        freshMigration.DestNode!.Alias);
                 }
                 // El destino SÍ responde → el estudio realmente no se pudo migrar.
                 var currentStudy = await studyRepo.GetByIdAsync(study.Id);
@@ -825,7 +858,8 @@ public class MigrationWorker(
             await studyRepo.ReleaseMigrationLockAsync(study.Id);
             logger.LogWarning(ex, "[{Worker}] Error de conexión migrando {Uid}. Estudio devuelto a Pendiente.",
                 workerId, study.StudyInstanceUid);
-            return MoveOutcome.Transient;
+            return MoveOutcome.Transient($"error de red con el origen {migration.OriginNode?.Alias}",
+                migration.OriginNode?.Alias);
         }
         finally
         {

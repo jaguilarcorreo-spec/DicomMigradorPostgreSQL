@@ -318,14 +318,25 @@
         </p>
         <p style="margin:0 0 10px 0;color:var(--text-dim);font-size:13px;line-height:1.6">
             Tras <strong>5 errores de conexión consecutivos</strong>, el proceso afectado se <strong>auto-pausa</strong> y lo señala
-            con un indicador amarillo («⏸ Auto-pausada · reintentando conexión…»). El servicio <strong>AutoResume</strong> sondea
-            periódicamente el PACS y, en cuanto vuelve a responder, <strong>reanuda solo</strong> el proceso sin intervención manual.
+            con un indicador amarillo («⏸ Auto-pausada · reintentando conexión…»). El aviso (log, auditoría y correo) dice qué
+            falló y en qué nodo: origen caído, origen saturado (0xA7xx) o destino que no responde. El servicio
+            <strong>AutoResume</strong> sondea periódicamente y, en cuanto responde lo necesario, <strong>reanuda solo</strong> el
+            proceso sin intervención manual:
         </p>
+        <ul style="margin:0 0 10px 0;padding-left:20px;color:var(--text-dim);font-size:13px;line-height:1.7">
+            <li><strong>Migración:</strong> comprueba con C-ECHO el <strong>origen y el destino</strong>, porque el C-MOVE necesita los dos.</li>
+            <li><strong>Verificación:</strong> comprueba el destino con el protocolo con el que verifica: <strong>QIDO-RS</strong> si el
+                nodo tiene DICOMweb, <strong>C-ECHO</strong> si no.</li>
+            <li>Se envía <strong>un solo correo por incidente</strong>. Si el proceso se reanuda y vuelve a fallar sin haber
+                completado nada (p. ej. el PACS responde al sondeo pero sigue saturado), se pausa de nuevo sin otro correo y cada
+                nuevo intento espera el doble: 1, 2, 4… hasta 30 minutos. El incidente termina en cuanto se migra o verifica un estudio.</li>
+        </ul>
         <p style="margin:0 0 10px 0;color:var(--text-dim);font-size:13px;line-height:1.6">
             Los <strong>errores de configuración</strong> son distintos: el PACS origen no conoce el AE destino (0xA801) o rechaza
             la conexión de forma permanente (AE no reconocido). Ahí reintentar no sirve, así que la migración se <strong>pausa al
             primer error</strong>, sin gastar reintentos de ningún estudio, con un mensaje que indica qué dar de alta o revisar
-            (en el log, la auditoría y el correo). Esta pausa <strong>no se reanuda sola</strong>: reanúdala tras corregir la
+            (en el log, la auditoría y el correo). Lo mismo en la verificación si el destino rechaza las credenciales DICOMweb
+            (HTTP 401/403) o el AE Title. Estas pausas <strong>no se reanudan solas</strong>: reanuda el proceso tras corregir la
             configuración.
         </p>
         <p style="margin:0;color:var(--text-muted);font-size:11px">
@@ -846,7 +857,7 @@
             <thead><tr><th>Clave</th><th>Descripción</th><th>Por defecto</th></tr></thead>
             <tbody>
                 <tr><td class="mono">AutoResume:Enabled</td><td>Activa o desactiva la reanudación automática. Si está en <code>false</code>, las migraciones auto-pausadas hay que reanudarlas a mano.</td><td class="mono" style="color:var(--accent)">true</td></tr>
-                <tr><td class="mono">AutoResume:CheckIntervalSeconds</td><td>Cada cuántos segundos comprueba si los procesos auto-pausados pueden reanudarse (sondeo C-ECHO).</td><td class="mono" style="color:var(--accent)">60</td></tr>
+                <tr><td class="mono">AutoResume:CheckIntervalSeconds</td><td>Cada cuántos segundos comprueba si los procesos auto-pausados pueden reanudarse (C-ECHO al origen y al destino para la migración; QIDO-RS o C-ECHO al destino para la verificación). Si un proceso se reanuda y vuelve a pausarse sin completar nada, los siguientes intentos se espacian (1, 2, 4… hasta 30 min).</td><td class="mono" style="color:var(--accent)">60</td></tr>
             </tbody>
         </table>
     </HelpSection>

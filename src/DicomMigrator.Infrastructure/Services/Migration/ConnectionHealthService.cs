@@ -19,6 +19,7 @@ namespace DicomMigrator.Infrastructure.Services.Migration;
 public class ConnectionHealthService(
     IMigrationRepository migrationRepo,
     IDimseService dimse,
+    IDicomWebService dicomWeb,
     ILogger<ConnectionHealthService> logger) : IConnectionHealthService
 {
     // Cache window: how long a probe result is considered fresh.
@@ -98,6 +99,43 @@ public class ConnectionHealthService(
             logger.LogDebug(ex, "C-ECHO falló para {Alias}", node.Alias);
         }
         _nodeCache[key] = nh;
+        return nh;
+    }
+
+    /// <summary>
+    /// Sondeo del destino para reanudar la verificación (CONC-6). La verificación consulta
+    /// por QIDO-RS si el nodo tiene DICOMweb (mismo criterio que VerifyStudyAsync), así que
+    /// un C-ECHO al puerto DICOM no basta: con el servicio web caído o rechazando la
+    /// petición y el puerto DICOM vivo, la auto-reanudación relanzaba la verificación, que
+    /// volvía a fallar y a pausarse, con un correo por ciclo. Se busca un StudyInstanceUID
+    /// que no existe: la respuesta es inmediata y vacía, y no pide al PACS una búsqueda
+    /// sin filtros (algunos la rechazan).
+    /// </summary>
+    public async Task<NodeHealth> ProbeVerificationTargetAsync(DicomNode node, CancellationToken ct = default)
+    {
+        var usesQido = node.HasDicomWeb
+                    && (!string.IsNullOrWhiteSpace(node.WebBaseUrl) || !string.IsNullOrWhiteSpace(node.QidoBaseUrl));
+        if (!usesQido)
+            return await ProbeNodeAsync(node, ct);
+
+        var nh = new NodeHealth { Alias = node.Alias, CheckedAt = DateTime.UtcNow };
+        try
+        {
+            var qido = await dicomWeb.QidoAsync(node, new QidoQuery
+            {
+                StudyInstanceUid = "1.2.826.0.1.3680043.10.1.1",   // no existe: solo se mira que responda
+                Limit = 1,
+            }, ct);
+            nh.Reachable  = qido.Success;
+            nh.DurationMs = qido.DurationMs;
+            nh.Error      = qido.Success ? null : (qido.ErrorMessage ?? $"QIDO-RS HTTP {qido.HttpStatus}");
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            nh.Reachable = false;
+            nh.Error     = ex.Message;
+            logger.LogDebug(ex, "Sondeo QIDO-RS falló para {Alias}", node.Alias);
+        }
         return nh;
     }
 }

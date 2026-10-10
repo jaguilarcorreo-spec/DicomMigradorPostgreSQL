@@ -1,5 +1,6 @@
 using DicomMigrator.Core.Interfaces;
 using DicomMigrator.Infrastructure.Data;
+using DicomMigrator.Infrastructure.Services.Migration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -190,23 +191,28 @@ public class AutoResumeHostedService(
 
         foreach (var m in paused)
         {
-            // Migración auto-pausada → probar el ORIGEN
-            if (m.MigrationAutoPaused && m.OriginNode is not null)
+            // Migración auto-pausada → probar ORIGEN Y DESTINO (CONC-6). El C-MOVE necesita
+            // los dos: antes solo se probaba el origen, así que con el destino caído se
+            // reanudaba al minuto, fallaba, se pausaba y mandaba otro correo, sin fin.
+            if (m.MigrationAutoPaused && m.OriginNode is not null && m.DestNode is not null
+                && Ready("MIGRATE", m.Id, "migración"))
             {
-                var nh = await health.ProbeNodeAsync(m.OriginNode, ct);
-                if (nh.Reachable)
+                var origin = await health.ProbeNodeAsync(m.OriginNode, ct);
+                var dest   = origin.Reachable ? await health.ProbeNodeAsync(m.DestNode, ct) : null;
+                if (origin.Reachable && dest!.Reachable)
                 {
-                    logger.LogInformation("AutoResume: origen {Alias} accesible de nuevo. " +
-                        "Reanudando migración {Id}.", m.OriginNode.Alias, m.Id);
+                    logger.LogInformation("AutoResume: origen {Origin} y destino {Dest} accesibles. " +
+                        "Reanudando migración {Id}.", m.OriginNode.Alias, m.DestNode.Alias, m.Id);
                     await migRepo.SetMigrationAutoPausedAsync(m.Id, false);
                     await worker.StartAsync(m.Id, ct);
                 }
             }
 
-            // Verificación auto-pausada → probar el DESTINO
-            if (m.VerificationAutoPaused && m.DestNode is not null)
+            // Verificación auto-pausada → probar el DESTINO con el protocolo con el que
+            // verifica (QIDO-RS si tiene DICOMweb; C-ECHO si no).
+            if (m.VerificationAutoPaused && m.DestNode is not null && Ready("VERIFY", m.Id, "verificación"))
             {
-                var nh = await health.ProbeNodeAsync(m.DestNode, ct);
+                var nh = await health.ProbeVerificationTargetAsync(m.DestNode, ct);
                 if (nh.Reachable)
                 {
                     logger.LogInformation("AutoResume: destino {Alias} accesible de nuevo. " +
@@ -216,6 +222,16 @@ public class AutoResumeHostedService(
                 }
             }
         }
+    }
+
+    /// <summary>Si el proceso ya se ha reanudado y vuelto a pausar en el mismo incidente,
+    /// espera cada vez el doble antes de intentarlo otra vez (ver AutoPauseIncidents).</summary>
+    private bool Ready(string process, int migrationId, string what)
+    {
+        if (AutoPauseIncidents.ReadyToResume(process, migrationId, out var wait)) return true;
+        logger.LogDebug("AutoResume: {What} {Id} se ha vuelto a pausar tras reanudarse; siguiente intento en {S} s.",
+            what, migrationId, (int)wait.TotalSeconds);
+        return false;
     }
 }
 

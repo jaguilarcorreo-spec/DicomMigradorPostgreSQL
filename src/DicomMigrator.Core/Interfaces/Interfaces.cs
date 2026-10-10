@@ -380,6 +380,10 @@ public interface IConnectionHealthService
 
     /// <summary>Probe a single node directly (used by auto-resume to check recovery).</summary>
     Task<NodeHealth> ProbeNodeAsync(DicomNode node, CancellationToken ct = default);
+
+    /// <summary>Comprueba el destino con el MISMO protocolo con el que verifica la
+    /// verificación: QIDO-RS si el nodo tiene DICOMweb, C-ECHO si no (CONC-6). Sin caché.</summary>
+    Task<NodeHealth> ProbeVerificationTargetAsync(DicomNode node, CancellationToken ct = default);
 }
 
 /// <summary>
