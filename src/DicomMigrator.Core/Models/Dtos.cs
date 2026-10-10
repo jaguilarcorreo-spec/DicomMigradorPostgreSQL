@@ -253,6 +253,12 @@ public class VerificationResult
     /// (association/credenciales rechazadas por el destino) rather than a genuinely
     /// transient network issue — no tiene sentido esperar a que se "recupere" solo.</summary>
     public bool    ConfigurationError    { get; set; }
+    /// <summary>True si el destino SÍ respondió, pero con un error a la consulta de este
+    /// estudio (estado DIMSE de fallo, HTTP 400/404/413/500…, o empezó a responder y no
+    /// terminó). No es una caída: es un fallo del estudio que gasta intento y, agotados,
+    /// acaba en VerifyFailed con el motivo (DCM-2). Antes se trataba como ConnectionError
+    /// y el estudio se repetía para siempre, auto-pausando toda la verificación.</summary>
+    public bool    DestQueryFailed       { get; set; }
     // ── Nivel 2 (comparación de conjuntos de UIDs) ──
     public bool    Level2Checked         { get; set; }
     /// <summary>Comprobación realmente aplicada: UidSet | Counts | ExistenceOnly.</summary>

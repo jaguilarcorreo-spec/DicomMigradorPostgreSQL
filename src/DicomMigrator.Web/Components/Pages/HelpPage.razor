@@ -332,6 +332,15 @@
                 nuevo intento espera el doble: 1, 2, 4… hasta 30 minutos. El incidente termina en cuanto se migra o verifica un estudio.</li>
         </ul>
         <p style="margin:0 0 10px 0;color:var(--text-dim);font-size:13px;line-height:1.6">
+            En la <strong>verificación</strong> se distingue además si el destino <strong>no respondió</strong> (caído, red,
+            HTTP 502/503/504/429/408) o si <strong>respondió con un error</strong> a la consulta de ese estudio (estado DIMSE
+            de fallo, HTTP 400/413/500…, o empezó a responder y no terminó). Lo primero es de conexión y no gasta intento;
+            lo segundo es un fallo del estudio: gasta intento y, agotados, queda en <code>VerifyFailed</code> con el motivo,
+            sin bloquear al resto. Si el destino responde con error a <strong>5 estudios seguidos</strong>, la verificación
+            se pausa (sin reanudarse sola) porque probablemente rechaza la consulta en sí: revisa el nodo y reanúdala.
+            Si el estudio no está en el destino, ya no se hace la consulta de imágenes del Nivel 2.
+        </p>
+        <p style="margin:0 0 10px 0;color:var(--text-dim);font-size:13px;line-height:1.6">
             Los <strong>errores de configuración</strong> son distintos: el PACS origen no conoce el AE destino (0xA801) o rechaza
             la conexión de forma permanente (AE no reconocido). Ahí reintentar no sirve, así que la migración se <strong>pausa al
             primer error</strong>, sin gastar reintentos de ningún estudio, con un mensaje que indica qué dar de alta o revisar
@@ -500,7 +509,7 @@
                 <tr><td class="mono">0x0110</td><td>Processing failure</td><td>El destino rechazó alguna instancia (compresión, SOP Class). Revisar logs del destino.</td></tr>
                 <tr><td class="mono">Sin respuesta</td><td>El PACS origen deja de responder durante el tiempo de operación del nodo + 60 s (sin progreso)</td><td>El C-MOVE se da por cortado y el estudio se reintenta: nunca se marca como migrado sin la respuesta final del PACS. Un estudio grande no se corta mientras el PACS siga informando de su progreso. Si el PACS no informa de progreso, aumenta el tiempo de operación del nodo.</td></tr>
                 <tr><td class="mono">401</td><td>QIDO/WADO sin autenticación</td><td>Configurar usuario:contraseña en el campo "Usuario : Contraseña" del nodo.</td></tr>
-                <tr><td class="mono">404</td><td>QIDO/WADO en ruta incorrecta</td><td>Verificar Base URL (ej. <code>/dicom-web</code> para Orthanc con plugin DICOMweb).</td></tr>
+                <tr><td class="mono">404</td><td>QIDO/WADO en ruta incorrecta</td><td>Verificar Base URL (ej. <code>/dicom-web</code> para Orthanc con plugin DICOMweb). En la verificación se trata como error de configuración: se pausa sin reanudarse sola.</td></tr>
             </tbody>
         </table>
     </HelpSection>

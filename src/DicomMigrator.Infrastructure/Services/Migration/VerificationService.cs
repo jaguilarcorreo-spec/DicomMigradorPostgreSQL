@@ -70,13 +70,35 @@ public class VerificationService(
                 }
                 else if (!qido.Success)
                 {
-                    // La consulta NO se completó (PACS caído, timeout, error HTTP):
-                    // fallo de operación, no del estudio. Reintentar. Salvo que sea un
-                    // 401/403 (credenciales rechazadas): eso es un problema de
-                    // CONFIGURACIÓN permanente, no una caída transitoria del destino.
-                    result.ConnectionError = true;
-                    result.ConfigurationError = qido.ConfigurationError;
-                    result.ErrorMessage = qido.ErrorMessage ?? "No se pudo consultar el destino (QIDO-RS)";
+                    // La consulta NO se completó. Tres casos (DCM-2):
+                    //  · 401/403: credenciales rechazadas → CONFIGURACIÓN (pausa, sin auto-reanudar).
+                    //  · Sin respuesta, o servidor no disponible/saturado (408, 429, 502-504)
+                    //    → caída pasajera del destino: reintentar sin gastar intento.
+                    //  · El servidor respondió con otro error (400, 404, 413, 500…) → falla
+                    //    ESTE estudio: gasta intento. Antes también era "de conexión" y el
+                    //    estudio se repetía para siempre.
+                    var msg = qido.ErrorMessage ?? "No se pudo consultar el destino (QIDO-RS)";
+                    // 404 a una búsqueda de estudios no significa "no está" (eso es 200 o 204
+                    // sin resultados): significa que la URL de QIDO-RS no existe. Es la misma
+                    // para todos los estudios, así que es CONFIGURACIÓN: si contara como fallo
+                    // del estudio, una ruta mal escrita los marcaría todos VerifyFailed.
+                    if (qido.HttpStatus == 404)
+                    {
+                        result.ConnectionError = true;
+                        result.ConfigurationError = true;
+                        result.ErrorMessage = $"El destino respondió HTTP 404 a la búsqueda QIDO-RS: la URL de DICOMweb del nodo no es correcta. {msg}";
+                    }
+                    else if (!qido.ConfigurationError && HttpAnswered(qido.HttpStatus))
+                    {
+                        result.DestQueryFailed = true;
+                        result.ErrorMessage = $"El destino respondió HTTP {qido.HttpStatus} a la consulta QIDO-RS del estudio: {msg}";
+                    }
+                    else
+                    {
+                        result.ConnectionError = true;
+                        result.ConfigurationError = qido.ConfigurationError;
+                        result.ErrorMessage = msg;
+                    }
                 }
                 else
                 {
@@ -108,13 +130,23 @@ public class VerificationService(
                 }
                 else if (!cfind.Success)
                 {
-                    // La consulta NO se completó (PACS caído, timeout, error de red):
-                    // no es un fallo del estudio, sino de la operación. Reintentar. Salvo
-                    // que el PACS destino haya RECHAZADO la asociación (AE Title no
-                    // autorizado): eso es un problema de CONFIGURACIÓN permanente.
-                    result.ConnectionError = true;
-                    result.ConfigurationError = cfind.ConfigurationError;
-                    result.ErrorMessage = cfind.ErrorMessage ?? "No se pudo consultar el destino (C-FIND)";
+                    // La consulta NO se completó. Si el PACS respondió (estado DIMSE de fallo,
+                    // o empezó a enviar resultados y no terminó), falla ESTE estudio y gasta
+                    // intento (DCM-2). Si no hubo respuesta (caído, red, rechazo pasajero),
+                    // es de conexión: reintentar sin gastar intento. Un rechazo permanente
+                    // de la asociación es de CONFIGURACIÓN.
+                    var msg = cfind.ErrorMessage ?? "No se pudo consultar el destino (C-FIND)";
+                    if (!cfind.ConfigurationError && DimseAnswered(cfind.DicomStatus, cfind.Studies.Count))
+                    {
+                        result.DestQueryFailed = true;
+                        result.ErrorMessage = DimseAnswerMessage("C-FIND", cfind.DicomStatus, cfind.Studies.Count, "resultado(s)", msg);
+                    }
+                    else
+                    {
+                        result.ConnectionError = true;
+                        result.ConfigurationError = cfind.ConfigurationError;
+                        result.ErrorMessage = msg;
+                    }
                 }
                 else
                 {
@@ -140,10 +172,13 @@ public class VerificationService(
         }
 
         // ── Nivel 2: comparación de conjuntos de UIDs ──────────────────────────
-        // Solo si el estudio tiene UIDs de origen capturados (MigrationInstances) y la
-        // consulta de conteos no falló por conexión. Enumera el destino por C-FIND
-        // IMAGE y compara conjuntos: aprobado ⇔ no faltan UIDs (los sobrantes solo avisan).
-        if (!result.ConnectionError)
+        // Solo si el estudio tiene UIDs de origen capturados (MigrationInstances) y el
+        // Nivel 1 lo ENCONTRÓ en el destino. Si no está, o la consulta falló, ya es un
+        // fallo (o un reintento) y no hay nada que comparar: antes se enumeraba igual, una
+        // consulta inútil que en algunos PACS daba otro error (DCM-2). Enumera el destino
+        // por C-FIND IMAGE o QIDO y compara conjuntos: aprobado ⇔ no faltan UIDs (los
+        // sobrantes solo avisan).
+        if (!result.ConnectionError && result.StudyFoundInDest)
         {
             try
             {
@@ -158,12 +193,31 @@ public class VerificationService(
                         : await dimse.EnumerateInstancesAsync(destNode, study.StudyInstanceUid, ct);
                     if (!enumRes.Success)
                     {
-                        // No se pudo enumerar el destino → fallo de operación (reintentar),
-                        // no del estudio. Salvo que sea un problema de CONFIGURACIÓN
-                        // permanente (credenciales/AE Title rechazados).
-                        result.ConnectionError = true;
-                        result.ConfigurationError = enumRes.ConfigurationError;
-                        result.ErrorMessage = enumRes.ErrorMessage ?? "No se pudo enumerar el destino (C-FIND IMAGE).";
+                        // No se pudo enumerar el destino. Mismo criterio que el Nivel 1
+                        // (DCM-2): si el destino RESPONDIÓ con un error (p. ej. 0xA900/0xC000
+                        // a la consulta de imágenes, HTTP 413 en un estudio enorme, o empezó a
+                        // enviar instancias y no terminó), falla este estudio y gasta intento,
+                        // en vez de repetirse para siempre; sin respuesta, es de conexión.
+                        // En QIDO, DicomStatus lleva el código HTTP.
+                        var msg = enumRes.ErrorMessage ?? (useQido
+                            ? "No se pudo enumerar el destino (QIDO-RS instances)."
+                            : "No se pudo enumerar el destino (C-FIND IMAGE).");
+                        var answered = !enumRes.ConfigurationError && (useQido
+                            ? HttpAnswered(enumRes.DicomStatus)
+                            : DimseAnswered(enumRes.DicomStatus, enumRes.Instances.Count));
+                        if (answered)
+                        {
+                            result.DestQueryFailed = true;
+                            result.ErrorMessage = "Nivel 2: " + (useQido
+                                ? $"el destino respondió HTTP {enumRes.DicomStatus} al listar las instancias del estudio: {msg}"
+                                : DimseAnswerMessage("C-FIND IMAGE", enumRes.DicomStatus, enumRes.Instances.Count, "instancia(s)", msg));
+                        }
+                        else
+                        {
+                            result.ConnectionError = true;
+                            result.ConfigurationError = enumRes.ConfigurationError;
+                            result.ErrorMessage = msg;
+                        }
                     }
                     else
                     {
@@ -217,6 +271,27 @@ public class VerificationService(
 
         return result;
     }
+
+    // ── ¿Respondió el destino? (DCM-2) ───────────────────────────────────────
+    /// <summary>Estudios seguidos con error de consulta del destino (no caída) que pausan la
+    /// verificación como posible error de configuración.</summary>
+    private const int QueryFailurePauseThreshold = 5;
+
+    /// <summary>HTTP: hubo respuesta de error del servidor que NO indica "no disponible,
+    /// saturado o tiempo agotado" (408, 429, 502, 503, 504), que son pasajeros. Sin código
+    /// (no conectó, se cortó) tampoco es respuesta. 401/403 se tratan antes como configuración.</summary>
+    private static bool HttpAnswered(int? httpStatus) =>
+        httpStatus is >= 400 and not (408 or 429 or 502 or 503 or 504);
+
+    /// <summary>DIMSE: el PACS respondió si llegó su respuesta final (con estado de fallo)
+    /// o si ya había enviado resultados antes de cortarse o agotar el tiempo.</summary>
+    private static bool DimseAnswered(int? dicomStatus, int partialResults) =>
+        dicomStatus is not null || partialResults > 0;
+
+    private static string DimseAnswerMessage(string what, int? dicomStatus, int partial, string unit, string error) =>
+        dicomStatus is int st
+            ? $"El destino respondió con estado 0x{st:X4} a la consulta {what} del estudio: {error}"
+            : $"El destino empezó a responder a la consulta {what} ({partial} {unit} recibido/s) pero no terminó: {error}";
 
     // ── Proceso de verificación gobernado (Start/Pause/Resume/Stop) ──────────
     // Estático: el servicio es Scoped (necesita repos/dimse Scoped en VerifyStudyAsync),
@@ -433,6 +508,8 @@ public class VerificationService(
         int emptyPolls = 0;
         bool waitingLogged = false;   // aviso «esperando a la migración» ya escrito (CONC-4)
         int connErrors = 0;   // errores de conexión consecutivos (PACS destino inaccesible)
+        int queryFailStreak = 0;   // estudios DISTINTOS seguidos en los que el destino respondió con error (DCM-2)
+        long? lastQueryFailStudy = null;
         int unexpectedErrors = 0;   // errores inesperados seguidos (BD caída, etc.)
         // Estudio que este worker tiene en 'VerificationPending' y aún no ha cerrado
         // (ni resultado registrado ni devuelto a 'Migrated'). Si una cancelación o un error
@@ -655,9 +732,11 @@ public class VerificationService(
 
                         // Nivel 2 (si se comparó por conjuntos): aprobado ⇔ estudio presente y
                         // sin UIDs faltantes (los sobrantes solo avisan). Si no, Nivel 1 por conteos.
-                        var success = result.Level2Checked
+                        // Si el destino respondió con un error a alguna consulta del estudio
+                        // (DestQueryFailed), no está verificado: gasta intento (DCM-2).
+                        var success = !result.DestQueryFailed && (result.Level2Checked
                             ? (result.StudyFoundInDest && result.MissingCount == 0)
-                            : (result.StudyFoundInDest && result.SeriesCountMatch && result.InstanceCountMatch);
+                            : (result.StudyFoundInDest && result.SeriesCountMatch && result.InstanceCountMatch));
 
                         await studyR.CompleteVerificationAsync(study.Id, success, maxRetries,
                             result.DestSeriesCount, result.DestInstanceCount,
@@ -681,6 +760,49 @@ public class VerificationService(
                                 ? $"Verificado OK. Series={result.DestSeriesCount} Instances={result.DestInstanceCount} ({result.DurationMs}ms)"
                                 : result.ErrorMessage,
                         });
+
+                        // Freno ante un error SISTEMÁTICO (DCM-2): si el destino responde con
+                        // error a varios estudios seguidos, lo más probable es que rechace la
+                        // consulta en sí (PACS que no admite la búsqueda de imágenes, parámetro
+                        // no soportado…), no que fallen todos esos estudios. Seguir gastaría los
+                        // intentos de toda la migración hasta dejarla en VerifyFailed. Se pausa
+                        // como un error de configuración: no se reanuda sola.
+                        // Cuenta estudios distintos: el mismo estudio reintentado varias veces
+                        // seguidas (p. ej. el último que queda) es un fallo de ESE estudio.
+                        if (!result.DestQueryFailed) { queryFailStreak = 0; lastQueryFailStudy = null; }
+                        else if (lastQueryFailStudy != study.Id) { queryFailStreak++; lastQueryFailStudy = study.Id; }
+                        if (queryFailStreak >= QueryFailurePauseThreshold)
+                        {
+                            if (ConnBackoff.TryAnnouncePause("VERIFY", migrationId))
+                            {
+                                var why = $"el destino ha respondido con error a {queryFailStreak} estudios seguidos; " +
+                                          $"el último: {result.ErrorMessage}";
+                                logger.LogError("Verificación de la migración {Id} pausada: {Why}. Revisa el nodo destino " +
+                                    "(o su soporte de la consulta) y reanúdala.", migrationId, why);
+                                await migR.UpdateVerificationStatusAsync(migrationId, "Paused");
+                                await migR.SetVerificationAutoPausedAsync(migrationId, false);
+                                await auditR.AddAsync(new MigrationAuditLog
+                                {
+                                    MigrationId = migrationId, Action = "PAUSE", Level = "ERROR", Result = "ERROR",
+                                    UserOrProcess = $"VERIFY-{workerId}",
+                                    TechnicalMessage = $"Verificación pausada: {why}. Reanúdala a mano tras revisarlo.",
+                                });
+                                try
+                                {
+                                    await scope.ServiceProvider.GetRequiredService<INotificationService>()
+                                        .RaiseAsync(NotificationEvents.AutoPaused, migration.Name, new (string, string)[]
+                                        {
+                                            ("Origen → Destino", $"{migration.OriginNode?.Alias ?? "?"} → {migration.DestNode?.Alias ?? "?"}"),
+                                            ("Proceso", "Verificación"),
+                                            ("Motivo",  $"Posible error de configuración: {why}. No se reanuda sola: revísalo y reanúdala a mano."),
+                                            ("Nodo",    migration.DestNode?.Alias ?? "destino"),
+                                        }, migrationId, "migration");
+                                }
+                                catch (Exception nex) { logger.LogWarning(nex, "Notificación de pausa (verificación {Id}) falló.", migrationId); }
+                            }
+                            cts.Cancel();
+                            break;
+                        }
                     }
                     catch (OperationCanceledException) { break; }
                     // Un error de BD (p. ej. al guardar el resultado) no es fallo del estudio:

@@ -414,8 +414,8 @@ stateDiagram-v2
   VerifyRetryPending --> VerificationPending : pasado el retardo
   VerificationPending --> Migrated : destino inaccesible, pausa o bloqueo caducado
   VerificationPending --> Verified : cuadra con el origen
-  VerificationPending --> VerifyRetryPending : no cuadra y quedan intentos
-  VerificationPending --> VerifyFailed : no cuadra sin intentos
+  VerificationPending --> VerifyRetryPending : no cuadra o el destino responde con error, y quedan intentos
+  VerificationPending --> VerifyFailed : no cuadra o el destino responde con error, sin intentos
   VerifyFailed --> Migrated : Reintentar verificación
   Verified --> [*]
 ```
@@ -425,6 +425,7 @@ stateDiagram-v2
 - **Workers con el mismo nombre:** los nombres (`WORKER-1`…) se repiten entre migraciones, así que la liberación de bloqueos al terminar un worker filtra también por migración.
 - **Acciones manuales:** «Cancelar» lleva el estudio a `Cancelled`; «Reiniciar» devuelve `Failed`, `Cancelled`, `Verified` o `Migrated` a `Pending`.
 - **Contadores:** `RetryCount` sube al pasar a `RetryPending`; «Reintentar fallidos» no lo reinicia, así que da un solo intento más. `VerifyRetryCount` sube en cada verificación fallida y «Reintentar verificación» lo pone a 0.
+- **Verificación sin respuesta frente a respuesta con error:** si el destino no responde (caído, red, HTTP 502/503/504/429/408), el estudio vuelve a `Migrated` sin gastar `VerifyRetryCount`. Si responde con un error a la consulta del estudio (estado DIMSE de fallo, HTTP 400/413/500…), cuenta como intento fallido.
 - `VerifiedBy` no es un estado: indica qué comprobación se aplicó (`UidSet`, `Counts` o `ExistenceOnly`).
 
 ### Migrations.Status
@@ -476,7 +477,7 @@ Va por separado de `Status`: se puede migrar y verificar a la vez.
 
 - **Espera:** con la migración en `Running` y estudios por migrar, los verificadores no salen al vaciar su cola; esperan (sondeo cada 30 s) a que lleguen más `Migrated`.
 - **`Completed` puede significar «al día»:** si la verificación termina con estudios aún por migrar (migración en pausa o sin iniciar), queda en `Completed` sin correo ni promoción, y la migración la relanza al iniciarse, reanudarse o terminar. Una verificación en `Paused` o `Idle` no se relanza sola.
-- **Auto-pausa** (`VerificationAutoPaused = true`): la auto-reanudación comprueba el destino con el protocolo con el que se verifica (QIDO-RS si tiene DICOMweb, C-ECHO si no). Credenciales o AE Title rechazados pausan sin auto-pausa: no se reanuda sola.
+- **Auto-pausa** (`VerificationAutoPaused = true`): la auto-reanudación comprueba el destino con el protocolo con el que se verifica (QIDO-RS si tiene DICOMweb, C-ECHO si no). Credenciales o AE Title rechazados, un HTTP 404 en la búsqueda QIDO-RS (URL mal configurada) o 5 estudios seguidos con error de consulta pausan sin auto-pausa: no se reanuda sola.
 
 ### DiscoveryJobs.Status
 
@@ -602,4 +603,4 @@ La auditoría no se escribe en el momento: va a un búfer en memoria que se vuel
 
 El mantenimiento actúa sobre las siete tablas de más movimiento (`MigrationStudies`, `MigrationInstances`, `DiscoveredStudies`, `DiscoveredInstances`, `DiscoveryPartitions`, `DiscoveryRequests` y `AuditLogs`). El diagrama solo dibuja las flechas principales.
 
-Esquema: Infrastructure/Migrations/AppDbContextModelSnapshot.cs, contrastado con la base local (pg_constraint, pg_indexes, pg_stat_user_tables). Estados y flujos: repositorios y servicios de Infrastructure y páginas de Web, leídos del directorio de trabajo del proyecto (commit 78d074b más DISC-4, aún sin commit: descubrimiento ante fallos de la base, 10 oct 2026).
+Esquema: Infrastructure/Migrations/AppDbContextModelSnapshot.cs, contrastado con la base local (pg_constraint, pg_indexes, pg_stat_user_tables). Estados y flujos: repositorios y servicios de Infrastructure y páginas de Web, leídos del directorio de trabajo del proyecto (commit 7ea93a8 más DCM-2, aún sin commit: errores de consulta en la verificación, 10 oct 2026).
