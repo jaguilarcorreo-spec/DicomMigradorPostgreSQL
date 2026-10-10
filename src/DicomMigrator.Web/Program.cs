@@ -522,12 +522,31 @@ try
                 // Reanudar capturas de UIDs (Nivel 2) huérfanas: viven en el job de
                 // descubrimiento, no en la migración.
                 var jobRepo = scope.ServiceProvider.GetRequiredService<IDiscoveryJobRepository>();
+                var discEngine = scope.ServiceProvider.GetRequiredService<IDiscoveryEngine>();
                 foreach (var j in await jobRepo.GetAllAsync())
                 {
                     if (j.CaptureStatus == "Running")
                     {
                         logger.LogInformation("Reanudando captura Nivel 2 huérfana · job {Id} ('{Name}') tras reinicio.", j.Id, j.Name);
                         await capSvc.StartCaptureAsync(j.Id);
+                    }
+
+                    // Descubrimientos que estaban en marcha (DISC-4): antes se quedaban
+                    // 'Running' sin workers tras un reinicio. StartAsync rescata sus
+                    // particiones huérfanas y continúa donde lo dejó. Uno que falle no
+                    // impide reanudar los demás.
+                    if (j.Status == "Running")
+                    {
+                        try
+                        {
+                            logger.LogInformation("Reanudando descubrimiento huérfano · job {Id} ('{Name}') tras reinicio.", j.Id, j.Name);
+                            await discEngine.StartAsync(j.Id);
+                        }
+                        catch (Exception exJob)
+                        {
+                            logger.LogWarning(exJob, "No se pudo reanudar el descubrimiento {Id} al arrancar; se deja en pausa.", j.Id);
+                            try { await jobRepo.UpdateStatusAsync(j.Id, "Paused"); } catch { /* sigue Running: reanudar a mano */ }
+                        }
                     }
                 }
             }

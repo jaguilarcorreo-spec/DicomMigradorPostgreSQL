@@ -409,6 +409,18 @@ public class DiscoveryJobRepository(IDbContextFactory<AppDbContext> factory, Def
                 .SetProperty(p => p.StartedAt,      (DateTime?)null));
     }
 
+    public async Task ReleasePartitionAsync(long partitionId)
+    {
+        await using var db = factory.CreateDbContext();
+        await db.DiscoveryPartitions
+            .Where(p => p.Id == partitionId && p.Status == "Running")
+            .ExecuteUpdateAsync(u => u
+                .SetProperty(p => p.Status,         "Pending")
+                .SetProperty(p => p.LockedByWorker, (string?)null)
+                .SetProperty(p => p.LockDate,       (DateTime?)null)
+                .SetProperty(p => p.StartedAt,      (DateTime?)null));
+    }
+
     public async Task UpdatePartitionAsync(DiscoveryPartition partition)
     {
         await using var db = factory.CreateDbContext();

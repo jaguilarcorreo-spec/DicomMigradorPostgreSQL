@@ -50,6 +50,23 @@ internal static class ConnBackoff
         return TimeSpan.FromSeconds(seconds);
     }
 
+    /// <summary>True si es un fallo PASAJERO de la base de datos propia, que se arregla
+    /// esperando: a diferencia de IsDatabaseError, excluye los errores de datos.</summary>
+    public static bool IsTransientDatabaseError(Exception ex)
+    {
+        // Solo lo que se arregla solo: conexión perdida o rechazada, PostgreSQL reiniciándose
+        // (Npgsql lo marca IsTransient) o reintentos de EF agotados por eso mismo. NO los
+        // errores de datos (clave duplicada, valor demasiado largo…): reintentarlos no los
+        // arregla y una partición así se repetiría para siempre (DISC-4).
+        for (var e = ex; e is not null; e = e.InnerException)
+        {
+            if (e is Npgsql.NpgsqlException { IsTransient: true }
+                || e is Microsoft.EntityFrameworkCore.Storage.RetryLimitExceededException)
+                return true;
+        }
+        return false;
+    }
+
     /// <summary>True si la excepción (o alguna interna) viene de la base de datos propia:
     /// conexión con PostgreSQL perdida, reintentos de Npgsql agotados, fallo al guardar.
     /// Estas NO son errores del PACS ni del estudio: los bloques que clasifican fallos de

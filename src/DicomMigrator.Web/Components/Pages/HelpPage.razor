@@ -106,7 +106,7 @@
             </thead>
             <tbody>
                 <tr><td><span class="status-badge s-Pending">Pending</span></td><td>Esperando ser procesada por un worker.</td></tr>
-                <tr><td><span class="status-badge s-Running">Running</span></td><td>Worker realizando la consulta al PACS. Si el servicio se cae a mitad, al reanudar el job la partición vuelve a <code>Pending</code> sin gastar intento.</td></tr>
+                <tr><td><span class="status-badge s-Running">Running</span></td><td>Worker realizando la consulta al PACS. Si el servicio se cae a mitad, al reanudar el job la partición vuelve a <code>Pending</code> sin gastar intento. Si falla un momento la base de datos, también vuelve a <code>Pending</code> y el worker lo reintenta solo cuando la base responde.</td></tr>
                 <tr><td><span class="status-badge s-Completed">Completed</span></td><td>Procesada con éxito, sin truncamiento.</td></tr>
                 <tr><td><span class="status-badge s-Subdivided">Subdivided</span></td><td>Detectado posible truncamiento — se generaron particiones hijas.</td></tr>
                 <tr><td><span class="status-badge s-PossiblyTruncated">PossiblyTruncated</span></td><td>Datos posiblemente incompletos: llegó al último nivel de subdivisión y todavía rozó el límite, o se subdividió sin poder garantizar cubrirlo todo (estudios sin hora, reparto por modalidad). Si tenía hijas, estas se procesan igual. El motivo queda en el error de la partición. <em>Estado terminal — no se reintenta.</em></td></tr>
@@ -198,7 +198,7 @@
         <table class="data-table" style="width:100%;font-size:12px">
             <thead><tr><th>Acción</th><th>Descripción</th></tr></thead>
             <tbody>
-                <tr><td><strong>▶ Iniciar / Reanudar</strong></td><td>Lanza los workers para procesar particiones pendientes.</td></tr>
+                <tr><td><strong>▶ Iniciar / Reanudar</strong></td><td>Lanza los workers para procesar particiones pendientes. Un job que estaba en marcha se reanuda solo al reiniciar el servicio. Si un error inesperado detiene los workers, el job pasa a <strong>Paused</strong> (con correo de «descubrimiento fallido») y basta con reanudarlo: continúa donde lo dejó.</td></tr>
                 <tr><td><strong>⏸ Pausar</strong></td><td>Detiene los workers. Las particiones en curso terminan limpiamente.</td></tr>
                 <tr><td><strong>✎ Editar</strong></td><td>Modifica nombre, descripción, rango de fechas, método, límite y workers. Si cambias el rango deberás reiniciar el descubrimiento.</td></tr>
                 <tr><td><strong>🧹 Limpiar</strong></td><td>Resetea todas las particiones a Pendiente y borra los estudios descubiertos. <strong>Mantiene la configuración.</strong> Bloqueado si el job está Running.</td></tr>

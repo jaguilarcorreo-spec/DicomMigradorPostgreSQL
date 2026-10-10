@@ -488,11 +488,16 @@ stateDiagram-v2
   Paused --> Running : Reanudar
   Running --> Completed : todas las particiones consultadas
   Running --> Paused : quedan particiones sin consultar
+  Running --> Paused : error inesperado que detiene los workers
   Draft --> Completed : importación CSV
   Completed --> [*]
 ```
 
 Si los workers terminan y aún quedan particiones `Pending` o `Running`, el job no se da por completado: queda en `Paused` para reanudarlo. `Failed` y `Cancelled` están documentados, pero ningún código los asigna.
+
+- **Fallos de la base de datos:** un fallo pasajero (conexión perdida, PostgreSQL reiniciándose) no detiene a los workers: la partición vuelve a `Pending` sin gastar intento y se reintenta con espera creciente hasta que la base responde. Los errores de datos, en cambio, marcan la partición `Failed`.
+- **Error inesperado:** si aun así los workers se detienen (5 errores inesperados seguidos, o un fallo al cerrar el job), se rescatan las particiones `Running` y el job pasa a `Paused`, en lugar de quedarse `Running` sin workers.
+- **Reinicio del servicio:** al arrancar se reanudan los jobs que estaban en `Running`.
 
 ### DiscoveryPartitions.Status
 
@@ -506,6 +511,7 @@ stateDiagram-v2
   Running --> Failed : error
   Running --> Pending : pausa
   Running --> Pending : rescate de huérfana
+  Running --> Pending : fallo pasajero de la base de datos
   Failed --> Pending : Reintentar particiones fallidas
 ```
 
@@ -596,4 +602,4 @@ La auditoría no se escribe en el momento: va a un búfer en memoria que se vuel
 
 El mantenimiento actúa sobre las siete tablas de más movimiento (`MigrationStudies`, `MigrationInstances`, `DiscoveredStudies`, `DiscoveredInstances`, `DiscoveryPartitions`, `DiscoveryRequests` y `AuditLogs`). El diagrama solo dibuja las flechas principales.
 
-Esquema: Infrastructure/Migrations/AppDbContextModelSnapshot.cs, contrastado con la base local (pg_constraint, pg_indexes, pg_stat_user_tables). Estados y flujos: repositorios y servicios de Infrastructure y páginas de Web, leídos del directorio de trabajo del proyecto (commit 7025f0e más CONC-8, aún sin commit: pausa por ventana, 10 oct 2026).
+Esquema: Infrastructure/Migrations/AppDbContextModelSnapshot.cs, contrastado con la base local (pg_constraint, pg_indexes, pg_stat_user_tables). Estados y flujos: repositorios y servicios de Infrastructure y páginas de Web, leídos del directorio de trabajo del proyecto (commit 78d074b más DISC-4, aún sin commit: descubrimiento ante fallos de la base, 10 oct 2026).

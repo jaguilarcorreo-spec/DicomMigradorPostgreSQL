@@ -293,6 +293,12 @@ public class DiscoveryEngine(
         {
             logger.LogError(ex, "Discovery Job {Id} terminó con excepción no controlada", jobId);
 
+            // No dejarlo 'Running' sin workers (DISC-4): eso bloqueaba Limpiar, Eliminar y
+            // Reintentar y no se reanudaba nunca. Todos los workers han salido (WhenAll), así
+            // que se rescatan sus particiones y el job pasa a 'Paused', listo para reanudar.
+            // Con reintentos, por si el error era la propia base de datos.
+            await PauseAfterFailureAsync(jobId);
+
             // ── Notificación por correo (v227) ──
             try
             {
@@ -303,6 +309,7 @@ public class DiscoveryEngine(
                     {
                         ("Origen → Destino", $"{job?.SourcePacs?.Alias ?? "?"} → Inventario MOVE"),
                         ("Error", ex.Message),
+                        ("Estado", "En pausa. Reanúdalo cuando se haya resuelto: continúa donde lo dejó."),
                     }, jobId, "discovery");
             }
             catch (Exception nex) { logger.LogWarning(nex, "Notificación de fallo de descubrimiento {Id} falló (no crítico).", jobId); }
@@ -317,17 +324,108 @@ public class DiscoveryEngine(
         }
     }
 
+    // Errores inesperados seguidos que NO son un fallo pasajero de la BD antes de que el
+    // worker se rinda (el job pasa a 'Paused', ver RunWorkersAsync).
+    private const int MaxUnexpectedErrors = 5;
+
+    /// <summary>Tras un error general: particiones 'Running' a 'Pending' y job a 'Paused'.
+    /// Reintenta con espera creciente (unos 10 min en total) por si la BD está caída; si no
+    /// lo consigue, el arranque del servicio lo reanudará (sigue 'Running' en la BD).</summary>
+    private async Task PauseAfterFailureAsync(int jobId)
+    {
+        for (var attempt = 1; attempt <= 6; attempt++)
+        {
+            try
+            {
+                using var scope = scopeFactory.CreateScope();
+                var jobRepo = scope.ServiceProvider.GetRequiredService<IDiscoveryJobRepository>();
+                var rescued = await jobRepo.ReleaseOrphanPartitionsAsync(jobId);
+                await jobRepo.UpdateStatusAsync(jobId, "Paused");
+                logger.LogWarning("Discovery Job {Id} pausado tras el error ({N} partición(es) devuelta(s) a 'Pending'). " +
+                    "Reanúdalo para continuar.", jobId, rescued);
+                return;
+            }
+            catch (Exception ex)
+            {
+                var wait = ConnBackoff.ForAttempt(attempt);
+                logger.LogWarning(ex, "Discovery Job {Id}: no se pudo pausar tras el error (intento {N}); se reintenta en {S} s.",
+                    jobId, attempt, wait.TotalSeconds);
+                await Task.Delay(wait);
+            }
+        }
+        logger.LogError("Discovery Job {Id}: no se pudo pausar tras el error. Sigue figurando 'Running' y se " +
+            "reanudará al reiniciar el servicio; también puedes pausarlo y reanudarlo a mano.", jobId);
+    }
+
     private async Task WorkerLoopAsync(int jobId, string workerId, CancellationToken ct)
     {
+        // try/catch por vuelta (DISC-4), como en MigrationWorker y VerificationService.
+        // Antes, un error de la base de datos al pedir la siguiente partición o al cerrar
+        // una sacaba al worker; el job se quedaba 'Running' sin workers, con Limpiar,
+        // Eliminar y Reintentar bloqueados, y solo se salía con Pausar y Reanudar.
+        // Ahora: un fallo PASAJERO de la BD devuelve la partición a 'Pending' (sin gastar
+        // intento) y se reintenta con espera creciente, sin límite, hasta que vuelva la
+        // base. Cualquier otro error inesperado se reintenta igual, pero tras
+        // MaxUnexpectedErrors seguidos el worker se rinde y el job queda en pausa.
+        var dbErrors = 0;
+        var otherErrors = 0;
         while (!ct.IsCancellationRequested)
         {
+            DiscoveryPartition? held = null;
+            try
+            {
+                using var scope = scopeFactory.CreateScope();
+                var jobRepo = scope.ServiceProvider.GetRequiredService<IDiscoveryJobRepository>();
+
+                var partition = await jobRepo.AcquireNextPendingPartitionAsync(jobId, workerId);
+                if (partition is null) break;   // no more work
+                held = partition;
+
+                await ProcessPartitionAsync(jobId, partition, workerId, ct);
+                held = null;
+                dbErrors = otherErrors = 0;
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;   // pausa: ProcessPartitionAsync ya devolvió su partición
+            }
+            catch (Exception ex)
+            {
+                var transient = ConnBackoff.IsTransientDatabaseError(ex);
+                if (transient) dbErrors++; else otherErrors++;
+                if (!transient && otherErrors >= MaxUnexpectedErrors)
+                {
+                    logger.LogError(ex, "[{Worker}] Discovery Job {Id}: {N} errores inesperados seguidos; el worker se detiene.",
+                        workerId, jobId, otherErrors);
+                    await TryReleasePartitionAsync(held, workerId);
+                    throw;
+                }
+
+                var wait = ConnBackoff.ForAttempt(transient ? dbErrors : otherErrors);
+                logger.LogError(ex, "[{Worker}] Discovery Job {Id}: {Kind}. Partición devuelta a la cola; " +
+                    "se reintenta en {S} s.", workerId, jobId,
+                    transient ? "la base de datos no responde" : "error inesperado", wait.TotalSeconds);
+                await TryReleasePartitionAsync(held, workerId);
+                await Task.Delay(wait, ct);
+            }
+        }
+    }
+
+    /// <summary>Best-effort: devuelve a 'Pending' la partición que el worker tenía cogida. Si
+    /// la BD sigue caída, se queda en 'Running' y la rescata el final de la ronda
+    /// (ReleaseOrphanPartitionsAsync) o el siguiente arranque del job.</summary>
+    private async Task TryReleasePartitionAsync(DiscoveryPartition? partition, string workerId)
+    {
+        if (partition is null) return;
+        try
+        {
             using var scope = scopeFactory.CreateScope();
-            var jobRepo = scope.ServiceProvider.GetRequiredService<IDiscoveryJobRepository>();
-
-            var partition = await jobRepo.AcquireNextPendingPartitionAsync(jobId, workerId);
-            if (partition is null) break;   // no more work
-
-            await ProcessPartitionAsync(jobId, partition, workerId, ct);
+            await scope.ServiceProvider.GetRequiredService<IDiscoveryJobRepository>().ReleasePartitionAsync(partition.Id);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "[{Worker}] No se pudo devolver a 'Pending' la partición {Id}; se rescatará al " +
+                "terminar la ronda o al reanudar el job.", workerId, partition.Id);
         }
     }
 
@@ -545,7 +643,10 @@ public class DiscoveryEngine(
             }
             throw;   // propaga la cancelación (esperada al pausar; RunWorkersAsync la trata)
         }
-        catch (Exception ex)
+        // Un fallo PASAJERO de la base de datos (p. ej. al guardar los estudios) no es culpa
+        // de la partición: no se marca 'Failed'; sube al bucle del worker, que la devuelve a
+        // 'Pending' y reintenta cuando vuelva la base (DISC-4).
+        catch (Exception ex) when (!ConnBackoff.IsTransientDatabaseError(ex))
         {
             sw.Stop();
             logger.LogError(ex, "[{Worker}] Error procesando partición {Id}", workerId, partition.Id);

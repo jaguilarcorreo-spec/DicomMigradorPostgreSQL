@@ -326,6 +326,9 @@ public interface IDiscoveryJobRepository
     /// <summary>Devuelve a 'Pending' las particiones 'Running' huérfanas del job (sin consumir
     /// AttemptCount). Solo es seguro sin workers vivos del job. Devuelve cuántas rescató.</summary>
     Task<int> ReleaseOrphanPartitionsAsync(int jobId);
+    /// <summary>Devuelve a 'Pending' UNA partición que su worker no pudo cerrar (fallo pasajero
+    /// de la BD), sin consumir AttemptCount. Solo si sigue en 'Running'.</summary>
+    Task ReleasePartitionAsync(long partitionId);
     Task UpdatePartitionAsync(DiscoveryPartition partition);
 
     // Stats
