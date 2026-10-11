@@ -420,11 +420,39 @@ public class StudyRepository(IDbContextFactory<AppDbContext> factory, DeferredVa
         // Desempate por Id (BD-4): la fecha de alta se repite por lotes enteros del poblado y,
         // sin un orden total, PostgreSQL no garantiza el mismo orden entre una página y la
         // siguiente: la lista podía repetir u omitir estudios al pasar de página.
-        return await ApplyFilter(db.MigrationStudies, migrationId, filter)
+        // Sin seguimiento y SIN VerifyMissingUids (UI-15): esa lista (hasta 500 UIDs, ~32 KB
+        // por estudio) solo la usa el informe de un estudio y viajaba con cada fila de cada
+        // página, en cada refresco, y se quedaba en la memoria del circuito de cada usuario.
+        return await ApplyFilter(db.MigrationStudies.AsNoTracking(), migrationId, filter)
             .OrderByDescending(s => s.DiscoveryDate).ThenByDescending(s => s.Id)
             .Skip((filter.PageNumber - 1) * filter.PageSize)
             .Take(filter.PageSize)
+            .Select(s => new MigrationStudy
+            {
+                Id = s.Id, MigrationId = s.MigrationId, StudyInstanceUid = s.StudyInstanceUid,
+                PatientId = s.PatientId, IssuerOfPatientId = s.IssuerOfPatientId, AccessionNumber = s.AccessionNumber,
+                StudyDate = s.StudyDate, ModalitiesInStudy = s.ModalitiesInStudy, ModalityRank = s.ModalityRank,
+                SourceSeriesCount = s.SourceSeriesCount, SourceInstanceCount = s.SourceInstanceCount,
+                TargetSeriesCount = s.TargetSeriesCount, TargetInstanceCount = s.TargetInstanceCount,
+                MigrationStatus = s.MigrationStatus, RetryCount = s.RetryCount, LastError = s.LastError,
+                LockedByWorker = s.LockedByWorker, LockDate = s.LockDate,
+                VerifyLockedByWorker = s.VerifyLockedByWorker, VerifyLockDate = s.VerifyLockDate,
+                VerifyRetryCount = s.VerifyRetryCount, VerifyMissingCount = s.VerifyMissingCount,
+                VerifyExtraCount = s.VerifyExtraCount, VerifiedBy = s.VerifiedBy,
+                DiscoveryDate = s.DiscoveryDate, MigrationDate = s.MigrationDate, MigrationStartDate = s.MigrationStartDate,
+                VerificationDate = s.VerificationDate, VerificationStartDate = s.VerificationStartDate,
+                LastUpdateDate = s.LastUpdateDate,
+            })
             .ToListAsync();
+    }
+
+    public async Task<string?> GetMissingUidsAsync(long studyId)
+    {
+        await using var db = factory.CreateDbContext();
+        return await db.MigrationStudies.AsNoTracking()
+            .Where(s => s.Id == studyId)
+            .Select(s => s.VerifyMissingUids)
+            .FirstOrDefaultAsync();
     }
 
     public async Task<List<MigrationStudy>> GetPageKeysetAsync(int migrationId, StudyFilter filter)

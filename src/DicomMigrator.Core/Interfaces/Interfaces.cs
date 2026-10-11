@@ -153,7 +153,11 @@ public interface IInstanceRepository
 
 public interface IStudyRepository
 {
+    /// <summary>Página de estudios para la pestaña Estudios. Sin VerifyMissingUids (UI-15):
+    /// pedirla aparte con GetMissingUidsAsync al abrir el informe de un estudio.</summary>
     Task<List<MigrationStudy>> GetPagedAsync(int migrationId, StudyFilter filter);
+    /// <summary>Lista de SOPInstanceUID que faltan en destino de un estudio (informe Nivel 2).</summary>
+    Task<string?> GetMissingUidsAsync(long studyId);
     /// <summary>
     /// Keyset (cursor) pagination — scales to millions of rows without the OFFSET
     /// penalty. Returns the next PageSize rows after the cursor in the filter.

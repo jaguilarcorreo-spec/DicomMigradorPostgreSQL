@@ -606,13 +606,17 @@
     @* ── ESTUDIOS ── *@
     @if (_detailTab == "estudios")
     {
-        <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center">
+        @* Formulario: Intro en un campo lanza la búsqueda. Los campos se actualizan al salir
+           de ellos o al pulsar Intro, no en cada tecla: antes cada pulsación repintaba la
+           tabla entera (UI-15). *@
+        <form @onsubmit="NewStudySearchAsync" @onsubmit:preventDefault
+              style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center">
             <input class="form-input" style="flex:2;min-width:160px" placeholder="Study Instance UID..."
-                   @bind="_studyFilter.StudyInstanceUid" @bind:event="oninput" />
+                   @bind="_studyFilter.StudyInstanceUid" />
             <input class="form-input" style="flex:1;min-width:120px" placeholder="Patient ID..."
-                   @bind="_studyFilter.PatientId" @bind:event="oninput" />
+                   @bind="_studyFilter.PatientId" />
             <input class="form-input" style="flex:1;min-width:120px" placeholder="Accession Number..."
-                   @bind="_studyFilter.AccessionNumber" @bind:event="oninput" />
+                   @bind="_studyFilter.AccessionNumber" />
             <select class="form-input" style="width:160px" @bind="_studyFilter.Status">
                 <option value="">Todos los estados</option>
                 @foreach (var s in _studyStatuses)
@@ -627,9 +631,9 @@
                     <option value="@m">@m</option>
                 }
             </select>
-            <button class="btn btn-ghost btn-sm" @onclick="SearchStudiesAsync">🔍 Buscar</button>
-            <button class="btn btn-ghost btn-sm" @onclick="ExportCsvAsync">⬇ CSV</button>
-        </div>
+            <button type="submit" class="btn btn-ghost btn-sm">🔍 Buscar</button>
+            <button type="button" class="btn btn-ghost btn-sm" @onclick="ExportCsvAsync">⬇ CSV</button>
+        </form>
 
         @if (_studiesLoading)
         {
@@ -685,7 +689,7 @@
                                             <div style="margin-top:3px">
                                                 <button class="btn btn-ghost btn-sm" style="padding:1px 6px;font-size:10px;color:var(--red)"
                                                         title="Ver los SOPInstanceUID que faltan en destino"
-                                                        @onclick="() => _missingReport = s">
+                                                        @onclick="() => OpenMissingReportAsync(s)">
                                                     ⚠ Faltan @s.VerifyMissingCount
                                                 </button>
                                                 @if (s.VerifyExtraCount > 0)
@@ -1189,7 +1193,7 @@ else
     private bool _probing;
 
     // ── Study query ──────────────────────────────────────────────────────────
-    private StudyFilter _studyFilter = new() { PageSize = 500 };
+    private StudyFilter _studyFilter = new() { PageSize = 100 };   // antes 500 (UI-15)
     private List<MigrationStudy> _studies = [];
     private int  _studyTotal;
     private int  _studyTotalPages = 1;
@@ -1388,9 +1392,10 @@ else
         var idx = _migrations.FindIndex(m => m.Id == fresh.Id);
         if (idx >= 0 && idx < _statsList.Count)
             _statsList[idx] = _stats;
-        // Si estamos viendo la pestaña de estudios, recargar también la tabla
-        if (_detailTab == "estudios")
-            await SearchStudiesAsync();
+        // Si estamos viendo la pestaña de estudios, recargar también la tabla, pero no en
+        // cada tick: filas cada 15 s y total cada 60 s (UI-15).
+        if (_detailTab == "estudios" && DateTime.UtcNow - _studiesLoadedAt >= StudiesAutoEvery)
+            await SearchStudiesAsync(withCount: DateTime.UtcNow - _studyCountAt >= StudyCountEvery);
         // Detener auto-refresh solo si NO hay nada que pueda cambiar solo: ni migración
         // activa (Running/Paused) ni verificación activa (Running/Paused). Una pausa
         // (manual o automática) puede reanudarse sola, así que mantenemos el refresco.
@@ -1459,7 +1464,14 @@ else
     // Blazor ("An unhandled error has occurred. Reload"). Con la BD caída, avisar y seguir.
     private async Task RefreshDetailClickAsync()
     {
-        try { await RefreshDetailAsync(recheckN2: true); }
+        try
+        {
+            await RefreshDetailAsync(recheckN2: true);
+            // Pulsado a mano: la tabla de estudios y su total, al momento. El auto-refresco
+            // los espacia (15 s / 60 s, UI-15), pero este botón no debe esperar a eso.
+            if (_detailTab == "estudios")
+                await SearchStudiesAsync(withCount: true);
+        }
         catch (Exception ex)
         {
             Logger.LogWarning(ex, "No se pudo actualizar el detalle de la migración.");
@@ -1476,15 +1488,46 @@ else
     public void Dispose() { StopAutoRefresh(); StopListRefresh(); }
 
     // ── Study operations ─────────────────────────────────────────────────────
-    async Task SearchStudiesAsync()
+    // ── Carga de la pestaña Estudios (UI-15) ─────────────────────────────────
+    // El auto-refresco de la ficha (cada 3 s) recargaba aquí 500 estudios completos y
+    // volvía a contar el total —con filtros de texto, recorriendo toda la migración— en cada
+    // tick y por cada usuario. Ahora, en el auto-refresco: filas cada 15 s y total cada 60 s.
+    // Buscar, paginar y las acciones recargan al momento, como siempre.
+    private static readonly TimeSpan StudiesAutoEvery = TimeSpan.FromSeconds(15);
+    private static readonly TimeSpan StudyCountEvery  = TimeSpan.FromSeconds(60);
+    private DateTime _studiesLoadedAt = DateTime.MinValue, _studyCountAt = DateTime.MinValue;
+
+    Task SearchStudiesAsync() => SearchStudiesAsync(withCount: true);
+
+    /// <summary>Búsqueda nueva (formulario): vuelve a la primera página.</summary>
+    Task NewStudySearchAsync()
+    {
+        _studyFilter.PageNumber = 1;
+        return SearchStudiesAsync(withCount: true);
+    }
+
+    async Task SearchStudiesAsync(bool withCount)
     {
         if (_detail is null) return;
         _studiesLoading = true;
         _studies = await StudyRepo.GetPagedAsync(_detail.Id, _studyFilter);
-        _studyTotal = await StudyRepo.CountAsync(_detail.Id, _studyFilter);
+        _studiesLoadedAt = DateTime.UtcNow;
+        if (withCount)
+        {
+            _studyTotal = await StudyRepo.CountAsync(_detail.Id, _studyFilter);
+            _studyCountAt = DateTime.UtcNow;
+        }
         _studyTotalPages = _studyTotal == 0 ? 1 : (int)Math.Ceiling(_studyTotal / (double)_studyFilter.PageSize);
         if (_studyFilter.PageNumber > _studyTotalPages) _studyFilter.PageNumber = _studyTotalPages;
         _studiesLoading = false;
+    }
+
+    /// <summary>Abre el informe de UIDs que faltan de un estudio, pidiendo la lista en ese
+    /// momento: la página de estudios ya no la trae (UI-15).</summary>
+    async Task OpenMissingReportAsync(MigrationStudy s)
+    {
+        s.VerifyMissingUids = await StudyRepo.GetMissingUidsAsync(s.Id);
+        _missingReport = s;
     }
 
     async Task PrevPage() { if (_studyFilter.PageNumber > 1) { _studyFilter.PageNumber--; await SearchStudiesAsync(); } }
