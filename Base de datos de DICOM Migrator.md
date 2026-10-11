@@ -357,7 +357,7 @@ DiscoveredStudies |o..o{ MigrationStudies : "copia por StudyInstanceUid"
 
 ## 2 · Índices
 
-24 índices
+21 índices
 
 Además de las claves primarias. Los marcados como *convención* no están en `AppDbContext`: EF los crea solo para cada clave foránea.
 
@@ -368,13 +368,10 @@ Además de las claves primarias. Los marcados como *convención* no están en `A
 | MigrationStudies | IX_MigStudies_queue_newest | MigrationId, ModalityRank, RetryCount, StudyDate DESC, Id | parcial | Solo filas `Pending`. Cola de migración con los estudios más recientes primero: el worker toma el primero libre recorriendo el índice en orden, sin ordenar los pendientes. |
 | MigrationStudies | IX_MigStudies_queue_oldest | MigrationId, ModalityRank, RetryCount, StudyDate, Id | parcial | Igual, para las migraciones con «más antiguos primero». |
 | MigrationStudies | IX_MigStudies_verify_queue | MigrationId, Id | parcial | Solo filas `Migrated`: cola de verificación. |
-| MigrationStudies | IX_MigStudies_Mig_Patient | MigrationId, PatientId | normal | Búsqueda por paciente en la tabla de migración. |
-| MigrationStudies | IX_MigStudies_Mig_Accession | MigrationId, AccessionNumber | normal | Búsqueda por número de acceso. |
 | MigrationStudies | IX_MigStudies_Mig_DiscDate | MigrationId, DiscoveryDate, Id | normal | Orden de la lista de estudios y de la exportación CSV por fecha de alta, con `Id` como desempate: la fecha se repite por lotes enteros del poblado, y el `Id` da un orden total que permite paginar por clave sin `OFFSET`. |
 | MigrationInstances | IX_MigInstances_Study_Sop | MigrationStudyId, SopInstanceUid | único | UID de origen por estudio para la verificación de nivel 2; evita duplicados al copiar. |
 | DiscoveredStudies | IX_DiscoveredStudies_DiscoveryJobId_StudyInstanceUid | DiscoveryJobId, StudyInstanceUid | único | Un estudio una sola vez por job: es la clave del `INSERT … ON CONFLICT` con que el descubrimiento guarda el inventario. |
-| DiscoveredStudies | IX_DiscoveredStudies_SourcePacsId_StudyDate | SourcePacsId, StudyDate | normal | Rango de fechas del inventario por PACS de origen. |
-| DiscoveredStudies | IX_DiscoveredStudies_PartitionId | PartitionId | normal | Estadísticas de estudios por partición. |
+| DiscoveredStudies | IX_DiscoveredStudies_Job_StudyDate | DiscoveryJobId, StudyDate | normal | Filtro por fechas del inventario de un job y su rango de fechas. |
 | DiscoveredStudies | IX_DiscoveredStudies_Job_Id | DiscoveryJobId, Id | normal | Recorrer el inventario de un job por tramos de `Id`, sin `OFFSET`: exportación CSV y lista de estudios a capturar (nivel 2). |
 | DiscoveredInstances | IX_DiscInstances_Study_Sop | DiscoveredStudyId, SopInstanceUid | único | UID capturados por estudio (nivel 2), sin duplicados. |
 | DiscoveryPartitions | IX_DiscoveryPartitions_DiscoveryJobId_Status | DiscoveryJobId, Status | normal | Los workers toman la siguiente partición `Pending` del job. |
@@ -390,6 +387,7 @@ Además de las claves primarias. Los marcados como *convención* no están en `A
 
 - **Cola de migración:** los dos índices tienen las mismas columnas con distinto orden de fecha, por eso llevan nombre propio en `AppDbContext` (sin él, EF los fundiría en uno). Los `RetryPending` no están en ellos: se toman con una segunda consulta solo cuando no queda ningún `Pending`.
 - **Sin índice a propósito:** `ModalitiesInStudy`. El filtro de modalidad busca por subcadena (filtrar por `CT` trae también `RTSTRUCT`), y un B-tree no resuelve búsquedas en mitad del texto; `pg_trgm` necesitaría al menos tres caracteres. El filtro va casi siempre acotado por job, que sí usa índice.
+- **Sin índice a propósito:** `PatientId` y `AccessionNumber` de `MigrationStudies`, `PartitionId` y `SourcePacsId` de `DiscoveredStudies`. Los filtros de paciente y accesión también buscan por subcadena, y ninguna consulta busca por partición ni filtra el inventario por PACS. Cada índice de `MigrationStudies` se reescribe en cada cambio de estado de cada estudio: quitar los de paciente y accesión reduce a menos de la mitad lo que se escribe en esos cambios (medido con 1 millón de estudios).
 
 ## 3 · Ciclo de vida de los estados
 

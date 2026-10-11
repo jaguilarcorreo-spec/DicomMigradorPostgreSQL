@@ -132,11 +132,9 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             e.HasIndex(x => new { x.MigrationId, x.DiscoveryDate, x.Id })
              .HasDatabaseName("IX_MigStudies_Mig_DiscDate");
 
-            e.HasIndex(x => new { x.MigrationId, x.PatientId })
-             .HasDatabaseName("IX_MigStudies_Mig_Patient");
-
-            e.HasIndex(x => new { x.MigrationId, x.AccessionNumber })
-             .HasDatabaseName("IX_MigStudies_Mig_Accession");
+            // Sin índices sobre (MigrationId, PatientId) ni (MigrationId, AccessionNumber)
+            // (BD-13): los filtros de la pestaña Estudios buscan por subcadena (Contains →
+            // strpos), que un B-tree no resuelve. Solo encarecían cada cambio de estado.
         });
 
         // Nivel 2 de verificación: conjunto de UIDs de ORIGEN por estudio.
@@ -259,11 +257,13 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             // jobs a la vez. La clave lidera por DiscoveryJobId, con lo que también sirve de
             // índice para las consultas por job (que son la mayoría).
             e.HasIndex(x => new { x.DiscoveryJobId, x.StudyInstanceUid }).IsUnique();
-            e.HasIndex(x => new { x.SourcePacsId, x.StudyDate });
             // Sin índice sobre ModalitiesInStudy: el filtro busca por subcadena (Contains →
             // strpos), que un B-tree no puede resolver, y los códigos de modalidad (2
             // caracteres) son demasiado cortos para pg_trgm. Solo encarecía cada INSERT.
-            e.HasIndex(x => x.PartitionId);
+            // Filtro por fechas del inventario de un job (BD-13). Sustituye a (SourcePacsId,
+            // StudyDate): ninguna consulta filtra por PACS, todo va por job. Sin índice sobre
+            // PartitionId: ninguna consulta busca por partición.
+            e.HasIndex(x => new { x.DiscoveryJobId, x.StudyDate }, "IX_DiscoveredStudies_Job_StudyDate");
             // Recorrido del inventario de un job por Id (DISC-14): exportación CSV y lista de
             // estudios a capturar, paginadas por clave sin OFFSET.
             e.HasIndex(x => new { x.DiscoveryJobId, x.Id }, "IX_DiscoveredStudies_Job_Id");

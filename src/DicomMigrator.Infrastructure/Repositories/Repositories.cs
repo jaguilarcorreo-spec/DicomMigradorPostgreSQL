@@ -567,7 +567,6 @@ public class StudyRepository(IDbContextFactory<AppDbContext> factory, DeferredVa
         IQueryable<DiscoveredStudy> Inventory(AppDbContext db)
         {
             var q = db.DiscoveredStudies.AsNoTracking();
-            if (filter.SourcePacsId.HasValue)   q = q.Where(s => s.SourcePacsId == filter.SourcePacsId);
             if (filter.DiscoveryJobId.HasValue) q = q.Where(s => s.DiscoveryJobId == filter.DiscoveryJobId);
             if (!string.IsNullOrWhiteSpace(filter.PatientId))       q = q.Where(s => s.PatientId!.Contains(filter.PatientId));
             if (!string.IsNullOrWhiteSpace(filter.AccessionNumber)) q = q.Where(s => s.AccessionNumber!.Contains(filter.AccessionNumber));

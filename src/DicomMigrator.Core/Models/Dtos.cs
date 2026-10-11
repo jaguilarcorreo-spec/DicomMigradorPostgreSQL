@@ -402,7 +402,6 @@ public class DiscoveryStats
 
 public class DiscoveredStudyFilter
 {
-    public int?    SourcePacsId   { get; set; }
     public int?    DiscoveryJobId { get; set; }
     public string? StudyInstanceUid { get; set; }
     public string? PatientId      { get; set; }

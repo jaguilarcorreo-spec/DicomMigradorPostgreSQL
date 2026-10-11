@@ -372,7 +372,6 @@ public interface IDiscoveredStudyRepository
     Task<int> CountAsync(DiscoveredStudyFilter filter);
     /// <summary>Upsert by StudyInstanceUID. Returns (inserted, updated) counts.</summary>
     Task<(int inserted, int updated)> UpsertAsync(IEnumerable<DiscoveredStudy> studies);
-    Task<long> CountBySourceAsync(int sourcePacsId);
     /// <summary>Return all studies matching the filter (no paging) for export.</summary>
     Task<List<DiscoveredStudy>> GetAllForExportAsync(DiscoveredStudyFilter filter);
     /// <summary>Stream studies in pages without loading the entire result set into memory.</summary>

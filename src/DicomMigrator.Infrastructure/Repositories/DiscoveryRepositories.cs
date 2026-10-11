@@ -557,18 +557,6 @@ public class DiscoveredStudyRepository(IDbContextFactory<AppDbContext> factory) 
         return await Filtered(db, f).CountAsync();
     }
 
-    public async Task<long> CountBySourceAsync(int sourcePacsId)
-    {
-        await using var db = factory.CreateDbContext();
-        // UIDs DISTINTOS: con el inventario por job, el mismo estudio puede estar en varios
-        // jobs del mismo PACS; contamos estudios únicos para no multiplicar por nº de jobs.
-        return await db.DiscoveredStudies
-            .Where(s => s.SourcePacsId == sourcePacsId)
-            .Select(s => s.StudyInstanceUid)
-            .Distinct()
-            .LongCountAsync();
-    }
-
     public async Task<List<DiscoveredStudy>> GetAllForExportAsync(DiscoveredStudyFilter f)
     {
         await using var db = factory.CreateDbContext();
@@ -755,7 +743,6 @@ RETURNING (xmax = 0) AS ""Value""",
     private static IQueryable<DiscoveredStudy> Filtered(AppDbContext db, DiscoveredStudyFilter f)
     {
         var q = db.DiscoveredStudies.AsQueryable();
-        if (f.SourcePacsId.HasValue)   q = q.Where(s => s.SourcePacsId == f.SourcePacsId);
         if (f.DiscoveryJobId.HasValue) q = q.Where(s => s.DiscoveryJobId == f.DiscoveryJobId);
         if (!string.IsNullOrWhiteSpace(f.StudyInstanceUid)) q = q.Where(s => s.StudyInstanceUid.Contains(f.StudyInstanceUid));
         if (!string.IsNullOrWhiteSpace(f.PatientId))        q = q.Where(s => s.PatientId!.Contains(f.PatientId));

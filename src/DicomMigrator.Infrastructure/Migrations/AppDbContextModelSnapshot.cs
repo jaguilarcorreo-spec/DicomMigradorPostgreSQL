@@ -288,14 +288,12 @@ namespace DicomMigrator.Infrastructure.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("PartitionId");
-
                     b.HasIndex("DiscoveryJobId", "StudyInstanceUid")
                         .IsUnique();
 
-                    b.HasIndex("SourcePacsId", "StudyDate");
-
                     b.HasIndex(new[] { "DiscoveryJobId", "Id" }, "IX_DiscoveredStudies_Job_Id");
+
+                    b.HasIndex(new[] { "DiscoveryJobId", "StudyDate" }, "IX_DiscoveredStudies_Job_StudyDate");
 
                     b.ToTable("DiscoveredStudies");
                 });
@@ -933,13 +931,7 @@ namespace DicomMigrator.Infrastructure.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("MigrationId", "AccessionNumber")
-                        .HasDatabaseName("IX_MigStudies_Mig_Accession");
-
                     b.HasIndex("MigrationId", "MigrationStatus");
-
-                    b.HasIndex("MigrationId", "PatientId")
-                        .HasDatabaseName("IX_MigStudies_Mig_Patient");
 
                     b.HasIndex("MigrationId", "StudyInstanceUid")
                         .IsUnique();
