@@ -525,52 +525,83 @@ public class StudyRepository(IDbContextFactory<AppDbContext> factory, DeferredVa
     public async Task<int> ImportFromInventoryAsync(int migrationId, DiscoveredStudyFilter filter,
         Func<int, int, Task>? onProgress = null, CancellationToken ct = default)
     {
-        await using var db = factory.CreateDbContext();
+        // ── Recorrido por tramos (CONC-19) ─────────────────────────────────────
+        // Antes se cargaba TODO el inventario filtrado de una vez, con todas sus columnas y
+        // con seguimiento de cambios, y además todos los UID de la migración: con 1 millón de
+        // estudios, +1,4 GB y 1,8 s de DetectChanges (medido). Con varios millones el proceso
+        // (el mismo que ejecuta las migraciones) podía quedarse sin memoria, y como el poblado
+        // se reanuda solo al arrancar, volvía a caer. Ahora se recorre por tramos de Id
+        // (keyset, sin OFFSET), sin seguimiento y solo con las columnas que se copian; los ya
+        // presentes se comprueban por tramo contra el índice único. La memoria queda acotada a
+        // un tramo, sea cual sea el tamaño del inventario.
+        IQueryable<DiscoveredStudy> Inventory(AppDbContext db)
+        {
+            var q = db.DiscoveredStudies.AsNoTracking();
+            if (filter.SourcePacsId.HasValue)   q = q.Where(s => s.SourcePacsId == filter.SourcePacsId);
+            if (filter.DiscoveryJobId.HasValue) q = q.Where(s => s.DiscoveryJobId == filter.DiscoveryJobId);
+            if (!string.IsNullOrWhiteSpace(filter.PatientId))       q = q.Where(s => s.PatientId!.Contains(filter.PatientId));
+            if (!string.IsNullOrWhiteSpace(filter.AccessionNumber)) q = q.Where(s => s.AccessionNumber!.Contains(filter.AccessionNumber));
+            if (!string.IsNullOrWhiteSpace(filter.StudyDateFrom))   q = q.Where(s => string.Compare(s.StudyDate, filter.StudyDateFrom) >= 0);
+            if (!string.IsNullOrWhiteSpace(filter.StudyDateTo))     q = q.Where(s => string.Compare(s.StudyDate, filter.StudyDateTo) <= 0);
+            if (!string.IsNullOrWhiteSpace(filter.Modality))        q = q.Where(s => s.ModalitiesInStudy!.Contains(filter.Modality));
+            return q;
+        }
 
-        // El copiado puede mover MILLONES de filas; el timeout por defecto (30 s) cortaba
-        // el INSERT masivo. Lo subimos SOLO para este contexto. Aun así ahora va por
-        // lotes, con lo que cada comando individual es mucho más corto.
-        db.Database.SetCommandTimeout(TimeSpan.FromMinutes(10));
-
-        // Build the inventory query from the filter
-        var q = db.DiscoveredStudies.AsQueryable();
-        if (filter.SourcePacsId.HasValue)   q = q.Where(s => s.SourcePacsId == filter.SourcePacsId);
-        if (filter.DiscoveryJobId.HasValue) q = q.Where(s => s.DiscoveryJobId == filter.DiscoveryJobId);
-        if (!string.IsNullOrWhiteSpace(filter.PatientId))       q = q.Where(s => s.PatientId!.Contains(filter.PatientId));
-        if (!string.IsNullOrWhiteSpace(filter.AccessionNumber)) q = q.Where(s => s.AccessionNumber!.Contains(filter.AccessionNumber));
-        if (!string.IsNullOrWhiteSpace(filter.StudyDateFrom))   q = q.Where(s => string.Compare(s.StudyDate, filter.StudyDateFrom) >= 0);
-        if (!string.IsNullOrWhiteSpace(filter.StudyDateTo))     q = q.Where(s => string.Compare(s.StudyDate, filter.StudyDateTo) <= 0);
-        if (!string.IsNullOrWhiteSpace(filter.Modality))        q = q.Where(s => s.ModalitiesInStudy!.Contains(filter.Modality));
-
-        var inventory = await q.ToListAsync(ct);
-
-        var existingUids = await db.MigrationStudies
-            .Where(s => s.MigrationId == migrationId)
-            .Select(s => s.StudyInstanceUid)
-            .ToHashSetAsync(ct);
-
-        // DistinctBy por StudyInstanceUID: con el inventario POR JOB, un mismo estudio puede
-        // aparecer en varios jobs. Si un filtro llegara a abarcar más de uno (p. ej. por PACS
-        // o por fecha sin acotar el job), el inventario traería el UID repetido; nos quedamos
-        // con una sola copia para no violar el índice único (MigrationId, StudyInstanceUid).
-        var toInsert = inventory
-            .Where(d => !existingUids.Contains(d.StudyInstanceUid))
-            .DistinctBy(d => d.StudyInstanceUid)
-            .ToList();
-
-        var total = toInsert.Count;
+        // Total para la barra de progreso: estudios distintos del inventario que la migración
+        // aún no tiene (al reanudar, lo que falta). Una sola consulta en la base.
+        int total;
+        await using (var db = factory.CreateDbContext())
+        {
+            db.Database.SetCommandTimeout(TimeSpan.FromMinutes(10));
+            total = await Inventory(db)
+                .Where(d => !db.MigrationStudies.Any(m => m.MigrationId == migrationId && m.StudyInstanceUid == d.StudyInstanceUid))
+                .Select(d => d.StudyInstanceUid)
+                .Distinct()
+                .CountAsync(ct);
+        }
         if (onProgress is not null) await onProgress(0, total);
         if (total == 0) return 0;
 
         var done = 0;
-        for (var offset = 0; offset < total; offset += InventoryBatchSize)
+        long lastId = 0;
+        while (true)
         {
             ct.ThrowIfCancellationRequested();
+            await using var db = factory.CreateDbContext();
+            // El copiado de UIDs Nivel 2 de un tramo puede mover cientos de miles de filas.
+            db.Database.SetCommandTimeout(TimeSpan.FromMinutes(10));
 
-            var slice = toInsert.Skip(offset).Take(InventoryBatchSize).ToList();
+            // Siguiente tramo por Id, solo con las columnas que se copian.
+            var page = await Inventory(db)
+                .Where(d => d.Id > lastId)
+                .OrderBy(d => d.Id)
+                .Take(InventoryBatchSize)
+                .Select(d => new
+                {
+                    d.Id, d.StudyInstanceUid, d.PatientId, d.AccessionNumber, d.StudyDate, d.ModalitiesInStudy,
+                    d.NumberOfStudyRelatedSeries, d.NumberOfStudyRelatedInstances,
+                })
+                .ToListAsync(ct);
+            if (page.Count == 0) break;
+            lastId = page[^1].Id;
 
-            // 1) Insertar los estudios del lote. Contexto limpio por lote para no
-            //    acumular entidades rastreadas con inventarios enormes.
+            // Quitar los que la migración ya tiene (comprobado solo para este tramo) y los
+            // repetidos: con el inventario POR JOB, un filtro que abarque varios jobs puede
+            // traer el mismo UID más de una vez; se queda una sola copia para no violar el
+            // índice único (MigrationId, StudyInstanceUid). Un repetido de un tramo anterior
+            // ya figura como existente.
+            var pageUids = page.Select(d => d.StudyInstanceUid).Distinct().ToList();
+            var existing = await db.MigrationStudies
+                .Where(m => m.MigrationId == migrationId && pageUids.Contains(m.StudyInstanceUid))
+                .Select(m => m.StudyInstanceUid)
+                .ToHashSetAsync(ct);
+            var slice = page
+                .Where(d => !existing.Contains(d.StudyInstanceUid))
+                .DistinctBy(d => d.StudyInstanceUid)
+                .ToList();
+            if (slice.Count == 0) continue;
+
+            // 1) Insertar los estudios del tramo.
             var newStudies = slice.Select(d => new MigrationStudy
             {
                 MigrationId         = migrationId,
@@ -591,18 +622,18 @@ public class StudyRepository(IDbContextFactory<AppDbContext> factory, DeferredVa
             }
             catch (DbUpdateException)
             {
-                // Otro proceso insertó alguno de estos mismos UIDs entre la comprobación de
-                // existentes (antes del bucle) y este guardado — p. ej. un poblado manual
-                // solapado con la reanudación automática tras un corte sobre la misma
-                // migración. En vez de abortar el poblado completo por la violación del
-                // índice único (MigrationId, StudyInstanceUid), reintentamos quitando del
-                // lote los que ya existen ahora: el método es idempotente por contrato.
+                // Otro proceso insertó alguno de estos mismos UIDs entre la comprobación y este
+                // guardado — p. ej. un poblado manual solapado con la reanudación automática
+                // tras un corte sobre la misma migración. En vez de abortar el poblado completo
+                // por la violación del índice único (MigrationId, StudyInstanceUid), reintentamos
+                // quitando del tramo los que ya existen ahora: el método es idempotente.
                 db.ChangeTracker.Clear();
-                var stillMissing = await db.MigrationStudies
-                    .Where(s => s.MigrationId == migrationId)
-                    .Select(s => s.StudyInstanceUid)
+                var sliceUids = newStudies.Select(n => n.StudyInstanceUid).ToList();
+                var nowPresent = await db.MigrationStudies
+                    .Where(m => m.MigrationId == migrationId && sliceUids.Contains(m.StudyInstanceUid))
+                    .Select(m => m.StudyInstanceUid)
                     .ToHashSetAsync(ct);
-                var retry = newStudies.Where(s => !stillMissing.Contains(s.StudyInstanceUid)).ToList();
+                var retry = newStudies.Where(n => !nowPresent.Contains(n.StudyInstanceUid)).ToList();
                 if (retry.Count > 0)
                 {
                     db.MigrationStudies.AddRange(retry);
@@ -611,7 +642,7 @@ public class StudyRepository(IDbContextFactory<AppDbContext> factory, DeferredVa
             }
             db.ChangeTracker.Clear();
 
-            // 2) Copiar los UIDs Nivel 2 SOLO de los estudios de este lote. Se atan por la
+            // 2) Copiar los UIDs Nivel 2 SOLO de los estudios de este tramo. Se atan por la
             //    FILA de DiscoveredStudy exacta (DiscoveredStudyId), no por UID: con el
             //    inventario POR JOB el mismo UID puede existir en otros jobs, y unir por UID
             //    arrastraría instancias ajenas. Set-based; NOT EXISTS evita colisión con el
@@ -628,10 +659,10 @@ WHERE di.""DiscoveredStudyId"" = ANY({batchStudyIds})
                   WHERE mi.""MigrationStudyId"" = ms.""Id"" AND mi.""SopInstanceUid"" = di.""SopInstanceUid"")", ct);
 
             done += slice.Count;
-            if (onProgress is not null) await onProgress(done, total);
+            if (onProgress is not null) await onProgress(Math.Min(done, total), total);
         }
 
-        return total;
+        return done;
     }
 
     public async Task<MigrationStudy?> AcquireNextPendingAsync(int migrationId, string workerId,
