@@ -2,6 +2,8 @@ using DicomMigrator.Core.Interfaces;
 using DicomMigrator.Core.Models;
 using DicomMigrator.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
+using Npgsql;
+using NpgsqlTypes;
 
 namespace DicomMigrator.Infrastructure.Repositories;
 
@@ -372,22 +374,27 @@ public class DiscoveryJobRepository(IDbContextFactory<AppDbContext> factory, Def
 
     public async Task<DiscoveryPartition?> AcquireNextPendingPartitionAsync(int jobId, string workerId)
     {
+        // Adquisición ATÓMICA (DISC-3), como la cola de migración (CONC-9). Antes era leer la
+        // primera pendiente y bloquearla en otro paso: todos los workers leían la MISMA, uno
+        // ganaba y los demás recibían «nada» y salían como si no quedara trabajo; un job con
+        // 8 hilos trabajaba con 3-4, y al final con uno. Ahora una sola sentencia bloquea la
+        // primera partición que nadie tenga (FOR UPDATE SKIP LOCKED): cada worker obtiene una
+        // distinta. Solo 'Pending' (PossiblyTruncated es terminal). Mismo orden que antes.
         await using var db = factory.CreateDbContext();
-        var next = await db.DiscoveryPartitions
-            .Where(p => p.DiscoveryJobId == jobId && p.LockedByWorker == null
-                     && p.Status == "Pending")   // only Pending — PossiblyTruncated is terminal
-            .OrderBy(p => p.StartDate).ThenBy(p => p.Modality)
-            .FirstOrDefaultAsync();
-        if (next is null) return null;
-
-        var locked = await db.DiscoveryPartitions
-            .Where(p => p.Id == next.Id && p.LockedByWorker == null)
-            .ExecuteUpdateAsync(u => u
-                .SetProperty(p => p.Status, "Running")
-                .SetProperty(p => p.LockedByWorker, workerId)
-                .SetProperty(p => p.LockDate, DateTime.UtcNow)
-                .SetProperty(p => p.StartedAt, DateTime.UtcNow));
-        return locked > 0 ? next : null;
+        var now = DateTime.UtcNow;
+        var claimed = await db.DiscoveryPartitions.FromSqlRaw(@"
+UPDATE ""DiscoveryPartitions"" AS p
+SET ""Status"" = 'Running', ""LockedByWorker"" = @worker, ""LockDate"" = @now, ""StartedAt"" = @now
+WHERE p.""Id"" = (
+    SELECT s.""Id"" FROM ""DiscoveryPartitions"" AS s
+    WHERE s.""DiscoveryJobId"" = @job AND s.""LockedByWorker"" IS NULL AND s.""Status"" = 'Pending'
+    ORDER BY s.""StartDate"", s.""Modality"", s.""Id""
+    LIMIT 1
+    FOR UPDATE SKIP LOCKED)
+RETURNING p.*",
+                new NpgsqlParameter("job", jobId), new NpgsqlParameter("worker", workerId), new NpgsqlParameter("now", now))
+            .AsNoTracking().ToListAsync();
+        return claimed.FirstOrDefault();
     }
 
     public async Task<int> ReleaseOrphanPartitionsAsync(int jobId)
@@ -614,64 +621,97 @@ public class DiscoveredStudyRepository(IDbContextFactory<AppDbContext> factory) 
 
     public async Task<(int inserted, int updated)> UpsertAsync(IEnumerable<DiscoveredStudy> studies)
     {
-        await using var db = factory.CreateDbContext();
-        int inserted = 0, updated = 0;
-
-        var list = studies.Where(s => !string.IsNullOrEmpty(s.StudyInstanceUid)).ToList();
-        if (list.Count == 0) return (0, 0);
-
-        // Cargar en UNA sola consulta todas las filas que puedan coincidir (mismo job +
-        // mismo UID), en vez de un FirstOrDefaultAsync por estudio — evita convertir un
-        // descubrimiento de millones de estudios en millones de ida-y-vuelta a la BD.
-        var jobIds = list.Select(s => s.DiscoveryJobId).Distinct().ToList();
-        var uids   = list.Select(s => s.StudyInstanceUid).Distinct().ToList();
-        var existing = await db.DiscoveredStudies
-            .Where(x => jobIds.Contains(x.DiscoveryJobId) && uids.Contains(x.StudyInstanceUid))
-            .ToListAsync();
-        var byKey = existing
-            .GroupBy(x => (x.DiscoveryJobId, x.StudyInstanceUid))
-            .ToDictionary(g => g.Key, g => g.OrderBy(x => x.Id).First());
-
-        foreach (var s in list)
+        // ── DISC-5 ─────────────────────────────────────────────────────────────
+        // Antes: leer los existentes, decidir en memoria e insertar con SaveChanges. Fallaba
+        // con clave duplicada (23505) y la partición quedaba «Failed» para siempre si (a) el
+        // PACS repetía un UID en la misma respuesta (se añadían dos filas iguales) o (b) dos
+        // workers guardaban a la vez el mismo estudio (p. ej. a las 06:00:00, en el límite
+        // de dos franjas horarias): los dos lo veían «nuevo». DISC-3 lo ocultaba al trabajar
+        // con un solo worker.
+        // Ahora: (1) se funden los repetidos del lote (el primero manda; los siguientes solo
+        // rellenan huecos) y (2) un único INSERT … ON CONFLICT DO UPDATE resuelve en la base,
+        // de forma atómica, si cada estudio es nuevo o ya existía en el job. Al actualizar se
+        // conserva la regla de siempre: solo se rellenan los campos vacíos, la partición pasa
+        // a ser la que lo ha (re)descubierto y se anota la fecha.
+        var merged = new Dictionary<(int?, string), DiscoveredStudy>();
+        foreach (var s in studies)
         {
-            // Búsqueda POR JOB: el inventario ya no es global. Un mismo StudyInstanceUID en
-            // otro job es una fila independiente; solo se actualiza si ya existe EN ESTE job
-            // (p. ej. al reanudar o re-descubrir el mismo job).
-            if (!byKey.TryGetValue((s.DiscoveryJobId, s.StudyInstanceUid), out var match))
-            {
-                db.DiscoveredStudies.Add(s);
-                inserted++;
-            }
-            else
-            {
-                // Update metadata fields that were empty — keep traceability
-                match.PatientId         ??= s.PatientId;
-                match.PatientName       ??= s.PatientName;
-                match.AccessionNumber   ??= s.AccessionNumber;
-                match.StudyDate         ??= s.StudyDate;
-                match.StudyTime         ??= s.StudyTime;
-                match.StudyDescription  ??= s.StudyDescription;
-                match.ModalitiesInStudy ??= s.ModalitiesInStudy;
-                match.NumberOfStudyRelatedSeries    ??= s.NumberOfStudyRelatedSeries;
-                match.NumberOfStudyRelatedInstances ??= s.NumberOfStudyRelatedInstances;
-                match.InstitutionName   ??= s.InstitutionName;
-                // v207: faltaban en el refresco, así que el inventario ya existente
-                // nunca se rellenaba aunque el PACS empezara a devolverlas.
-                match.RetrieveAETitle   ??= s.RetrieveAETitle;
-                match.PatientBirthDate  ??= s.PatientBirthDate;
-                match.PatientSex        ??= s.PatientSex;
-                match.IssuerOfPatientId ??= s.IssuerOfPatientId;
-                // Ya NO se reasigna DiscoveryJobId: la fila existente pertenece a este mismo
-                // job (la búsqueda ya filtra por DiscoveryJobId). Sin robo de estudios entre jobs.
-                // Atribuir a la partición que lo (re)descubrió dentro de este job.
-                match.PartitionId     = s.PartitionId ?? match.PartitionId;
-                match.LastUpdatedDate = DateTime.UtcNow;
-                updated++;
-            }
+            if (string.IsNullOrEmpty(s.StudyInstanceUid)) continue;
+            var key = (s.DiscoveryJobId, s.StudyInstanceUid);
+            if (!merged.TryGetValue(key, out var m)) { merged[key] = s; continue; }
+            m.PatientId         ??= s.PatientId;
+            m.PatientName       ??= s.PatientName;
+            m.AccessionNumber   ??= s.AccessionNumber;
+            m.StudyDate         ??= s.StudyDate;
+            m.StudyTime         ??= s.StudyTime;
+            m.StudyDescription  ??= s.StudyDescription;
+            m.ModalitiesInStudy ??= s.ModalitiesInStudy;
+            m.NumberOfStudyRelatedSeries    ??= s.NumberOfStudyRelatedSeries;
+            m.NumberOfStudyRelatedInstances ??= s.NumberOfStudyRelatedInstances;
+            m.InstitutionName   ??= s.InstitutionName;
+            m.RetrieveAETitle   ??= s.RetrieveAETitle;
+            m.PatientBirthDate  ??= s.PatientBirthDate;
+            m.PatientSex        ??= s.PatientSex;
+            m.IssuerOfPatientId ??= s.IssuerOfPatientId;
+            m.PartitionId       ??= s.PartitionId;
         }
+        if (merged.Count == 0) return (0, 0);
+        var list = merged.Values.ToList();
 
-        await db.SaveChangesAsync();
-        return (inserted, updated);
+        static NpgsqlParameter Arr<T>(string name, NpgsqlDbType type, IEnumerable<T> values) =>
+            new(name, NpgsqlDbType.Array | type) { Value = values.ToArray() };
+
+        await using var db = factory.CreateDbContext();
+        // Una fila por estudio con «Value» = true si se insertó y false si ya existía.
+        var results = await db.Database.SqlQueryRaw<bool>(@"
+INSERT INTO ""DiscoveredStudies"" AS t
+    (""DiscoveryJobId"", ""PartitionId"", ""SourcePacsId"", ""StudyInstanceUid"", ""PatientId"", ""IssuerOfPatientId"",
+     ""PatientName"", ""PatientBirthDate"", ""PatientSex"", ""AccessionNumber"", ""StudyDate"", ""StudyTime"",
+     ""StudyDescription"", ""ModalitiesInStudy"", ""NumberOfStudyRelatedSeries"", ""NumberOfStudyRelatedInstances"",
+     ""InstitutionName"", ""RetrieveAETitle"", ""DiscoveryDate"")
+SELECT * FROM unnest(@job, @part, @pacs, @uid, @pid, @issuer, @pname, @pbirth, @psex, @acc, @sdate, @stime,
+                     @sdesc, @mods, @nser, @ninst, @inst, @aet, @disc)
+ON CONFLICT (""DiscoveryJobId"", ""StudyInstanceUid"") DO UPDATE SET
+    ""PatientId""         = COALESCE(t.""PatientId"",         EXCLUDED.""PatientId""),
+    ""IssuerOfPatientId"" = COALESCE(t.""IssuerOfPatientId"", EXCLUDED.""IssuerOfPatientId""),
+    ""PatientName""       = COALESCE(t.""PatientName"",       EXCLUDED.""PatientName""),
+    ""PatientBirthDate""  = COALESCE(t.""PatientBirthDate"",  EXCLUDED.""PatientBirthDate""),
+    ""PatientSex""        = COALESCE(t.""PatientSex"",        EXCLUDED.""PatientSex""),
+    ""AccessionNumber""   = COALESCE(t.""AccessionNumber"",   EXCLUDED.""AccessionNumber""),
+    ""StudyDate""         = COALESCE(t.""StudyDate"",         EXCLUDED.""StudyDate""),
+    ""StudyTime""         = COALESCE(t.""StudyTime"",         EXCLUDED.""StudyTime""),
+    ""StudyDescription""  = COALESCE(t.""StudyDescription"",  EXCLUDED.""StudyDescription""),
+    ""ModalitiesInStudy"" = COALESCE(t.""ModalitiesInStudy"", EXCLUDED.""ModalitiesInStudy""),
+    ""NumberOfStudyRelatedSeries""    = COALESCE(t.""NumberOfStudyRelatedSeries"",    EXCLUDED.""NumberOfStudyRelatedSeries""),
+    ""NumberOfStudyRelatedInstances"" = COALESCE(t.""NumberOfStudyRelatedInstances"", EXCLUDED.""NumberOfStudyRelatedInstances""),
+    ""InstitutionName""   = COALESCE(t.""InstitutionName"",   EXCLUDED.""InstitutionName""),
+    ""RetrieveAETitle""   = COALESCE(t.""RetrieveAETitle"",   EXCLUDED.""RetrieveAETitle""),
+    ""PartitionId""       = COALESCE(EXCLUDED.""PartitionId"", t.""PartitionId""),
+    ""LastUpdatedDate""   = now()
+RETURNING (xmax = 0) AS ""Value""",
+            Arr("job",    NpgsqlDbType.Integer,     list.Select(s => s.DiscoveryJobId)),
+            Arr("part",   NpgsqlDbType.Integer,     list.Select(s => s.PartitionId)),
+            Arr("pacs",   NpgsqlDbType.Integer,     list.Select(s => s.SourcePacsId)),
+            Arr("uid",    NpgsqlDbType.Varchar,     list.Select(s => s.StudyInstanceUid)),
+            Arr("pid",    NpgsqlDbType.Text,        list.Select(s => s.PatientId)),
+            Arr("issuer", NpgsqlDbType.Text,        list.Select(s => s.IssuerOfPatientId)),
+            Arr("pname",  NpgsqlDbType.Text,        list.Select(s => s.PatientName)),
+            Arr("pbirth", NpgsqlDbType.Text,        list.Select(s => s.PatientBirthDate)),
+            Arr("psex",   NpgsqlDbType.Text,        list.Select(s => s.PatientSex)),
+            Arr("acc",    NpgsqlDbType.Text,        list.Select(s => s.AccessionNumber)),
+            Arr("sdate",  NpgsqlDbType.Text,        list.Select(s => s.StudyDate)),
+            Arr("stime",  NpgsqlDbType.Text,        list.Select(s => s.StudyTime)),
+            Arr("sdesc",  NpgsqlDbType.Text,        list.Select(s => s.StudyDescription)),
+            Arr("mods",   NpgsqlDbType.Text,        list.Select(s => s.ModalitiesInStudy)),
+            Arr("nser",   NpgsqlDbType.Integer,     list.Select(s => s.NumberOfStudyRelatedSeries)),
+            Arr("ninst",  NpgsqlDbType.Integer,     list.Select(s => s.NumberOfStudyRelatedInstances)),
+            Arr("inst",   NpgsqlDbType.Text,        list.Select(s => s.InstitutionName)),
+            Arr("aet",    NpgsqlDbType.Text,        list.Select(s => s.RetrieveAETitle)),
+            Arr("disc",   NpgsqlDbType.TimestampTz, list.Select(s => DateTime.SpecifyKind(s.DiscoveryDate, DateTimeKind.Utc))))
+            .ToListAsync();
+
+        var inserted = results.Count(r => r);
+        return (inserted, results.Count - inserted);
     }
 
     private static IQueryable<DiscoveredStudy> Filtered(AppDbContext db, DiscoveredStudyFilter f)

@@ -226,8 +226,9 @@ public class DiscoveryEngine(
         {
             for (var round = 1; ; round++)
             {
+                var busy = new BusyCounter();   // workers con una partición entre manos (DISC-3)
                 var workers = Enumerable.Range(1, threads)
-                    .Select(i => WorkerLoopAsync(jobId, $"DISC-W{i}", ct))
+                    .Select(i => WorkerLoopAsync(jobId, $"DISC-W{i}", busy, ct))
                     .ToList();
 
                 await Task.WhenAll(workers);
@@ -357,7 +358,22 @@ public class DiscoveryEngine(
             "reanudará al reiniciar el servicio; también puedes pausarlo y reanudarlo a mano.", jobId);
     }
 
-    private async Task WorkerLoopAsync(int jobId, string workerId, CancellationToken ct)
+    /// <summary>Workers de una ronda que tienen una partición entre manos (DISC-3).
+    /// Mientras alguno lo esté, los demás no terminan aunque no haya nada pendiente: esa
+    /// partición puede subdividirse y crear hijas. Antes salían y las hijas las procesaba el
+    /// último worker que quedaba, de una en una.</summary>
+    private sealed class BusyCounter
+    {
+        private int _n;
+        public void Enter() => Interlocked.Increment(ref _n);
+        public void Leave() => Interlocked.Decrement(ref _n);
+        public bool AnyBusy => Volatile.Read(ref _n) > 0;
+    }
+
+    /// <summary>Espera entre comprobaciones de un worker sin trabajo mientras otro procesa.</summary>
+    private static readonly TimeSpan IdleWait = TimeSpan.FromSeconds(1);
+
+    private async Task WorkerLoopAsync(int jobId, string workerId, BusyCounter busy, CancellationToken ct)
     {
         // try/catch por vuelta (DISC-4), como en MigrationWorker y VerificationService.
         // Antes, un error de la base de datos al pedir la siguiente partición o al cerrar
@@ -378,12 +394,30 @@ public class DiscoveryEngine(
                 var jobRepo = scope.ServiceProvider.GetRequiredService<IDiscoveryJobRepository>();
 
                 var partition = await jobRepo.AcquireNextPendingPartitionAsync(jobId, workerId);
-                if (partition is null) break;   // no more work
-                held = partition;
-
-                await ProcessPartitionAsync(jobId, partition, workerId, ct);
-                held = null;
-                dbErrors = otherErrors = 0;
+                if (partition is not null)
+                {
+                    // Ocupado solo mientras tiene una partición ENTRE MANOS. Contar también el
+                    // rato de pedirla hacía que, al acabar, los workers que miraban si quedaba
+                    // algo se vieran «ocupados» entre sí y siguieran esperándose (probado: 14 s
+                    // de más en un job de 40 particiones).
+                    busy.Enter();
+                    try
+                    {
+                        held = partition;
+                        await ProcessPartitionAsync(jobId, partition, workerId, ct);
+                        held = null;
+                        dbErrors = otherErrors = 0;
+                    }
+                    finally { busy.Leave(); }
+                }
+                else
+                {
+                    // Nada pendiente. Si otro worker sigue con una partición, puede crear
+                    // hijas al subdividirla: esperar y volver a mirar (DISC-3). Si nadie está
+                    // trabajando, no queda nada que hacer en esta ronda.
+                    if (!busy.AnyBusy) break;
+                    await Task.Delay(IdleWait, ct);
+                }
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {

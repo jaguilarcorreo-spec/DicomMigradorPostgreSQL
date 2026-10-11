@@ -372,7 +372,7 @@ Además de las claves primarias. Los marcados como *convención* no están en `A
 | MigrationStudies | IX_MigStudies_Mig_Accession | MigrationId, AccessionNumber | normal | Búsqueda por número de acceso. |
 | MigrationStudies | IX_MigStudies_Mig_DiscDate | MigrationId, DiscoveryDate | normal | Orden y paginación por fecha de alta. |
 | MigrationInstances | IX_MigInstances_Study_Sop | MigrationStudyId, SopInstanceUid | único | UID de origen por estudio para la verificación de nivel 2; evita duplicados al copiar. |
-| DiscoveredStudies | IX_DiscoveredStudies_DiscoveryJobId_StudyInstanceUid | DiscoveryJobId, StudyInstanceUid | único | Un estudio una sola vez por job: es la clave del upsert del descubrimiento. |
+| DiscoveredStudies | IX_DiscoveredStudies_DiscoveryJobId_StudyInstanceUid | DiscoveryJobId, StudyInstanceUid | único | Un estudio una sola vez por job: es la clave del `INSERT … ON CONFLICT` con que el descubrimiento guarda el inventario. |
 | DiscoveredStudies | IX_DiscoveredStudies_SourcePacsId_StudyDate | SourcePacsId, StudyDate | normal | Rango de fechas del inventario por PACS de origen. |
 | DiscoveredStudies | IX_DiscoveredStudies_PartitionId | PartitionId | normal | Estadísticas de estudios por partición. |
 | DiscoveredInstances | IX_DiscInstances_Study_Sop | DiscoveredStudyId, SopInstanceUid | único | UID capturados por estudio (nivel 2), sin duplicados. |
@@ -512,7 +512,7 @@ Si los workers terminan y aún quedan particiones `Pending` o `Running`, el job 
 ```mermaid
 stateDiagram-v2
   [*] --> Pending : generada o hija de otra
-  Pending --> Running : un worker la adquiere
+  Pending --> Running : un worker la adquiere (FOR UPDATE SKIP LOCKED)
   Running --> Completed : respuesta completa
   Running --> Subdivided : truncada, se crean hijas
   Running --> PossiblyTruncated : truncada sin poder subdividir, con huecos o con elementos ilegibles
@@ -523,6 +523,8 @@ stateDiagram-v2
   Failed --> Pending : Reintentar particiones fallidas
 ```
 
+- **Reparto:** cada worker toma la siguiente partición `Pending` con un solo `UPDATE … WHERE Id = (SELECT … ORDER BY StartDate, Modality, Id LIMIT 1 FOR UPDATE SKIP LOCKED) RETURNING *`: cada uno obtiene una distinta. Un worker sin partición espera mientras otro tenga una entre manos, porque puede crear hijas.
+- **Guardado del inventario:** un único `INSERT … ON CONFLICT (DiscoveryJobId, StudyInstanceUid) DO UPDATE`, tras fundir los repetidos del lote. Un estudio ya presente en el job solo rellena sus campos vacíos, pasa a la partición que lo ha redescubierto y anota `LastUpdatedDate`.
 - **Tipos:** `Day` → `DayTime` (4 franjas de 6 h, luego bisección hasta 5 min) → `DayTimeModality` (franja mínima aún truncada: una hija por modalidad, último nivel). Los tipos antiguos `DayModality` y `DayModalityTime` se siguen procesando en los jobs que ya los tenían.
 - **`PossiblyTruncated`:** la partición está truncada en el último nivel; o se subdividió, pero la subdivisión no garantiza cubrir todo (estudios sin hora, reparto por modalidad), y entonces las hijas se procesan igual; o la respuesta traía elementos que no se pudieron leer. El motivo queda en `LastError`.
 
@@ -612,4 +614,4 @@ La auditoría no se escribe en el momento: va a un búfer en memoria que se vuel
 
 El mantenimiento actúa sobre las siete tablas de más movimiento (`MigrationStudies`, `MigrationInstances`, `DiscoveredStudies`, `DiscoveredInstances`, `DiscoveryPartitions`, `DiscoveryRequests` y `AuditLogs`). El diagrama solo dibuja las flechas principales.
 
-Esquema: Infrastructure/Migrations/AppDbContextModelSnapshot.cs, contrastado con la base local (pg_constraint, pg_indexes, pg_stat_user_tables). Estados y flujos: repositorios y servicios de Infrastructure y páginas de Web, leídos del directorio de trabajo del proyecto (commit 0c9d149, 10 oct 2026).
+Esquema: Infrastructure/Migrations/AppDbContextModelSnapshot.cs, contrastado con la base local (pg_constraint, pg_indexes, pg_stat_user_tables). Estados y flujos: repositorios y servicios de Infrastructure y páginas de Web, leídos del directorio de trabajo del proyecto (commit 6436bab más DISC-3 y DISC-5, aún sin commit: reparto entre workers y guardado del inventario, 11 oct 2026).

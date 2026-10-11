@@ -120,6 +120,13 @@
             <code>Running</code>. Si al terminar los workers quedara alguna sin consultar, el job pasa a
             <code>Paused</code> para que lo reanudes, en lugar de cerrarse con huecos en el inventario.
         </p>
+        <p style="margin:10px 0 0 0;color:var(--text-dim);font-size:13px;line-height:1.6">
+            <strong>Reparto entre workers:</strong> cada worker toma una partición distinta de forma atómica, así que
+            trabajan todos a la vez. Un worker sin partición no termina mientras otro siga con una, porque puede
+            subdividirse y crear hijas: espera y las reparte con los demás. Un estudio que aparezca en dos particiones
+            (por ejemplo, justo en el límite entre dos franjas horarias) o repetido en una respuesta del PACS se guarda
+            una sola vez; si ya estaba, solo se rellenan sus datos vacíos.
+        </p>
     </HelpSection>
 
     <HelpSection Title="Inventario por job y migración derivada" Color="#3B82F6">
