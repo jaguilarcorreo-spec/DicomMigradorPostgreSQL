@@ -1,1 +1,1 @@
-powershell -ExecutionPolicy Bypass -File build-installer.ps1 -Version 1.8.1
+powershell -ExecutionPolicy Bypass -File build-installer.ps1 -Version 1.8.9

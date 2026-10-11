@@ -558,6 +558,12 @@ Notas:
 - **Licencia "Ligada a otra máquina"** — el fingerprint no coincide (típico al desplegar en
   un servidor nuevo o tras cambiar la placa base). Obtén el fingerprint actual con
   `--fingerprint` y pide una licencia nueva para esa máquina.
+- **El login acepta la contraseña pero vuelve al formulario vacío** — ocurre al actualizar
+  desde una versión anterior al sello de sesión con la versión del 11 de octubre de 2026:
+  los usuarios existentes tenían el sello vacío y la sesión se rechazaba. Las versiones
+  posteriores lo asignan al entrar. En la versión afectada, desde PostgreSQL:
+  `UPDATE "AppUsers" SET "SecurityStamp" = md5(random()::text || "Id"::text) WHERE "SecurityStamp" = '';`
+  (no cambia contraseñas; no hace falta reiniciar).
 - **"Demasiados intentos fallidos"** — espera el tiempo indicado o, con otro administrador,
   desbloquéala desde *Usuarios*. Si es el único administrador, prueba desde otro equipo (el
   bloqueo suele ser solo del equipo donde se falló) o reinicia el servicio, que vacía los

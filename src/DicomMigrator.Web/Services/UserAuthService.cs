@@ -99,6 +99,12 @@ public class UserAuthService(IUserRepository users, LoginThrottle throttle, ILog
 
         await users.RecordSuccessfulLoginAsync(user.Id, rehash);
 
+        // Usuarios creados antes del sello de sesión (SEC-2): la columna llega vacía tras
+        // actualizar, y una cookie sin sello se rechaza, así que el login devolvía al
+        // formulario una y otra vez. Se le asigna uno ahora, antes de emitir la cookie.
+        if (string.IsNullOrEmpty(user.SecurityStamp))
+            user.SecurityStamp = await users.EnsureSecurityStampAsync(user.Id);
+
         logger.LogInformation("Acceso correcto: {User} ({Role}) desde {Ip}", user.UserName, user.Role, ip);
         return (user, null);
     }

@@ -71,6 +71,15 @@ public class UserRepository(IDbContextFactory<AppDbContext> factory) : IUserRepo
             .ExecuteUpdateAsync(s => s.SetProperty(u => u.SecurityStamp, NewStamp()));
     }
 
+    public async Task<string> EnsureSecurityStampAsync(int userId)
+    {
+        await using var db = factory.CreateDbContext();
+        // Solo si está vacío: si otro acceso simultáneo ya lo asignó, se conserva el suyo.
+        await db.AppUsers.Where(u => u.Id == userId && u.SecurityStamp == "")
+            .ExecuteUpdateAsync(s => s.SetProperty(u => u.SecurityStamp, NewStamp()));
+        return await db.AppUsers.Where(u => u.Id == userId).Select(u => u.SecurityStamp).SingleAsync();
+    }
+
     public async Task RecordFailedLoginAsync(int userId, DateTime? lockUntil)
     {
         await using var db = factory.CreateDbContext();
