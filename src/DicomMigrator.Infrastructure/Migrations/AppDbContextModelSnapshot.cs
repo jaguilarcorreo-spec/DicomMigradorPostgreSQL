@@ -295,6 +295,8 @@ namespace DicomMigrator.Infrastructure.Migrations
 
                     b.HasIndex("SourcePacsId", "StudyDate");
 
+                    b.HasIndex(new[] { "DiscoveryJobId", "Id" }, "IX_DiscoveredStudies_Job_Id");
+
                     b.ToTable("DiscoveredStudies");
                 });
 

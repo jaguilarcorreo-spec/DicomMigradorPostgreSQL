@@ -2,9 +2,9 @@ MOVE · DICOM Migrator 1.8.1 · PostgreSQL 16+ · EF Core 9
 
 # Base de datos de DICOM Migrator
 
-Esquema físico, índices, ciclo de vida de los estados y flujo de datos entre tablas. El esquema sale del snapshot de migraciones EF (22 migraciones, la última `IndiceFechaAltaConId`) y lo he contrastado con la base local. Los estados y flujos salen del código de los servicios y repositorios.
+Esquema físico, índices, ciclo de vida de los estados y flujo de datos entre tablas. El esquema sale del snapshot de migraciones EF (23 migraciones, la última `IndiceInventarioPorJob`) y lo he contrastado con la base local. Los estados y flujos salen del código de los servicios y repositorios.
 
-**16** tablas **9** claves foráneas **9** relaciones sin clave foránea **23** índices · 5 únicos · 3 parciales **5** tablas de una sola fila
+**16** tablas **9** claves foráneas **9** relaciones sin clave foránea **24** índices · 5 únicos · 3 parciales **5** tablas de una sola fila
 
 [1 · Esquema físico](#er) [2 · Índices](#indices) [3 · Estados](#estados) [4 · Flujo de datos](#flujo)
 
@@ -357,7 +357,7 @@ DiscoveredStudies |o..o{ MigrationStudies : "copia por StudyInstanceUid"
 
 ## 2 · Índices
 
-23 índices
+24 índices
 
 Además de las claves primarias. Los marcados como *convención* no están en `AppDbContext`: EF los crea solo para cada clave foránea.
 
@@ -375,6 +375,7 @@ Además de las claves primarias. Los marcados como *convención* no están en `A
 | DiscoveredStudies | IX_DiscoveredStudies_DiscoveryJobId_StudyInstanceUid | DiscoveryJobId, StudyInstanceUid | único | Un estudio una sola vez por job: es la clave del `INSERT … ON CONFLICT` con que el descubrimiento guarda el inventario. |
 | DiscoveredStudies | IX_DiscoveredStudies_SourcePacsId_StudyDate | SourcePacsId, StudyDate | normal | Rango de fechas del inventario por PACS de origen. |
 | DiscoveredStudies | IX_DiscoveredStudies_PartitionId | PartitionId | normal | Estadísticas de estudios por partición. |
+| DiscoveredStudies | IX_DiscoveredStudies_Job_Id | DiscoveryJobId, Id | normal | Recorrer el inventario de un job por tramos de `Id`, sin `OFFSET`: exportación CSV y lista de estudios a capturar (nivel 2). |
 | DiscoveredInstances | IX_DiscInstances_Study_Sop | DiscoveredStudyId, SopInstanceUid | único | UID capturados por estudio (nivel 2), sin duplicados. |
 | DiscoveryPartitions | IX_DiscoveryPartitions_DiscoveryJobId_Status | DiscoveryJobId, Status | normal | Los workers toman la siguiente partición `Pending` del job. |
 | DiscoveryRequests | IX_DiscoveryRequests_DiscoveryJobId | DiscoveryJobId | normal | Registro de consultas al PACS por job. |
@@ -614,4 +615,4 @@ La auditoría no se escribe en el momento: va a un búfer en memoria que se vuel
 
 El mantenimiento actúa sobre las siete tablas de más movimiento (`MigrationStudies`, `MigrationInstances`, `DiscoveredStudies`, `DiscoveredInstances`, `DiscoveryPartitions`, `DiscoveryRequests` y `AuditLogs`). El diagrama solo dibuja las flechas principales.
 
-Esquema: Infrastructure/Migrations/AppDbContextModelSnapshot.cs, contrastado con la base local (pg_constraint, pg_indexes, pg_stat_user_tables). Estados y flujos: repositorios y servicios de Infrastructure y páginas de Web, leídos del directorio de trabajo del proyecto (commit 5974b67, 11 oct 2026).
+Esquema: Infrastructure/Migrations/AppDbContextModelSnapshot.cs, contrastado con la base local (pg_constraint, pg_indexes, pg_stat_user_tables). Estados y flujos: repositorios y servicios de Infrastructure y páginas de Web, leídos del directorio de trabajo del proyecto (commit d446d2a más DISC-14, aún sin commit: inventario por tramos, 11 oct 2026).

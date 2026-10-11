@@ -373,6 +373,10 @@ public interface IDiscoveredStudyRepository
     Task<List<DiscoveredStudy>> GetAllForExportAsync(DiscoveredStudyFilter filter);
     /// <summary>Stream studies in pages without loading the entire result set into memory.</summary>
     IAsyncEnumerable<DiscoveredStudy> StreamForExportAsync(DiscoveredStudyFilter filter, CancellationToken ct = default);
+    /// <summary>(Id, UID) de los estudios de un job que hay que capturar (Nivel 2), por tramos
+    /// de Id. Sin <paramref name="includeCaptured"/>, solo los que aún no tienen ningún UID
+    /// capturado, descartados en la propia consulta (DISC-14).</summary>
+    IAsyncEnumerable<(long Id, string Uid)> StreamCaptureCandidatesAsync(int jobId, bool includeCaptured, CancellationToken ct = default);
     /// <summary>Return (minStudyDate, maxStudyDate) for a discovery job's inventory. Nulls if no studies or no dates.</summary>
     Task<(string? min, string? max)> GetStudyDateRangeAsync(int discoveryJobId);
 }

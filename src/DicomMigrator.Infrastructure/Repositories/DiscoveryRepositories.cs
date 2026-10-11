@@ -584,8 +584,12 @@ public class DiscoveredStudyRepository(IDbContextFactory<AppDbContext> factory) 
         // Page through the result set so the full inventory is never in memory at once.
         // Each call opens a fresh DbContext to avoid long-lived contexts in case the
         // streaming consumer is slow.
+        // Por clave, en orden de Id (= orden de descubrimiento), DISC-14. Antes: OFFSET
+        // ordenando por fecha, paciente e Id, sin índice para ese orden; cada página ordenaba
+        // el job entero (4 s por página con 1 millón de estudios: más de 1 hora en total).
+        // Ahora cada página es un rango del índice IX_DiscoveredStudies_Job_Id.
         const int PageSize = 1000;
-        int offset = 0;
+        long lastId = 0;
 
         while (true)
         {
@@ -594,9 +598,11 @@ public class DiscoveredStudyRepository(IDbContextFactory<AppDbContext> factory) 
             List<DiscoveredStudy> page;
             await using (var db = factory.CreateDbContext())
             {
+                var after = lastId;
                 page = await Filtered(db, f)
-                    .OrderBy(s => s.StudyDate).ThenBy(s => s.PatientId).ThenBy(s => s.Id)
-                    .Skip(offset).Take(PageSize)
+                    .Where(s => s.Id > after)
+                    .OrderBy(s => s.Id)
+                    .Take(PageSize)
                     .AsNoTracking()
                     .ToListAsync(ct);
             }
@@ -604,7 +610,39 @@ public class DiscoveredStudyRepository(IDbContextFactory<AppDbContext> factory) 
             if (page.Count == 0) yield break;
             foreach (var s in page) yield return s;
             if (page.Count < PageSize) yield break;
-            offset += PageSize;
+            lastId = page[^1].Id;
+        }
+    }
+
+    public async IAsyncEnumerable<(long Id, string Uid)> StreamCaptureCandidatesAsync(int jobId, bool includeCaptured,
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
+    {
+        // DISC-14: antes la captura recorría el inventario entero con la exportación lenta,
+        // leyendo los estudios completos, y luego hacía una consulta por estudio para saltarse
+        // los ya capturados. Ahora: tramos por Id, solo Id y UID, y los ya capturados se
+        // descartan en la propia consulta (NOT EXISTS sobre el índice de instancias).
+        const int PageSize = 5000;
+        long lastId = 0;
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+            List<(long, string)> page;
+            await using (var db = factory.CreateDbContext())
+            {
+                var after = lastId;
+                var q = db.DiscoveredStudies.AsNoTracking()
+                    .Where(s => s.DiscoveryJobId == jobId && s.Id > after && s.StudyInstanceUid != "");
+                if (!includeCaptured)
+                    q = q.Where(s => !db.DiscoveredInstances.Any(i => i.DiscoveredStudyId == s.Id));
+                page = (await q.OrderBy(s => s.Id).Take(PageSize)
+                        .Select(s => new { s.Id, s.StudyInstanceUid })
+                        .ToListAsync(ct))
+                    .Select(x => (x.Id, x.StudyInstanceUid)).ToList();
+            }
+            if (page.Count == 0) yield break;
+            foreach (var p in page) yield return p;
+            if (page.Count < PageSize) yield break;
+            lastId = page[^1].Item1;
         }
     }
 

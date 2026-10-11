@@ -264,6 +264,9 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             // strpos), que un B-tree no puede resolver, y los códigos de modalidad (2
             // caracteres) son demasiado cortos para pg_trgm. Solo encarecía cada INSERT.
             e.HasIndex(x => x.PartitionId);
+            // Recorrido del inventario de un job por Id (DISC-14): exportación CSV y lista de
+            // estudios a capturar, paginadas por clave sin OFFSET.
+            e.HasIndex(x => new { x.DiscoveryJobId, x.Id }, "IX_DiscoveredStudies_Job_Id");
         });
 
         // Nivel 2: UIDs de origen por estudio descubierto. FK en CASCADE para que

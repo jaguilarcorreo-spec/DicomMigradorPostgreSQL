@@ -162,19 +162,17 @@ public class InstanceCaptureService(
             return res;
         }
 
-        // Materializar (Id, StudyInstanceUid) primero para no mantener abierto el
-        // lector de BD mientras se hacen los C-FIND (lentos, por red).
-        var studies = new List<(long Id, string Uid)>();
-        await foreach (var s in discStudyRepo.StreamForExportAsync(
-            new DiscoveredStudyFilter { DiscoveryJobId = jobId }, ct))
-        {
-            if (!string.IsNullOrEmpty(s.StudyInstanceUid))
-                studies.Add((s.Id, s.StudyInstanceUid));
-        }
+        // Estudios a capturar, por tramos de Id y solo (Id, UID) (DISC-14). Sin forceRecapture
+        // ya vienen sin los capturados: antes se recorría el inventario entero con la
+        // exportación (más de 1 hora por millón de estudios en cada inicio o reanudación) y
+        // se hacía una consulta por estudio para saltar los ya capturados. Cada tramo abre y
+        // cierra su propio contexto, así que no queda un lector abierto durante los C-FIND.
+        var studies = discStudyRepo.StreamCaptureCandidatesAsync(jobId, includeCaptured: forceRecapture, ct);
+        var already = forceRecapture ? 0 : await discInstanceRepo.CountCapturedStudiesForJobAsync(jobId);
 
         var threads = Math.Max(1, job.WorkerThreads);
-        logger.LogInformation("Captura Nivel 2 · job {Id} · {N} estudios · origen {Alias} · {T} hilo(s)",
-            jobId, studies.Count, origin.Alias, threads);
+        logger.LogInformation("Captura Nivel 2 · job {Id} · {Done} estudios ya capturados · origen {Alias} · {T} hilo(s)",
+            jobId, already, origin.Alias, threads);
 
         // La enumeración sigue el MÉTODO DE CONSULTA del descubrimiento: si el job
         // descubre por QIDO, enumera por QIDO-instances; si por C-FIND, por C-FIND IMAGE.
@@ -183,7 +181,7 @@ public class InstanceCaptureService(
             ? null
             : string.Equals(job.QueryMethod, "QIDO", StringComparison.OrdinalIgnoreCase);
 
-        int captured = 0, skipped = 0, failed = 0, instances = 0;
+        int captured = 0, skipped = already, failed = 0, instances = 0;
         var failures = new System.Collections.Concurrent.ConcurrentBag<string>();
 
         // Paraleliza con el MISMO nº de hilos definido en el job de descubrimiento.
@@ -194,11 +192,6 @@ public class InstanceCaptureService(
             new ParallelOptions { MaxDegreeOfParallelism = threads, CancellationToken = ct },
             async (study, token) =>
             {
-                if (!forceRecapture && await discInstanceRepo.CountForStudyAsync(study.Id) > 0)
-                {
-                    Interlocked.Increment(ref skipped);
-                    return;
-                }
                 try
                 {
                     var n = await CaptureForStudyAsync(origin, study.Id, study.Uid, preferQido, token);
