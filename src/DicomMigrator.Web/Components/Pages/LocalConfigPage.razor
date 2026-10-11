@@ -1,6 +1,6 @@
 @page "/localconfig"
 @attribute [Authorize(Roles = AppRoles.Administrador)]
-@rendermode InteractiveServer
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
 @inherits GuardedPage
 @inject ILocalConfigRepository ConfigRepo
 @inject DicomMigrator.Web.Services.LocalConfigState ConfigState

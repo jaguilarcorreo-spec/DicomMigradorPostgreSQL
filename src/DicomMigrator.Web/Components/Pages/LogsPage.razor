@@ -1,5 +1,5 @@
 @page "/logs"
-@rendermode InteractiveServer
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
 @inherits GuardedPage
 @inject IAuditLogRepository AuditRepo
 @inject IMigrationRepository MigrationRepo

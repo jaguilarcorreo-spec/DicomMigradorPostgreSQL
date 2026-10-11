@@ -1,5 +1,5 @@
 @page "/discovery"
-@rendermode InteractiveServer
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
 @inherits GuardedPage
 @using DicomMigrator.Core.Interfaces
 @using DicomMigrator.Core.Models

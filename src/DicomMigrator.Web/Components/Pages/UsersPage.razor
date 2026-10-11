@@ -1,6 +1,6 @@
 @page "/usuarios"
 @attribute [Authorize(Roles = AppRoles.Administrador)]
-@rendermode InteractiveServer
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
 @inherits GuardedPage
 
 @using DicomMigrator.Web.Services
