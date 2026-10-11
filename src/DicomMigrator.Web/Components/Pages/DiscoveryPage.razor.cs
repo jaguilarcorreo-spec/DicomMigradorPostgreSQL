@@ -46,8 +46,21 @@ public partial class DiscoveryPage
         StopAutoRefresh();
         _timer = new System.Threading.Timer(
             _state => _ = OnTimerTickAsync(),
-            null, TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(2));
+            null, DetailRefreshEvery, DetailRefreshEvery);
     }
+
+    // ── Carga del refresco (BD-5) ────────────────────────────────────────────
+    // Antes: cada 2 s, sin esperar al tick anterior, y cada tick contaba TODAS las instancias
+    // capturadas del job (la tabla más grande de la base) tres veces. Con 1 millón de
+    // estudios y 2 millones de UIDs, ~3,7 s de base por tick: los ticks se solapaban y una
+    // pestaña abierta durante una captura ocupaba ~2 núcleos de PostgreSQL. Ahora: un tick
+    // cada 5 s que se salta si el anterior sigue en curso, y los conteos de UIDs (lo caro)
+    // solo cada 30 s. Un refresco pedido por el usuario (botones, cambiar de página) es
+    // completo como siempre.
+    private static readonly TimeSpan DetailRefreshEvery = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan UidCountsEvery     = TimeSpan.FromSeconds(30);
+    private int _detailRefreshing;                      // 1 mientras hay un tick en curso
+    private DateTime _lastUidCounts = DateTime.MinValue;
 
     // El Timer dispara en un hilo del pool cada 2 s. Antes el callback era
     // 'async _ => await RefreshDetailAsync()', es decir async void sin protección:
@@ -61,9 +74,13 @@ public partial class DiscoveryPage
     // un tick puntual que falle se registra y se ignora, el siguiente lo reintenta.
     private async Task OnTimerTickAsync()
     {
+        // InvokeAsync serializa con los manejadores, pero no impide que un tick empiece
+        // mientras el anterior espera a la base: sin esta guarda se solapaban (BD-5).
+        if (Interlocked.Exchange(ref _detailRefreshing, 1) == 1) return;
         try
         {
-            await InvokeAsync(RefreshDetailAsync);
+            var withUidCounts = DateTime.UtcNow - _lastUidCounts >= UidCountsEvery;
+            await InvokeAsync(() => RefreshDetailAsync(withUidCounts));
         }
         catch (ObjectDisposedException)
         {
@@ -72,6 +89,10 @@ public partial class DiscoveryPage
         catch (Exception ex)
         {
             Logger.LogDebug(ex, "Auto-refresco del detalle de descubrimiento falló (tick transitorio, se ignora).");
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _detailRefreshing, 0);
         }
     }
 

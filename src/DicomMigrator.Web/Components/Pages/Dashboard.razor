@@ -208,8 +208,12 @@ else
     // circuito/proceso. Se ejecuta vía InvokeAsync (serializado con el resto de
     // manejadores del componente) y envuelto en try/catch: un tick puntual que falle
     // se registra y se ignora; el siguiente lo reintenta.
+    private int _refreshing;   // 1 mientras hay un tick en curso (BD-5)
+
     async Task OnTimerTickAsync()
     {
+        // Saltar el tick si el anterior aún espera a la base: no solapar refrescos (BD-5).
+        if (Interlocked.Exchange(ref _refreshing, 1) == 1) return;
         try
         {
             await InvokeAsync(async () =>
@@ -227,6 +231,10 @@ else
         catch (Exception ex)
         {
             Logger.LogDebug(ex, "Auto-refresco del dashboard falló (tick transitorio, se ignora).");
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _refreshing, 0);
         }
     }
 

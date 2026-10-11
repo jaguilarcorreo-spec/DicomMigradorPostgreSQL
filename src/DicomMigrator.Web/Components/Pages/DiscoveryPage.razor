@@ -931,7 +931,8 @@ else
         _deleteStep = 0; _deleteMsg = ""; _editing = false; _resetStep = 0;
         _detail = await JobRepo.GetByIdAsync(j.Id);
         await RefreshDetailAsync();
-        if (_detail?.Status == "Running" || _detail?.CaptureStatus is "Running" or "Paused") StartAutoRefresh();
+        // Con la captura en PAUSA no hay nada que refrescar (BD-5): al reanudarla se arranca el refresco.
+        if (_detail?.Status == "Running" || _detail?.CaptureStatus == "Running") StartAutoRefresh();
     }
 
     void BackToList()
@@ -941,7 +942,12 @@ else
         _ = LoadJobsAsync();
     }
 
-    async Task RefreshDetailAsync()
+    Task RefreshDetailAsync() => RefreshDetailAsync(withUidCounts: true);
+
+    /// <summary>Recarga la ficha. <paramref name="withUidCounts"/> = false omite los conteos de
+    /// UIDs capturados (recorren la tabla de instancias): el auto-refresco los pide solo cada
+    /// 30 s (BD-5); los refrescos manuales, siempre.</summary>
+    async Task RefreshDetailAsync(bool withUidCounts)
     {
         // Trabajamos sobre una copia local ('job'/'fresh') en vez de releer el campo
         // compartido _detail después de cada await. Ese era el origen del
@@ -965,16 +971,20 @@ else
         _detail = fresh;
 
         _stats             = await JobRepo.GetStatsAsync(fresh.Id);
-        _capturedStudies   = await DiscInstanceRepo.CountCapturedStudiesForJobAsync(fresh.Id);
-        _capturedInstances = await DiscInstanceRepo.CountInstancesForJobAsync(fresh.Id);
+        if (withUidCounts)
+        {
+            _capturedStudies   = await DiscInstanceRepo.CountCapturedStudiesForJobAsync(fresh.Id);
+            _capturedInstances = await DiscInstanceRepo.CountInstancesForJobAsync(fresh.Id);
+            _partStats         = await StudyRepo.GetPartitionUidStatsAsync(fresh.Id);
+            _lastUidCounts     = DateTime.UtcNow;
+        }
         var (items, total) = await JobRepo.GetPartitionsPagedAsync(fresh.Id, _partPage, PartPageSize);
         _partitions        = items;
-        _partStats         = await StudyRepo.GetPartitionUidStatsAsync(fresh.Id);
         _partTotal         = total;
         _partTotalPages    = total == 0 ? 1 : (int)Math.Ceiling(total / (double)PartPageSize);
         if (_partPage > _partTotalPages) { _partPage = _partTotalPages; }
 
-        if (fresh.Status is not "Running" && fresh.CaptureStatus is not ("Running" or "Paused")) StopAutoRefresh();
+        if (fresh.Status is not "Running" && fresh.CaptureStatus is not "Running") StopAutoRefresh();   // pausa: sin refresco (BD-5)
 
         // For CSV jobs, compute date range from inventory (no StartDate/EndDate on the job itself)
         if (fresh.DiscoveryType == "CSV")
