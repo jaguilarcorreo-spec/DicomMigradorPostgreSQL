@@ -2,7 +2,7 @@ MOVE · DICOM Migrator 1.8.1 · PostgreSQL 16+ · EF Core 9
 
 # Base de datos de DICOM Migrator
 
-Esquema físico, índices, ciclo de vida de los estados y flujo de datos entre tablas. El esquema sale del snapshot de migraciones EF (21 migraciones, la última `PausaPorLicencia`) y lo he contrastado con la base local. Los estados y flujos salen del código de los servicios y repositorios.
+Esquema físico, índices, ciclo de vida de los estados y flujo de datos entre tablas. El esquema sale del snapshot de migraciones EF (22 migraciones, la última `IndiceFechaAltaConId`) y lo he contrastado con la base local. Los estados y flujos salen del código de los servicios y repositorios.
 
 **16** tablas **9** claves foráneas **9** relaciones sin clave foránea **23** índices · 5 únicos · 3 parciales **5** tablas de una sola fila
 
@@ -370,7 +370,7 @@ Además de las claves primarias. Los marcados como *convención* no están en `A
 | MigrationStudies | IX_MigStudies_verify_queue | MigrationId, Id | parcial | Solo filas `Migrated`: cola de verificación. |
 | MigrationStudies | IX_MigStudies_Mig_Patient | MigrationId, PatientId | normal | Búsqueda por paciente en la tabla de migración. |
 | MigrationStudies | IX_MigStudies_Mig_Accession | MigrationId, AccessionNumber | normal | Búsqueda por número de acceso. |
-| MigrationStudies | IX_MigStudies_Mig_DiscDate | MigrationId, DiscoveryDate | normal | Orden y paginación por fecha de alta. |
+| MigrationStudies | IX_MigStudies_Mig_DiscDate | MigrationId, DiscoveryDate, Id | normal | Orden de la lista de estudios y de la exportación CSV por fecha de alta, con `Id` como desempate: la fecha se repite por lotes enteros del poblado, y el `Id` da un orden total que permite paginar por clave sin `OFFSET`. |
 | MigrationInstances | IX_MigInstances_Study_Sop | MigrationStudyId, SopInstanceUid | único | UID de origen por estudio para la verificación de nivel 2; evita duplicados al copiar. |
 | DiscoveredStudies | IX_DiscoveredStudies_DiscoveryJobId_StudyInstanceUid | DiscoveryJobId, StudyInstanceUid | único | Un estudio una sola vez por job: es la clave del `INSERT … ON CONFLICT` con que el descubrimiento guarda el inventario. |
 | DiscoveredStudies | IX_DiscoveredStudies_SourcePacsId_StudyDate | SourcePacsId, StudyDate | normal | Rango de fechas del inventario por PACS de origen. |
@@ -614,4 +614,4 @@ La auditoría no se escribe en el momento: va a un búfer en memoria que se vuel
 
 El mantenimiento actúa sobre las siete tablas de más movimiento (`MigrationStudies`, `MigrationInstances`, `DiscoveredStudies`, `DiscoveredInstances`, `DiscoveryPartitions`, `DiscoveryRequests` y `AuditLogs`). El diagrama solo dibuja las flechas principales.
 
-Esquema: Infrastructure/Migrations/AppDbContextModelSnapshot.cs, contrastado con la base local (pg_constraint, pg_indexes, pg_stat_user_tables). Estados y flujos: repositorios y servicios de Infrastructure y páginas de Web, leídos del directorio de trabajo del proyecto (commit 35609de, 11 oct 2026).
+Esquema: Infrastructure/Migrations/AppDbContextModelSnapshot.cs, contrastado con la base local (pg_constraint, pg_indexes, pg_stat_user_tables). Estados y flujos: repositorios y servicios de Infrastructure y páginas de Web, leídos del directorio de trabajo del proyecto (commit fb26103 más BD-4, aún sin commit: exportaciones, 11 oct 2026).

@@ -732,21 +732,16 @@ try
         int row = 2;
         long tTotal = 0, tPendientes = 0, tEnCurso = 0, tMig = 0, tFail = 0, tVer = 0, tVerFail = 0,
              tReintentos = 0, tSrcInst = 0, tTgtInst = 0;
+        // Sumas de instancias y primeras/últimas fechas de TODAS las migraciones en una sola
+        // consulta agregada (BD-4); antes se recorrían todos sus estudios uno a uno.
+        var totals = await studyRepo.GetExportTotalsAsync(ct);
         foreach (var m in migrations)
         {
             var st = await studyRepo.GetStatsAsync(m.Id);
-            long srcInst = 0, tgtInst = 0;
-            DateTime? migStart = null, migEnd = null, verStart = null, verEnd = null;
-            await foreach (var s in studyRepo.StreamForExportAsync(m.Id, new StudyFilter(), ct))
-            {
-                srcInst += s.SourceInstanceCount ?? 0;
-                tgtInst += s.TargetInstanceCount ?? 0;
-
-                if (s.MigrationStartDate is { } msd && (migStart is null || msd < migStart)) migStart = msd;
-                if (s.MigrationDate is { } med && (migEnd is null || med > migEnd)) migEnd = med;
-                if (s.VerificationStartDate is { } vsd && (verStart is null || vsd < verStart)) verStart = vsd;
-                if (s.VerificationDate is { } ved && (verEnd is null || ved > verEnd)) verEnd = ved;
-            }
+            var tot = totals.GetValueOrDefault(m.Id);
+            long srcInst = tot?.SourceInstances ?? 0, tgtInst = tot?.TargetInstances ?? 0;
+            DateTime? migStart = tot?.MigrationStart, migEnd = tot?.MigrationEnd,
+                      verStart = tot?.VerificationStart, verEnd = tot?.VerificationEnd;
 
             static string D(DateTime? d) => d?.ToLocalTime().ToString("yyyy-MM-dd HH:mm") ?? "";
 

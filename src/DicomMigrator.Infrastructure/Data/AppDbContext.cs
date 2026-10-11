@@ -126,7 +126,10 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             e.HasIndex(x => new { x.MigrationId, x.Id }, "IX_MigStudies_verify_queue")
              .HasFilter("\"MigrationStatus\" = 'Migrated'");
 
-            e.HasIndex(x => new { x.MigrationId, x.DiscoveryDate })
+            // Orden de la lista de estudios y de la exportación CSV: fecha de alta y, en caso
+            // de empate, Id. El Id hace el orden TOTAL (la fecha se repite por lotes enteros
+            // del poblado) y permite paginar por clave sin OFFSET (BD-4).
+            e.HasIndex(x => new { x.MigrationId, x.DiscoveryDate, x.Id })
              .HasDatabaseName("IX_MigStudies_Mig_DiscDate");
 
             e.HasIndex(x => new { x.MigrationId, x.PatientId })

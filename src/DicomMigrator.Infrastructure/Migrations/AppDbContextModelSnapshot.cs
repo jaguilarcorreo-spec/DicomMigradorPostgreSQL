@@ -934,9 +934,6 @@ namespace DicomMigrator.Infrastructure.Migrations
                     b.HasIndex("MigrationId", "AccessionNumber")
                         .HasDatabaseName("IX_MigStudies_Mig_Accession");
 
-                    b.HasIndex("MigrationId", "DiscoveryDate")
-                        .HasDatabaseName("IX_MigStudies_Mig_DiscDate");
-
                     b.HasIndex("MigrationId", "MigrationStatus");
 
                     b.HasIndex("MigrationId", "PatientId")
@@ -944,6 +941,9 @@ namespace DicomMigrator.Infrastructure.Migrations
 
                     b.HasIndex("MigrationId", "StudyInstanceUid")
                         .IsUnique();
+
+                    b.HasIndex("MigrationId", "DiscoveryDate", "Id")
+                        .HasDatabaseName("IX_MigStudies_Mig_DiscDate");
 
                     b.HasIndex(new[] { "MigrationId", "ModalityRank", "RetryCount", "StudyDate", "Id" }, "IX_MigStudies_queue_newest")
                         .IsDescending(false, false, false, true, false)

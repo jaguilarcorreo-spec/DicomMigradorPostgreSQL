@@ -283,6 +283,19 @@ public class CsvImportResult
     public List<string> Warnings   { get; set; } = [];
 }
 
+/// <summary>Totales por migración para el Excel de resumen (BD-4): sumas de instancias y
+/// primeras/últimas fechas de migración y verificación, calculados en la base.</summary>
+public sealed class MigrationExportTotals
+{
+    public int       MigrationId     { get; set; }
+    public long      SourceInstances { get; set; }
+    public long      TargetInstances { get; set; }
+    public DateTime? MigrationStart   { get; set; }
+    public DateTime? MigrationEnd     { get; set; }
+    public DateTime? VerificationStart { get; set; }
+    public DateTime? VerificationEnd   { get; set; }
+}
+
 /// <summary>Estadísticas resumen de una migración para el dashboard.</summary>
 public class MigrationStats
 {

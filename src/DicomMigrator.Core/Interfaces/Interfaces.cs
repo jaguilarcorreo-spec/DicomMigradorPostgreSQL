@@ -165,6 +165,9 @@ public interface IStudyRepository
     Task<MigrationStudy?> GetByUidAsync(int migrationId, string studyInstanceUid);
     /// <summary>Stream studies matching the filter in pages without loading the full set into memory.</summary>
     IAsyncEnumerable<MigrationStudy> StreamForExportAsync(int migrationId, StudyFilter filter, CancellationToken ct = default);
+    /// <summary>Totales por migración para el Excel de resumen, en una sola consulta agregada
+    /// (BD-4). Clave: MigrationId; las migraciones sin estudios no aparecen.</summary>
+    Task<Dictionary<int, MigrationExportTotals>> GetExportTotalsAsync(CancellationToken ct = default);
 
     /// <summary>Bulk-insert discovered studies (ignores existing UIDs).</summary>
     Task<int> BulkInsertAsync(int migrationId, IEnumerable<MigrationStudy> studies);

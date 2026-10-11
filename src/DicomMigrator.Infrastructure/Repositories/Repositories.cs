@@ -417,8 +417,11 @@ public class StudyRepository(IDbContextFactory<AppDbContext> factory, DeferredVa
     public async Task<List<MigrationStudy>> GetPagedAsync(int migrationId, StudyFilter filter)
     {
         await using var db = factory.CreateDbContext();
+        // Desempate por Id (BD-4): la fecha de alta se repite por lotes enteros del poblado y,
+        // sin un orden total, PostgreSQL no garantiza el mismo orden entre una página y la
+        // siguiente: la lista podía repetir u omitir estudios al pasar de página.
         return await ApplyFilter(db.MigrationStudies, migrationId, filter)
-            .OrderByDescending(s => s.DiscoveryDate)
+            .OrderByDescending(s => s.DiscoveryDate).ThenByDescending(s => s.Id)
             .Skip((filter.PageNumber - 1) * filter.PageSize)
             .Take(filter.PageSize)
             .ToListAsync();
@@ -435,9 +438,8 @@ public class StudyRepository(IDbContextFactory<AppDbContext> factory, DeferredVa
         {
             var cd = filter.CursorDiscoveryDate.Value;
             var cid = filter.CursorId.Value;
-            q = q.Where(s =>
-                s.DiscoveryDate < cd ||
-                (s.DiscoveryDate == cd && s.Id < cid));
+            // Comparación de FILA: rango del índice (MigrationId, DiscoveryDate, Id), BD-4.
+            q = q.Where(s => EF.Functions.LessThan(ValueTuple.Create(s.DiscoveryDate, s.Id), ValueTuple.Create(cd, cid)));
         }
 
         return await q
@@ -1342,21 +1344,60 @@ WHERE ""MigrationId"" = {0}", migrationId).ToListAsync();
         int migrationId, StudyFilter filter,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
     {
+        // Paginación POR CLAVE con orden total (BD-4). Antes era OFFSET ordenando solo por la
+        // fecha de alta: (1) cada página recorría todas las anteriores (1 millón de estudios:
+        // 97,6 s frente a 0,7 s) y (2) la fecha se repite por lotes enteros del poblado (847
+        // valores para 5.531 estudios en la migración 36), así que entre páginas el orden de
+        // los empates no estaba garantizado y el CSV podía repetir u omitir estudios. Ahora el
+        // orden es (fecha, Id) descendente y cada página pide «los siguientes al último»,
+        // sobre el índice IX_MigStudies_Mig_DiscDate (MigrationId, DiscoveryDate, Id).
         const int PageSize = 1000;
-        int offset = 0;
+        DateTime? lastDate = null;
+        long lastId = 0;
         while (true)
         {
             await using var db = factory.CreateDbContext();
-            var page = await ApplyFilter(db.MigrationStudies.AsNoTracking(), migrationId, filter)
-                .OrderByDescending(s => s.DiscoveryDate)
-                .Skip(offset)
+            var q = ApplyFilter(db.MigrationStudies.AsNoTracking(), migrationId, filter);
+            if (lastDate is { } ld)
+            {
+                var li = lastId;
+                // Comparación de FILA (fecha, Id) < (ld, li): PostgreSQL la resuelve como un
+                // rango del índice. Con «fecha < ld OR (fecha = ld AND Id < li)» no lo hacía y
+                // cada página volvía a recorrer la migración (probado: 121 s frente a 33 s).
+                q = q.Where(s => EF.Functions.LessThan(ValueTuple.Create(s.DiscoveryDate, s.Id), ValueTuple.Create(ld, li)));
+            }
+            var page = await q
+                .OrderByDescending(s => s.DiscoveryDate).ThenByDescending(s => s.Id)
                 .Take(PageSize)
                 .ToListAsync(ct);
             if (page.Count == 0) yield break;
             foreach (var s in page) yield return s;
             if (page.Count < PageSize) yield break;
-            offset += PageSize;
+            lastDate = page[^1].DiscoveryDate;
+            lastId   = page[^1].Id;
         }
+    }
+
+    public async Task<Dictionary<int, MigrationExportTotals>> GetExportTotalsAsync(CancellationToken ct = default)
+    {
+        // Antes el Excel de resumen recorría TODOS los estudios de cada migración, página a
+        // página, para sumar dos columnas y sacar cuatro fechas (BD-4). Un GROUP BY en la base
+        // lo hace en una sola consulta (249 ms con 1 millón de estudios, medido).
+        await using var db = factory.CreateDbContext();
+        db.Database.SetCommandTimeout(TimeSpan.FromMinutes(5));
+        return await db.MigrationStudies.AsNoTracking()
+            .GroupBy(s => s.MigrationId)
+            .Select(g => new MigrationExportTotals
+            {
+                MigrationId       = g.Key,
+                SourceInstances   = g.Sum(s => (long)(s.SourceInstanceCount ?? 0)),
+                TargetInstances   = g.Sum(s => (long)(s.TargetInstanceCount ?? 0)),
+                MigrationStart    = g.Min(s => s.MigrationStartDate),
+                MigrationEnd      = g.Max(s => s.MigrationDate),
+                VerificationStart = g.Min(s => s.VerificationStartDate),
+                VerificationEnd   = g.Max(s => s.VerificationDate),
+            })
+            .ToDictionaryAsync(t => t.MigrationId, ct);
     }
 
     // ── helpers ───────────────────────────────────────────────────────────────
