@@ -12,6 +12,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<ExecutionWindow>   ExecutionWindows => Set<ExecutionWindow>();
     public DbSet<MigrationStudy>    MigrationStudies => Set<MigrationStudy>();
     public DbSet<MigrationInstance> MigrationInstances => Set<MigrationInstance>();
+    public DbSet<MigrationCompositionRow> MigrationComposition => Set<MigrationCompositionRow>();
     public DbSet<MigrationAuditLog> AuditLogs        => Set<MigrationAuditLog>();
     public DbSet<AppUser>           AppUsers         => Set<AppUser>();
     public DbSet<LicenseState>      LicenseStates    => Set<LicenseState>();
@@ -135,6 +136,22 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             // Sin índices sobre (MigrationId, PatientId) ni (MigrationId, AccessionNumber)
             // (BD-13): los filtros de la pestaña Estudios buscan por subcadena (Contains →
             // strpos), que un B-tree no resuelve. Solo encarecían cada cambio de estado.
+        });
+
+        // Composición del lote para la pestaña Gráficas: una fila por mes y modalidad.
+        mb.Entity<MigrationCompositionRow>(e =>
+        {
+            e.ToTable("MigrationComposition");
+            e.HasKey(x => x.Id);
+            e.Property(x => x.Month).IsRequired().HasMaxLength(6);
+            e.Property(x => x.Modality).IsRequired().HasMaxLength(16);
+            e.HasIndex(x => new { x.MigrationId, x.Month, x.Modality })
+             .IsUnique()
+             .HasDatabaseName("IX_MigComposition_Mig_Month_Mod");
+            e.HasOne<Migration>()
+             .WithMany()
+             .HasForeignKey(x => x.MigrationId)
+             .OnDelete(DeleteBehavior.Cascade);
         });
 
         // Nivel 2 de verificación: conjunto de UIDs de ORIGEN por estudio.

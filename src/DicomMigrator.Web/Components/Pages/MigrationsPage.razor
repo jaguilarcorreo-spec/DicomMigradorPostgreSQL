@@ -478,7 +478,7 @@
 
     @* ── Tab bar ── *@
     <div class="tab-bar mb2">
-        @foreach (var t in new[] { ("dashboard","📊 Dashboard"), ("estudios","🗂 Estudios"), ("ventana","🕐 Ventana"), ("logs","📋 Logs") })
+        @foreach (var t in new[] { ("dashboard","📊 Dashboard"), ("graficas","📈 Gráficas"), ("estudios","🗂 Estudios"), ("ventana","🕐 Ventana"), ("logs","📋 Logs") })
         {
             <button class="@(_detailTab == t.Item1 ? "tab active" : "tab")" @onclick="@(() => SetDetailTab(t.Item1))">
                 @t.Item2
@@ -601,6 +601,13 @@
                 </AuthorizeView>
             </div>
         </div>
+    }
+
+    @* ── GRÁFICAS: composición del lote (no cambia con el avance; se calcula al rellenarlo) ── *@
+    @if (_detailTab == "graficas" && _detail is not null)
+    {
+        <CompositionCharts MigrationId="_detail.Id" PopulateStatus="@_detail.PopulateStatus"
+                           PopulateDone="_detail.PopulateDone" PopulateTotal="_detail.PopulateTotal" />
     }
 
     @* ── ESTUDIOS ── *@

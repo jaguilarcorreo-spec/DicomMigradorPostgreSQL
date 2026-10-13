@@ -455,6 +455,67 @@ public class StudyRepository(IDbContextFactory<AppDbContext> factory, DeferredVa
             .FirstOrDefaultAsync();
     }
 
+    // ── Composición del lote (pestaña Gráficas) ──────────────────────────────
+    // Una sola pasada por los estudios de la migración, agrupando en la base por mes de
+    // StudyDate y modalidad principal. Se reemplaza entera en una transacción, así que
+    // repetirla (reanudación del poblado, otro alta) siempre deja el resultado correcto.
+    // chr(92) es la barra invertida que separa los valores de ModalitiesInStudy ("CT\SR").
+    private const string CompositionSql = @"
+DELETE FROM ""MigrationComposition"" WHERE ""MigrationId"" = @mig;
+INSERT INTO ""MigrationComposition"" (""MigrationId"", ""Month"", ""Modality"", ""Studies"", ""Images"", ""ComputedAt"")
+SELECT @mig, t.month, t.modality, count(*)::int, coalesce(sum(t.inst), 0)::bigint, now()
+FROM (
+    SELECT CASE WHEN length(s.""StudyDate"") = 8 AND s.""StudyDate"" ~ '^[0-9]+$' AND substr(s.""StudyDate"", 5, 2) BETWEEN '01' AND '12'
+                THEN substr(s.""StudyDate"", 1, 6) ELSE '' END AS month,
+           left(coalesce(
+               (SELECT btrim(u.m) FROM unnest(string_to_array(upper(coalesce(s.""ModalitiesInStudy"", '')), chr(92))) WITH ORDINALITY AS u(m, o)
+                 WHERE btrim(u.m) NOT IN ('', 'SR', 'PR', 'KO') ORDER BY u.o LIMIT 1),
+               nullif(btrim(split_part(upper(coalesce(s.""ModalitiesInStudy"", '')), chr(92), 1)), ''),
+               '—'), 16) AS modality,
+           s.""SourceInstanceCount"" AS inst
+    FROM ""MigrationStudies"" s
+    WHERE s.""MigrationId"" = @mig
+) t
+GROUP BY t.month, t.modality;";
+
+    public async Task RecomputeCompositionAsync(int migrationId, CancellationToken ct = default)
+    {
+        await using var db = factory.CreateDbContext();
+        db.Database.SetCommandTimeout(TimeSpan.FromMinutes(10));   // ~1 s por millón de estudios
+        var strategy = db.Database.CreateExecutionStrategy();
+        await strategy.ExecuteAsync(async () =>
+        {
+            await using var tx = await db.Database.BeginTransactionAsync(ct);
+            await db.Database.ExecuteSqlRawAsync(CompositionSql, [new NpgsqlParameter("mig", migrationId)], ct);
+            await tx.CommitAsync(ct);
+        });
+    }
+
+    public async Task<List<MigrationCompositionRow>> GetCompositionAsync(int migrationId)
+    {
+        await using var db = factory.CreateDbContext();
+        return await db.MigrationComposition.AsNoTracking()
+            .Where(c => c.MigrationId == migrationId)
+            .ToListAsync();
+    }
+
+    /// <summary>Recalcula la composición tras cambiar el lote. Si falla, borra la guardada:
+    /// así la pestaña Gráficas la vuelve a calcular al abrirse, en vez de mostrar una
+    /// composición que ya no corresponde al lote. Nunca hace fallar el alta de estudios.</summary>
+    private async Task RefreshCompositionAfterChangeAsync(int migrationId)
+    {
+        try { await RecomputeCompositionAsync(migrationId); }
+        catch
+        {
+            try
+            {
+                await using var db = factory.CreateDbContext();
+                await db.MigrationComposition.Where(c => c.MigrationId == migrationId).ExecuteDeleteAsync();
+            }
+            catch { /* BD inaccesible: la pestaña lo reintentará */ }
+        }
+    }
+
     public async Task<List<MigrationStudy>> GetPageKeysetAsync(int migrationId, StudyFilter filter)
     {
         await using var db = factory.CreateDbContext();
@@ -499,6 +560,13 @@ public class StudyRepository(IDbContextFactory<AppDbContext> factory, DeferredVa
     }
 
     public async Task<int> BulkInsertAsync(int migrationId, IEnumerable<MigrationStudy> studies)
+    {
+        var inserted = await BulkInsertCoreAsync(migrationId, studies);
+        if (inserted > 0) await RefreshCompositionAfterChangeAsync(migrationId);
+        return inserted;
+    }
+
+    private async Task<int> BulkInsertCoreAsync(int migrationId, IEnumerable<MigrationStudy> studies)
     {
         await using var db = factory.CreateDbContext();
         // Get existing UIDs to avoid duplicates
@@ -554,6 +622,16 @@ public class StudyRepository(IDbContextFactory<AppDbContext> factory, DeferredVa
     /// reanudar tras un corte. Devuelve el nº de estudios insertados.</summary>
     public async Task<int> ImportFromInventoryAsync(int migrationId, DiscoveredStudyFilter filter,
         Func<int, int, Task>? onProgress = null, CancellationToken ct = default)
+    {
+        var done = await ImportFromInventoryCoreAsync(migrationId, filter, onProgress, ct);
+        // Al terminar (también si no quedaba nada por importar: una reanudación tras un
+        // corte justo al final), la composición se rehace con el lote completo.
+        await RefreshCompositionAfterChangeAsync(migrationId);
+        return done;
+    }
+
+    private async Task<int> ImportFromInventoryCoreAsync(int migrationId, DiscoveredStudyFilter filter,
+        Func<int, int, Task>? onProgress, CancellationToken ct)
     {
         // ── Recorrido por tramos (CONC-19) ─────────────────────────────────────
         // Antes se cargaba TODO el inventario filtrado de una vez, con todas sus columnas y
@@ -1122,6 +1200,10 @@ RETURNING m.*";
 
     public async Task DeleteAllAsync(int migrationId, IProgress<long>? progress = null)
     {
+        // La composición del lote deja de valer: se borra ANTES, para que, aunque el borrado
+        // por lotes se corte a mitad, la pestaña Gráficas la recalcule con lo que quede.
+        await using (var db = factory.CreateDbContext())
+            await db.MigrationComposition.Where(c => c.MigrationId == migrationId).ExecuteDeleteAsync();
         // Por lotes (DISC-13): cada estudio arrastra sus instancias.
         await BatchDelete.RunAsync(factory, "MigrationStudies", "MigrationId", migrationId, BatchDelete.StudiesPerBatch, progress);
         vacuum.Request("MigrationStudies", "MigrationInstances");

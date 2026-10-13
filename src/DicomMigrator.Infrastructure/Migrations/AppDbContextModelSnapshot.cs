@@ -795,6 +795,45 @@ namespace DicomMigrator.Infrastructure.Migrations
                     b.ToTable("AuditLogs");
                 });
 
+            modelBuilder.Entity("DicomMigrator.Core.Models.MigrationCompositionRow", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<long>("Id"));
+
+                    b.Property<DateTime>("ComputedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<long>("Images")
+                        .HasColumnType("bigint");
+
+                    b.Property<int>("MigrationId")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Modality")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.Property<string>("Month")
+                        .IsRequired()
+                        .HasMaxLength(6)
+                        .HasColumnType("character varying(6)");
+
+                    b.Property<int>("Studies")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("MigrationId", "Month", "Modality")
+                        .IsUnique()
+                        .HasDatabaseName("IX_MigComposition_Mig_Month_Mod");
+
+                    b.ToTable("MigrationComposition", (string)null);
+                });
+
             modelBuilder.Entity("DicomMigrator.Core.Models.MigrationInstance", b =>
                 {
                     b.Property<long>("Id")
@@ -1145,6 +1184,15 @@ namespace DicomMigrator.Infrastructure.Migrations
                         .IsRequired();
 
                     b.Navigation("Migration");
+                });
+
+            modelBuilder.Entity("DicomMigrator.Core.Models.MigrationCompositionRow", b =>
+                {
+                    b.HasOne("DicomMigrator.Core.Models.Migration", null)
+                        .WithMany()
+                        .HasForeignKey("MigrationId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("DicomMigrator.Core.Models.MigrationInstance", b =>

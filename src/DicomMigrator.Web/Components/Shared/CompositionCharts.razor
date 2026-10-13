@@ -1,0 +1,373 @@
+@* ════════════════════════════════════════════════════════════════════════════
+   Pestaña «Gráficas» de la ficha de migración: composición del lote.
+
+   · Dos tartas, una junto a otra: estudios e imágenes por modalidad principal (con
+     vista Tabla).
+   · Debajo, barras apiladas por fecha del estudio: mes, trimestre o año; al pulsar un año
+     o un trimestre se ven sus meses; las fechas fuera de rango van en barras aparte.
+
+   Lee la composición guardada (MigrationComposition), que se calcula al rellenar el
+   lote y no cambia con el avance de la migración: nunca recorre los estudios en un
+   refresco. SVG generado aquí mismo (ver CompositionModel.cs); sin librerías JS. El
+   detalle al pasar el ratón y el resaltado leyenda ↔ porción los hace wwwroot/js/charts.js
+   en el navegador, sin viajes al servidor, a partir de los atributos data-tip / data-key.
+   ════════════════════════════════════════════════════════════════════════════ *@
+@using System.Text.Json
+@using DicomMigrator.Core.Interfaces
+@using DicomMigrator.Core.Models
+@inject IStudyRepository StudyRepo
+@inject IJSRuntime JS
+@inject ILogger<CompositionCharts> Logger
+
+<div class="cmp-root">
+@if (PopulateStatus == "Running")
+{
+    <section class="cmp-card"><div class="cmp-body cmp-empty">
+        El lote se está poblando desde el inventario
+        (@CompositionModel.N(PopulateDone) de @CompositionModel.N(PopulateTotal) estudios).
+        Las gráficas se calculan cuando termine.
+    </div></section>
+}
+else if (_error is not null)
+{
+    <section class="cmp-card"><div class="cmp-body cmp-empty">
+        @_error
+        <button type="button" class="cmp-link" @onclick="RecomputeAsync">↺ Reintentar</button>
+    </div></section>
+}
+else if (_model is null)
+{
+    <section class="cmp-card"><div class="cmp-body cmp-empty">Calculando la composición del lote…</div></section>
+}
+else if (_model.TotalStudies == 0)
+{
+    <section class="cmp-card"><div class="cmp-body cmp-empty">El lote no tiene estudios.</div></section>
+}
+else
+{
+    var m = _model;
+
+    @* ── Composición del lote: tartas ── *@
+    <section class="cmp-card" aria-label="Composición del lote">
+        <div class="cmp-header">
+            <span class="cmp-title">Composición del lote</span>
+            <div class="cmp-seg" role="group" aria-label="Vista">
+                <button type="button" aria-pressed="@(_table ? "false" : "true")" @onclick="() => _table = false">Gráficas</button>
+                <button type="button" aria-pressed="@(_table ? "true" : "false")" @onclick="() => _table = true">Tabla</button>
+            </div>
+        </div>
+        <div class="cmp-body">
+            @if (!_table)
+            {
+                <div class="cmp-pies">
+                    @PieCard("Estudios por modalidad", m.TotalStudies, "estudios", m.Modalities.Select(s => (s.Key, (long)s.Studies)).ToList())
+                    @PieCard("Imágenes por modalidad", m.TotalImages, "imágenes", m.Modalities.Select(s => (s.Key, s.Images)).ToList())
+                </div>
+            }
+            else
+            {
+                <div class="cmp-tbl-wrap">
+                    <table class="cmp-table">
+                        <thead><tr><th>Modalidad</th><th>Estudios</th><th>% estudios</th><th>Imágenes</th><th>% imágenes</th><th>Imágenes / estudio</th></tr></thead>
+                        <tbody>
+                            @foreach (var s in m.Modalities.OrderByDescending(s => s.Studies))
+                            {
+                                <tr>
+                                    <td><span class="cmp-sw" style="background:@s.Color"></span>@Code(s.Key) · @CompositionModel.NameOf(s.Key)</td>
+                                    <td>@CompositionModel.N(s.Studies)</td><td>@CompositionModel.Pct(s.Studies, m.TotalStudies)</td>
+                                    <td>@CompositionModel.N(s.Images)</td><td>@CompositionModel.Pct(s.Images, m.TotalImages)</td>
+                                    <td>@((s.Studies == 0 ? 0 : (double)s.Images / s.Studies).ToString("0.#", CompositionModel.Es))</td>
+                                </tr>
+                            }
+                        </tbody>
+                        <tfoot><tr>
+                            <td>Total</td><td>@CompositionModel.N(m.TotalStudies)</td><td>100,0 %</td>
+                            <td>@CompositionModel.N(m.TotalImages)</td><td>100,0 %</td>
+                            <td>@((m.TotalStudies == 0 ? 0 : (double)m.TotalImages / m.TotalStudies).ToString("0.#", CompositionModel.Es))</td>
+                        </tr></tfoot>
+                    </table>
+                </div>
+            }
+            <p class="cmp-note">
+                Cada estudio cuenta en su modalidad principal: SR, PR y KO acompañan a otras y solo cuentan si son lo único del estudio.
+                Imágenes según el recuento del origen (<span class="mono">SrcInstances</span>).
+                @if (m.ComputedAt is { } at)
+                {
+                    <span class="cmp-computed">Calculada el @at.ToLocalTime().ToString("dd/MM/yyyy HH:mm") ·
+                        <button type="button" class="cmp-link" @onclick="RecomputeAsync" disabled="@_busy"
+                                title="Volver a calcular desde los estudios del lote">↺ Recalcular</button></span>
+                }
+            </p>
+        </div>
+    </section>
+
+    @* ── Estudios por fecha: barras apiladas ── *@
+    var buckets = m.Buckets(_grouping, _drill);
+    var outs = _drill is null ? m.Outliers : (IReadOnlyList<DateBucket>)Array.Empty<DateBucket>();
+    var lay = new BarLayout(m, buckets, outs, monthView: _grouping == DateGrouping.Month && _drill is null);
+    _scrollMode = lay.Scroll;
+    var outN = m.Outliers.Sum(o => o.Total);
+
+    <section class="cmp-card" aria-label="Estudios por fecha">
+        <div class="cmp-header">
+            <span class="cmp-title">Estudios por fecha</span>
+            <div class="cmp-seg" role="group" aria-label="Agrupar por">
+                @foreach (var (g, txt) in new[] { (DateGrouping.Month, "Mes"), (DateGrouping.Quarter, "Trimestre"), (DateGrouping.Year, "Año") })
+                {
+                    <button type="button" aria-pressed="@(_grouping == g && _drill is null ? "true" : "false")" @onclick="() => SetGrouping(g)">@txt</button>
+                }
+            </div>
+        </div>
+        <div class="cmp-body">
+            <div class="cmp-mhead">
+                <div class="cmp-crumb">
+                    @if (_drill is not null)
+                    {
+                        <button type="button" @onclick="() => _drill = null">← @m.RangeLabel</button>
+                        <b>@(_drill.Quarter is null ? $"{_drill.Year}" : $"T{_drill.Quarter + 1} {_drill.Year}")</b><span>· meses</span>
+                    }
+                    else
+                    {
+                        <b>@m.RangeLabel</b>
+                        <span>· @buckets.Count @(_grouping switch { DateGrouping.Month => buckets.Count == 1 ? "mes" : "meses", DateGrouping.Quarter => buckets.Count == 1 ? "trimestre" : "trimestres", _ => buckets.Count == 1 ? "año" : "años" })@(_grouping != DateGrouping.Month ? " · pulsa uno para ver sus meses" : "")</span>
+                    }
+                </div>
+                <span class="cmp-total mono">
+                    @CompositionModel.N(m.TotalStudies - outN) estudios@(outN > 0 ? $" · + {CompositionModel.N(outN)} fuera de rango" : "")
+                </span>
+            </div>
+
+            <ul class="cmp-mlegend" aria-label="Leyenda">
+                @foreach (var s in m.Modalities)
+                {
+                    <li><span class="cmp-sw" style="background:@s.Color"></span><span class="code">@Code(s.Key)</span>@CompositionModel.NameOf(s.Key)</li>
+                }
+            </ul>
+
+            <div class="cmp-wrap" @ref="_wrapRef" tabindex="0" aria-label="Estudios por fecha del estudio, apilados por modalidad">
+                @if (lay.Scroll)
+                {
+                    <svg class="cmp-axis" width="@F(BarLayout.AxisW)" height="@F(BarLayout.H)" viewBox="0 0 @F(BarLayout.AxisW) @F(BarLayout.H)" aria-hidden="true">
+                        @foreach (var (y, t) in lay.Ticks)
+                        {
+                            <g><text x="@F(BarLayout.AxisW - 8)" y="@F(y)" class="ax-tick" text-anchor="end" dominant-baseline="central">@t</text></g>
+                        }
+                    </svg>
+                    <svg class="cmp-bars" width="@F(lay.Width)" height="@F(BarLayout.H)" viewBox="0 0 @F(lay.Width) @F(BarLayout.H)" role="img">
+                        @BarsBody(lay)
+                    </svg>
+                }
+                else
+                {
+                    <svg class="cmp-bars cmp-fit" viewBox="0 0 @F(lay.Width) @F(BarLayout.H)" role="img">
+                        @foreach (var (y, t) in lay.Ticks)
+                        {
+                            <g><text x="@F(BarLayout.AxisW - 8)" y="@F(y)" class="ax-tick" text-anchor="end" dominant-baseline="central">@t</text></g>
+                        }
+                        @BarsBody(lay)
+                    </svg>
+                }
+            </div>
+            @if (lay.Scroll)
+            {
+                <div class="cmp-hint">← Desliza, o usa Mayús + rueda del ratón, para ver los años anteriores. Se abre en lo más reciente.</div>
+            }
+            <p class="cmp-note">
+                Fecha del estudio (<span class="mono">StudyDate</span>), no de la migración. Cada barra apila los estudios por su modalidad principal, con los mismos colores que las tartas.
+                Pulsa una barra de año o de trimestre para ver sus meses. «Anteriores», «Posteriores» y «Sin fecha» recogen las fechas fuera del rango del lote
+                (1900, años futuros) y las vacías: no estiran el eje y quedan a la vista para revisarlas.
+            </p>
+        </div>
+    </section>
+}
+</div>
+
+@code {
+    [Parameter, EditorRequired] public int MigrationId { get; set; }
+    [Parameter] public string PopulateStatus { get; set; } = "Idle";
+    [Parameter] public int PopulateDone { get; set; }
+    [Parameter] public int PopulateTotal { get; set; }
+
+    private CompositionModel? _model;
+    private string? _error;
+    private bool _busy, _table;
+    private DateGrouping _grouping = DateGrouping.Month;
+    private DrillKey? _drill;
+    private int _loadedFor = -1;
+    private string? _lastPopulate;
+    private ElementReference _wrapRef;
+    private bool _scrollMode, _wasScrollMode;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        // El padre se repinta cada 3 s; solo se recarga al cambiar de migración o al terminar
+        // un poblado (la composición se rehízo al final de él).
+        var populateFinished = _lastPopulate == "Running" && PopulateStatus != "Running";
+        _lastPopulate = PopulateStatus;
+        if (PopulateStatus == "Running") return;
+        if (_loadedFor != MigrationId || populateFinished)
+        {
+            _loadedFor = MigrationId;
+            _drill = null;
+            await LoadAsync(computeIfMissing: true);
+        }
+    }
+
+    private async Task LoadAsync(bool computeIfMissing)
+    {
+        _error = null;
+        _model = null;
+        try
+        {
+            var rows = await StudyRepo.GetCompositionAsync(MigrationId);
+            // Sin composición guardada (migraciones anteriores a esta versión, o un cálculo
+            // que falló): se calcula ahora y queda guardada.
+            if (rows.Count == 0 && computeIfMissing)
+            {
+                await StudyRepo.RecomputeCompositionAsync(MigrationId);
+                rows = await StudyRepo.GetCompositionAsync(MigrationId);
+            }
+            _model = CompositionModel.Build(rows, DateOnly.FromDateTime(DateTime.Today));
+            _grouping = _model.DefaultGrouping;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "No se pudo cargar la composición de la migración {Id}.", MigrationId);
+            _error = "No se pudo calcular la composición del lote. Inténtalo de nuevo en unos segundos.";
+        }
+    }
+
+    private async Task RecomputeAsync()
+    {
+        if (_busy) return;
+        _busy = true;
+        try
+        {
+            await StudyRepo.RecomputeCompositionAsync(MigrationId);
+            _drill = null;
+            await LoadAsync(computeIfMissing: false);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "No se pudo recalcular la composición de la migración {Id}.", MigrationId);
+            _error = "No se pudo calcular la composición del lote. Inténtalo de nuevo en unos segundos.";
+        }
+        finally { _busy = false; }
+    }
+
+    private void SetGrouping(DateGrouping g) { _grouping = g; _drill = null; }
+
+    private void Drill(DateBucket b) { if (b.Drill is not null) _drill = b.Drill; }
+
+    private void DrillOnKey(KeyboardEventArgs e, DateBucket b)
+    {
+        if (e.Key is "Enter" or " ") Drill(b);
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        // Al entrar en la vista desplazable, mostrar lo más reciente (a la derecha).
+        if (_scrollMode && !_wasScrollMode)
+        {
+            try { await JS.InvokeVoidAsync("moveCharts.scrollToEnd", _wrapRef); }
+            catch (Exception ex) when (ex is JSException or JSDisconnectedException or TaskCanceledException or InvalidOperationException) { }
+        }
+        _wasScrollMode = _scrollMode;
+    }
+
+    private static string F(double v) => v.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
+    private string Code(string key) => key == CompositionModel.OthersKey ? "Otras" : key;
+    private string Name(string key) => key == CompositionModel.OthersKey
+        ? _model!.Modalities.First(s => s.Key == key).Label.Replace("Otras", "Resto de modalidades")
+        : CompositionModel.NameOf(key);
+
+    // Datos del detalle al pasar el ratón (los pinta charts.js): título, subtítulo, filas
+    // [código, color, valor, clave] y aviso opcional.
+    private static string Tip(string title, string sub, IEnumerable<(string Code, string Color, string Value, string Key)>? rows = null, string? hint = null) =>
+        JsonSerializer.Serialize(new { t = title, s = sub, r = rows?.Select(r => new[] { r.Code, r.Color, r.Value, r.Key }), h = hint });
+
+    private RenderFragment PieCard(string title, long total, string unit, List<(string Key, long Value)> values) => __builder =>
+    {
+        var slices = PieLayout.Build(values.Select(v => (v.Key, v.Value, _model!.ColorOf(v.Key), "")));
+        <div class="cmp-pie-card">
+            <div class="cmp-pie-title"><h3>@title</h3><span class="cmp-total mono">@CompositionModel.N(total) @unit</span></div>
+            <div class="cmp-pie-body">
+                <svg class="cmp-pie" viewBox="0 0 200 200" role="img" aria-label="@title">
+                    @foreach (var s in slices)
+                    {
+                        var v = values.First(x => x.Key == s.Key).Value;
+                        <path class="cmp-slice" d="@s.Path" fill="@s.Color" stroke="var(--surface)" stroke-width="2" stroke-linejoin="round"
+                              tabindex="0" data-key="@s.Key" aria-label="@($"{Code(s.Key)} {Name(s.Key)}: {CompositionModel.N(v)} {unit}, {CompositionModel.Pct(v, total)}")"
+                              data-tip="@Tip($"{Code(s.Key)} · {Name(s.Key)}", $"{CompositionModel.N(v)} {unit} · {CompositionModel.Pct(v, total)}")" />
+                    }
+                    @foreach (var s in slices.Where(s => s.Label is not null))
+                    {
+                        <g><text x="@F(s.LabelX)" y="@F(s.LabelY)" class="cmp-slice-lbl" text-anchor="middle" dominant-baseline="central">@s.Label</text></g>
+                    }
+                </svg>
+                <ul class="cmp-legend">
+                    @foreach (var (key, value) in values.OrderByDescending(v => v.Value))
+                    {
+                        <li data-key="@key" data-tip="@Tip($"{Code(key)} · {Name(key)}", $"{CompositionModel.N(value)} {unit} · {CompositionModel.Pct(value, total)}")">
+                            <span class="cmp-sw" style="background:@_model!.ColorOf(key)"></span>
+                            <span class="code">@Code(key)</span>
+                            <span class="name">@Name(key)</span>
+                            <span class="num">@CompositionModel.N(value)</span>
+                            <span class="pct">@CompositionModel.Pct(value, total)</span>
+                        </li>
+                    }
+                </ul>
+            </div>
+        </div>
+    };
+
+    private RenderFragment BarsBody(BarLayout lay) => __builder =>
+    {
+        @foreach (var (y, _) in lay.Ticks)
+        {
+            <line x1="@F(lay.PlotLeft)" x2="@F(lay.PlotRight)" y1="@F(y)" y2="@F(y)" class="@(Math.Abs(y - lay.Baseline) < 0.5 ? "grid-base" : "grid")" />
+        }
+        @foreach (var x in lay.YearSeparators)
+        {
+            <line x1="@F(x)" x2="@F(x)" y1="@F(BarLayout.Mt)" y2="@F(lay.Baseline + 4)" class="sep-year" />
+        }
+        @if (lay.OutlierSeparator is { } xs)
+        {
+            <line x1="@F(xs)" x2="@F(xs)" y1="@F(BarLayout.Mt)" y2="@F(lay.Baseline + 4)" class="sep-out" />
+        }
+        <g class="cmp-barset">
+            @foreach (var bar in lay.Bars)
+            {
+                var b = bar.Bucket;
+                var rows = _model!.StackOrder.AsEnumerable().Reverse().Where(k => b.ByModality.GetValueOrDefault(k) > 0)
+                    .Select(k => (Code(k), _model.ColorOf(k), CompositionModel.N(b.ByModality[k]), k));
+                <g class="@($"cmp-bar{(b.Drill is not null ? " drill" : "")}{(b.IsOutlier ? " out" : "")}")"
+                   tabindex="0" role="img" aria-label="@bar.Tooltip.Replace('\n', ' ')"
+                   data-tip="@Tip(b.Title, $"{CompositionModel.N(b.Total)} estudios", rows, b.Drill is not null ? "Pulsa para ver sus meses" : null)"
+                   @onclick="() => Drill(b)" @onkeydown="e => DrillOnKey(e, b)">
+                    @* Zona de pulsación un poco más grande que la barra *@
+                    <rect x="@F(bar.X - 1)" y="@F(BarLayout.Mt)" width="@F(bar.W + 2)" height="@F(lay.Baseline - BarLayout.Mt)" fill="transparent" />
+                    @foreach (var seg in bar.Segments)
+                    {
+                        if (seg.Path is not null)
+                        {
+                            <path class="seg" d="@seg.Path" fill="@seg.Color" data-mod="@seg.Key" />
+                        }
+                        else
+                        {
+                            <rect class="seg" x="@F(bar.X)" y="@F(seg.Y)" width="@F(bar.W)" height="@F(seg.H)" fill="@seg.Color" data-mod="@seg.Key" />
+                        }
+                    }
+                    @if (b.IsOutlier)
+                    {
+                        <g><text x="@F(bar.X + bar.W / 2)" y="@F(bar.TopY - 6)" class="ax-val" text-anchor="middle">@CompositionModel.N(b.Total)</text></g>
+                    }
+                </g>
+            }
+        </g>
+        @foreach (var t in lay.Texts)
+        {
+            <g><text x="@F(t.X)" y="@F(t.Y)" class="@t.Css" text-anchor="@t.Anchor">@t.Text</text></g>
+        }
+    };
+}

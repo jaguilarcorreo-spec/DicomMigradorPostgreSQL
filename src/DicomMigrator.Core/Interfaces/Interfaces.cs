@@ -158,6 +158,12 @@ public interface IStudyRepository
     Task<List<MigrationStudy>> GetPagedAsync(int migrationId, StudyFilter filter);
     /// <summary>Lista de SOPInstanceUID que faltan en destino de un estudio (informe Nivel 2).</summary>
     Task<string?> GetMissingUidsAsync(long studyId);
+    /// <summary>Recalcula la composición del lote (estudios e imágenes por mes y modalidad
+    /// principal) en una sola consulta y la guarda en MigrationComposition. Se llama sola
+    /// al terminar BulkInsertAsync e ImportFromInventoryAsync.</summary>
+    Task RecomputeCompositionAsync(int migrationId, CancellationToken ct = default);
+    /// <summary>Composición guardada del lote; vacía si aún no se ha calculado.</summary>
+    Task<List<MigrationCompositionRow>> GetCompositionAsync(int migrationId);
     /// <summary>
     /// Keyset (cursor) pagination — scales to millions of rows without the OFFSET
     /// penalty. Returns the next PageSize rows after the cursor in the filter.

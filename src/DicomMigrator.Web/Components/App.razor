@@ -1,3 +1,4 @@
+@inject Microsoft.AspNetCore.Hosting.IWebHostEnvironment Env
 <!DOCTYPE html>
 <html lang="es">
 <head>
@@ -5,11 +6,18 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>MOVE · DICOM data migrator</title>
     <link rel="icon" type="image/svg+xml" href="img/move-mark.svg" />
-    <link rel="stylesheet" href="css/app.css" />
+    <link rel="stylesheet" href="@V("css/app.css")" />
 </head>
 <body>
     <Routes />
     <script src="_framework/blazor.server.js"></script>
-    <script src="js/download.js"></script>
+    <script src="@V("js/download.js")"></script>
+    <script src="@V("js/charts.js")"></script>
 </body>
 </html>
+
+@code {
+    // «css/app.css?v=…»: la marca cambia cuando cambia el fichero, así que tras actualizar
+    // el navegador descarga el nuevo en vez de usar el de su caché.
+    private string V(string path) => DicomMigrator.Web.Services.AssetVersion.Url(Env, path);
+}

@@ -360,3 +360,29 @@ public class LocalConfiguration
 
     public DateTime UpdatedAt     { get; set; } = DateTime.UtcNow;
 }
+
+// ══════════════════════════════════════════════════════════════════════════════
+// COMPOSICIÓN DEL LOTE (pestaña Gráficas de la ficha de migración)
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// <summary>
+/// Estudios e imágenes de una migración agrupados por mes de la fecha del estudio y por
+/// modalidad principal. Lo calcula StudyRepository.RecomputeCompositionAsync al rellenar
+/// el lote (poblado desde inventario o alta directa) y no cambia con el avance de la
+/// migración: describe QUÉ hay en el lote, no cómo va. Pocas filas (modalidades × meses)
+/// sea cual sea el número de estudios.
+/// </summary>
+public class MigrationCompositionRow
+{
+    public long     Id          { get; set; }
+    public int      MigrationId { get; set; }
+    /// <summary>Año y mes de StudyDate ("202609"); vacío si la fecha falta o no es válida.</summary>
+    public string   Month       { get; set; } = string.Empty;
+    /// <summary>Modalidad principal: la primera de ModalitiesInStudy que no sea SR, PR ni
+    /// KO; si solo tiene esas, la primera. "—" si el estudio no trae modalidades.</summary>
+    public string   Modality    { get; set; } = string.Empty;
+    public int      Studies     { get; set; }
+    /// <summary>Suma de SourceInstanceCount (imágenes según el origen).</summary>
+    public long     Images      { get; set; }
+    public DateTime ComputedAt  { get; set; }
+}

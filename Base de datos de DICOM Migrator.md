@@ -230,7 +230,7 @@ DiscoveryPartitions |o..o{ DiscoveryRequests : "PartitionId · sin FK"
 
 ### Migración
 
-Una migración copia estudios del inventario (o los importa directamente) y guarda en `MigrationInstances` los UID de origen para la verificación de nivel 2.
+Una migración copia estudios del inventario (o los importa directamente) y guarda en `MigrationInstances` los UID de origen para la verificación de nivel 2. `MigrationComposition` guarda la composición del lote para la pestaña Gráficas.
 
 ```mermaid
 erDiagram
@@ -330,6 +330,15 @@ MigrationInstances {
   varchar(64) SeriesInstanceUid
   varchar(64) SopInstanceUid UK
 }
+MigrationComposition {
+  bigint Id PK
+  int MigrationId FK, UK
+  varchar(6) Month UK
+  varchar(16) Modality UK
+  int Studies
+  bigint Images
+  timestamptz ComputedAt
+}
 AuditLogs {
   bigint Id PK
   int MigrationId FK
@@ -347,9 +356,12 @@ Migrations ||--o{ ExecutionWindows : "CASCADE"
 Migrations ||--o{ MigrationStudies : "CASCADE"
 Migrations ||--o{ AuditLogs : "CASCADE"
 MigrationStudies ||--o{ MigrationInstances : "CASCADE"
+Migrations ||--o{ MigrationComposition : "CASCADE"
 DiscoveryJobs |o..o{ Migrations : "PopulateSourceJobId · sin FK"
 DiscoveredStudies |o..o{ MigrationStudies : "copia por StudyInstanceUid"
 ```
+
+`MigrationComposition` tiene una fila por mes de la fecha del estudio (`Month`, `YYYYMM`; vacío si falta o no es válida) y modalidad principal (la primera de `ModalitiesInStudy` que no sea SR, PR ni KO), con el número de estudios y la suma de `SourceInstanceCount`. Se recalcula entera, en una sola consulta, al terminar de añadir estudios al lote (poblado desde inventario o alta directa) y se borra al vaciarlo. No cambia con el avance de la migración. Son pocas filas (modalidades × meses) sea cual sea el número de estudios.
 
 `StudyDate` se guarda como texto DICOM `YYYYMMDD`, no como fecha: el orden y los filtros por fecha dependen de que el PACS siempre devuelva ese formato exacto (lo advierte el propio código de `AcquireNextPendingAsync`).
 
@@ -357,7 +369,7 @@ DiscoveredStudies |o..o{ MigrationStudies : "copia por StudyInstanceUid"
 
 ## 2 · Índices
 
-21 índices
+22 índices
 
 Además de las claves primarias. Los marcados como *convención* no están en `AppDbContext`: EF los crea solo para cada clave foránea.
 
@@ -370,6 +382,7 @@ Además de las claves primarias. Los marcados como *convención* no están en `A
 | MigrationStudies | IX_MigStudies_verify_queue | MigrationId, Id | parcial | Solo filas `Migrated`: cola de verificación. |
 | MigrationStudies | IX_MigStudies_Mig_DiscDate | MigrationId, DiscoveryDate, Id | normal | Orden de la lista de estudios y de la exportación CSV por fecha de alta, con `Id` como desempate: la fecha se repite por lotes enteros del poblado, y el `Id` da un orden total que permite paginar por clave sin `OFFSET`. |
 | MigrationInstances | IX_MigInstances_Study_Sop | MigrationStudyId, SopInstanceUid | único | UID de origen por estudio para la verificación de nivel 2; evita duplicados al copiar. |
+| MigrationComposition | IX_MigComposition_Mig_Month_Mod | MigrationId, Month, Modality | único | Composición del lote de una migración (pestaña Gráficas): una fila por mes y modalidad. |
 | DiscoveredStudies | IX_DiscoveredStudies_DiscoveryJobId_StudyInstanceUid | DiscoveryJobId, StudyInstanceUid | único | Un estudio una sola vez por job: es la clave del `INSERT … ON CONFLICT` con que el descubrimiento guarda el inventario. |
 | DiscoveredStudies | IX_DiscoveredStudies_Job_StudyDate | DiscoveryJobId, StudyDate | normal | Filtro por fechas del inventario de un job y su rango de fechas. |
 | DiscoveredStudies | IX_DiscoveredStudies_Job_Id | DiscoveryJobId, Id | normal | Recorrer el inventario de un job por tramos de `Id`, sin `OFFSET`: exportación CSV y lista de estudios a capturar (nivel 2). |
