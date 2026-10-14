@@ -365,7 +365,7 @@ DiscoveredStudies |o..o{ MigrationStudies : "copia por StudyInstanceUid"
 
 `StudyDate` se guarda como texto DICOM `YYYYMMDD`, no como fecha: el orden y los filtros por fecha dependen de que el PACS siempre devuelva ese formato exacto (lo advierte el propio código de `AcquireNextPendingAsync`).
 
-`ModalityRank` es la posición de la primera modalidad del estudio en la lista de prioridad de la migración (999 si no está). Se recalcula al iniciar o reanudar la migración, solo en las filas `Pending` o `RetryPending` cuyo valor cambia, y es la primera columna del orden de la cola.
+`ModalityRank` es la posición de la modalidad principal del estudio en la lista de prioridad de la migración (999 si no está o si la migración no tiene prioridad). La modalidad principal es la primera de `ModalitiesInStudy` que no sea SR, PR ni KO (un estudio «SR\US» cuenta como US); es la misma que agrupa la pestaña Gráficas. Se recalcula al iniciar o reanudar la migración, solo en las filas `Pending` o `RetryPending` cuyo valor cambia, y es la primera columna del orden de la cola.
 
 ## 2 · Índices
 
@@ -626,4 +626,4 @@ La auditoría no se escribe en el momento: va a un búfer en memoria que se vuel
 
 El mantenimiento actúa sobre las siete tablas de más movimiento (`MigrationStudies`, `MigrationInstances`, `DiscoveredStudies`, `DiscoveredInstances`, `DiscoveryPartitions`, `DiscoveryRequests` y `AuditLogs`). El diagrama solo dibuja las flechas principales.
 
-Esquema: Infrastructure/Migrations/AppDbContextModelSnapshot.cs, contrastado con la base local (pg_constraint, pg_indexes, pg_stat_user_tables). Estados y flujos: repositorios y servicios de Infrastructure y páginas de Web, leídos del directorio de trabajo del proyecto (commit 63fcbb7, 11 oct 2026).
+Esquema: Infrastructure/Migrations/AppDbContextModelSnapshot.cs, contrastado con la base local (pg_constraint, pg_indexes, pg_stat_user_tables). Estados y flujos: repositorios y servicios de Infrastructure y páginas de Web, leídos del directorio de trabajo del proyecto (commit a3d2ab7, 14 oct 2026).

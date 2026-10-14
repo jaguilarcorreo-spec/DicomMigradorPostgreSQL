@@ -455,11 +455,22 @@ public class StudyRepository(IDbContextFactory<AppDbContext> factory, DeferredVa
             .FirstOrDefaultAsync();
     }
 
+    // ── Modalidad principal de un estudio ────────────────────────────────────
+    // La primera de ModalitiesInStudy que no sea SR, PR ni KO (informes, estados de
+    // presentación y selecciones de imágenes, que acompañan a otras); si solo tiene esas,
+    // la primera; NULL si no trae ninguna. Separadores admitidos: \ (DICOM), / y ,. La usan
+    // la cola de migración (ModalityRank) y la composición del lote (pestaña Gráficas), para
+    // que un «SR\US» sea ecografía en las dos. chr(92) es la barra invertida.
+    private const string PrimaryModalitySql = @"coalesce(
+        (SELECT btrim(u.m) FROM unnest(string_to_array(upper(translate(coalesce(s.""ModalitiesInStudy"", ''), '/,', chr(92) || chr(92))), chr(92)))
+                WITH ORDINALITY AS u(m, o)
+          WHERE btrim(u.m) NOT IN ('', 'SR', 'PR', 'KO') ORDER BY u.o LIMIT 1),
+        nullif(btrim(split_part(upper(translate(coalesce(s.""ModalitiesInStudy"", ''), '/,', chr(92) || chr(92))), chr(92), 1)), ''))";
+
     // ── Composición del lote (pestaña Gráficas) ──────────────────────────────
     // Una sola pasada por los estudios de la migración, agrupando en la base por mes de
     // StudyDate y modalidad principal. Se reemplaza entera en una transacción, así que
     // repetirla (reanudación del poblado, otro alta) siempre deja el resultado correcto.
-    // chr(92) es la barra invertida que separa los valores de ModalitiesInStudy ("CT\SR").
     private const string CompositionSql = @"
 DELETE FROM ""MigrationComposition"" WHERE ""MigrationId"" = @mig;
 INSERT INTO ""MigrationComposition"" (""MigrationId"", ""Month"", ""Modality"", ""Studies"", ""Images"", ""ComputedAt"")
@@ -467,11 +478,7 @@ SELECT @mig, t.month, t.modality, count(*)::int, coalesce(sum(t.inst), 0)::bigin
 FROM (
     SELECT CASE WHEN length(s.""StudyDate"") = 8 AND s.""StudyDate"" ~ '^[0-9]+$' AND substr(s.""StudyDate"", 5, 2) BETWEEN '01' AND '12'
                 THEN substr(s.""StudyDate"", 1, 6) ELSE '' END AS month,
-           left(coalesce(
-               (SELECT btrim(u.m) FROM unnest(string_to_array(upper(coalesce(s.""ModalitiesInStudy"", '')), chr(92))) WITH ORDINALITY AS u(m, o)
-                 WHERE btrim(u.m) NOT IN ('', 'SR', 'PR', 'KO') ORDER BY u.o LIMIT 1),
-               nullif(btrim(split_part(upper(coalesce(s.""ModalitiesInStudy"", '')), chr(92), 1)), ''),
-               '—'), 16) AS modality,
+           left(coalesce(" + PrimaryModalitySql + @", '—'), 16) AS modality,
            s.""SourceInstanceCount"" AS inst
     FROM ""MigrationStudies"" s
     WHERE s.""MigrationId"" = @mig
@@ -871,19 +878,19 @@ RETURNING m.*";
     }
 
     /// <summary>Recalcula ModalityRank de los estudios en cola según la prioridad de
-    /// modalidades de la migración: posición (1..n) de la PRIMERA modalidad del estudio
-    /// (ModalitiesInStudy, separada por \, / o ,) en la lista; 999 si no está. Solo
-    /// toca las filas cuyo rango cambia, así que tras la primera vez es casi gratis.</summary>
+    /// modalidades de la migración: posición (1..n) de la modalidad PRINCIPAL del estudio
+    /// (ver PrimaryModalitySql: un «SR\US» cuenta como US) en la lista; 999 si no está o si
+    /// la lista está vacía (sin prioridad: la cola queda solo por fecha). Solo toca las filas
+    /// cuyo rango cambia, así que tras la primera vez es casi gratis.</summary>
     public async Task<int> RecomputeModalityRankAsync(int migrationId, IReadOnlyList<string> modalityPriority)
     {
         await using var db = factory.CreateDbContext();
         db.Database.SetCommandTimeout(TimeSpan.FromMinutes(10));   // la 1.ª vez con millones de filas
-        const string rank = @"COALESCE(array_position(@prio,
-            split_part(translate(COALESCE(""ModalitiesInStudy"", ''), '/,', chr(92) || chr(92)), chr(92), 1)), 999)::smallint";
+        const string rank = @"COALESCE(array_position(@prio::text[], " + PrimaryModalitySql + @"), 999)::smallint";
         return await db.Database.ExecuteSqlRawAsync($@"
-UPDATE ""MigrationStudies"" SET ""ModalityRank"" = {rank}
-WHERE ""MigrationId"" = @mig AND ""MigrationStatus"" IN ('Pending', 'RetryPending')
-  AND ""ModalityRank"" <> {rank}",
+UPDATE ""MigrationStudies"" s SET ""ModalityRank"" = {rank}
+WHERE s.""MigrationId"" = @mig AND s.""MigrationStatus"" IN ('Pending', 'RetryPending')
+  AND s.""ModalityRank"" <> {rank}",
             new NpgsqlParameter("mig", migrationId),
             new NpgsqlParameter("prio", modalityPriority.ToArray()));
     }

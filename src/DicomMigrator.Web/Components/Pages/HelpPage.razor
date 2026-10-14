@@ -1103,7 +1103,7 @@
     private readonly ConfigParam[] _configParams =
     [
         new("WorkerThreads",      "Estudios en migración simultánea. Cada thread es independiente.",         "4"),
-        new("ModalityPriority",   "CSV de modalidades. CT antes que CR, MG antes que OT, etc.",              "CT,MR,CR,DX,US,MG,..."),
+        new("ModalityPriority",   "CSV de modalidades: los estudios se migran por grupos en este orden y, dentro de cada grupo, por fecha. Cuenta la modalidad principal del estudio (un SR\\US es ecografía). Vacía = sin prioridad: solo por fecha. Un cambio se aplica al iniciar o reanudar.", "CT,MR,CR,DX,US,MG,..."),
         new("OldestFirst",        "Switch de orden por fecha. ON = más antiguos primero (StudyDate asc). OFF = más recientes primero (desc). Independiente de la prioridad de modalidad.", "OFF"),
         new("StartFromDate",      "Filtro previo opcional: solo se migran estudios con StudyDate ≥ esta fecha.", "(vacío)"),
         new("MaxRetries",         "Intentos máximos antes de marcar como Failed.",                           "3"),

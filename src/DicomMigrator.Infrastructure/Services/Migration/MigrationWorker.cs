@@ -969,9 +969,15 @@ public class MigrationWorker(
 
     /// <summary>Lista de prioridad de modalidades de la migración ("CT,MR,…"), sin
     /// espacios ni entradas vacías. Por defecto CT, MR, MG, CR, OT.</summary>
-    private static string[] ParsePriority(string? modalityPriority) =>
-        (string.IsNullOrWhiteSpace(modalityPriority) ? "CT,MR,MG,CR,OT" : modalityPriority)
-            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    /// <summary>Lista de prioridad de modalidades de la migración, en mayúsculas. Vacía
+    /// significa SIN prioridad: todos los estudios quedan en la misma posición de la cola y
+    /// se migran solo por fecha (más recientes o más antiguos primero). Antes una prioridad
+    /// vacía se sustituía por «CT,MR,MG,CR,OT», que no se veía en ninguna pantalla.</summary>
+    internal static string[] ParsePriority(string? modalityPriority) =>
+        (modalityPriority ?? "")
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(m => m.ToUpperInvariant())
+            .ToArray();
 
     /// <summary>Explicación de 0xA801 con los datos exactos que hay que dar de alta.</summary>
     private static string MoveDestinationUnknownMessage(MigrationEntity m, string? pacsComment)
