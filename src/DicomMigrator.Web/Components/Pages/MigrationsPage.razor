@@ -890,7 +890,16 @@
                 <div class="form-row">
                     <div class="form-group">
                         <label class="form-label">Zona horaria (común a ambos tramos)</label>
-                        <input class="form-input mono" @bind="_winTz" placeholder="Europe/Madrid" />
+                        <select class="form-input" @bind="_winTz">
+                            @if (!TimeZoneOptions.IsKnown(_winTz))
+                            {
+                                <option value="@_winTz">@_winTz (no reconocida: elige una de la lista)</option>
+                            }
+                            @foreach (var tz in TimeZoneOptions.All)
+                            {
+                                <option value="@tz.Id">@tz.Display</option>
+                            }
+                        </select>
                     </div>
                 </div>
 
@@ -915,7 +924,7 @@
                                     @FormatEnabledDays(w.EnabledDays) ·
                                     @(w.AllDay ? "24 h (todo el día)"
                                                : $"{w.StartTime:HH\\:mm} — {w.EndTime:HH\\:mm}")
-                                    (@w.TimeZoneId)
+                                    (@TimeZoneOptions.DisplayOf(w.TimeZoneId))
                                 </span>
                             </div>
                         }
@@ -1226,7 +1235,7 @@ else
     }
 
     private List<WinSlot> _winSlots = NewWinSlots();
-    private string _winTz = "Europe/Madrid";
+    private string _winTz = TimeZoneOptions.Default;
 
     private static HashSet<int> ParseDays(string? csv) =>
         (csv ?? string.Empty)
@@ -1622,7 +1631,7 @@ else
         _winSlots = NewWinSlots();
         // Reiniciar también la zona horaria: si no, al abrir una migración SIN ventanas
         // se arrastraba la TZ de la migración vista antes y se guardaba esa por error.
-        _winTz = "Europe/Madrid";
+        _winTz = TimeZoneOptions.Default;
         if (_detail is null) return;
 
         foreach (var slot in _winSlots)
@@ -1635,7 +1644,8 @@ else
             slot.Start   = saved.StartTime.ToString("HH:mm");
             slot.End     = saved.EndTime.ToString("HH:mm");
             slot.Days    = ParseDays(saved.EnabledDays);
-            _winTz       = saved.TimeZoneId;
+            // Las guardadas con nombre IANA («Europe/Madrid») se muestran ya como su zona de Windows.
+            _winTz       = TimeZoneOptions.Normalize(saved.TimeZoneId);
         }
     }
 
@@ -1648,6 +1658,13 @@ else
             // Validar las horas ANTES de tocar la BD: si una está mal escrita no se
             // guarda nada, en vez de dejar media configuración aplicada.
             var toSave = new List<ExecutionWindow>();
+            // Una zona no reconocida haría que el planificador tratase la ventana como
+            // cerrada siempre (IsWindowOpen falla al buscarla).
+            if (_winSlots.Any(s => s.Enabled) && !TimeZoneOptions.IsKnown(_winTz))
+            {
+                ShowMsg("Elige una zona horaria de la lista.", false);
+                return;
+            }
             foreach (var slot in _winSlots.Where(s => s.Enabled))
             {
                 if (slot.Days.Count == 0)

@@ -383,7 +383,7 @@
                 que cubre el día natural completo e ignora las horas.</li>
         </ul>
         <p style="margin:0 0 10px 0;color:var(--text-dim);font-size:13px;line-height:1.6">
-            La <strong>zona horaria</strong> es común a los dos tramos. El servicio comprueba cada minuto si hay
+            La <strong>zona horaria</strong> es común a los dos tramos y se elige en un desplegable con las zonas de Windows (por defecto, la del servidor donde corre el servicio; una vez guardada, se mantiene la elegida aunque cambie la del servidor); el horario de verano lo aplica sola. El servicio comprueba cada minuto si hay
             algún tramo abierto. Con la ventana cerrada, una migración en marcha se <strong>pausa</strong>
             (evento <code>WINDOW_CLOSE</code> en el log de auditoría) y la ficha muestra
             <strong>«🕒 Pausada por ventana · se reanudará al abrirse»</strong>; al abrirse, se <strong>reanuda</strong>
