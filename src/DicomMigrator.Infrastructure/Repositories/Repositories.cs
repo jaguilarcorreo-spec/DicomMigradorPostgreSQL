@@ -1223,6 +1223,10 @@ RETURNING m.*";
             .Where(s => s.MigrationId == migrationId && s.MigrationStatus == "Failed")
             .ExecuteUpdateAsync(u => u
                 .SetProperty(s => s.MigrationStatus, "RetryPending")
+                // Intentos a cero (CONC-20): antes conservaban el contador, así que cada
+                // estudio reintentado tenía UNA sola oportunidad y, si fallaba, volvía a
+                // «Failed» al instante («Fallo intento 3/3» otra vez).
+                .SetProperty(s => s.RetryCount, 0)
                 .SetProperty(s => s.LastUpdateDate, DateTime.UtcNow));
     }
 
@@ -1292,6 +1296,7 @@ RETURNING m.*";
             .Where(s => s.Id == id && s.MigrationStatus == "Failed")
             .ExecuteUpdateAsync(u => u
                 .SetProperty(s => s.MigrationStatus, "RetryPending")
+                .SetProperty(s => s.RetryCount, 0)   // sus intentos completos (CONC-20)
                 .SetProperty(s => s.LastUpdateDate, DateTime.UtcNow));
     }
 

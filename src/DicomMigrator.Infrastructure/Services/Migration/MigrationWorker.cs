@@ -580,7 +580,7 @@ public class MigrationWorker(
                                 // Un correo por incidente (CONC-6): si la auto-reanudación
                                 // vuelve a fallar sin haber migrado nada, no se avisa otra vez.
                                 var newIncident = AutoPauseIncidents.RegisterPause("MIGRATE", migration.Id);
-                                var reason = $"{connErrors} fallos de conexión seguidos; el último: {lastCause}";
+                                var reason = $"{connErrors} fallos seguidos que no son del estudio (conexión, PACS saturado o sin envío); el último: {lastCause}";
                                 var node   = lastNode ?? "el nodo";
                                 if (newIncident)
                                     logger.LogError("Migración {Id} pausada: {Reason}. Se reanudará sola cuando responda {Node}.",
@@ -725,6 +725,7 @@ public class MigrationWorker(
             var techMsg = $"Status=0x{result.DicomStatus:X4} " +
                           $"Completed={result.Completed} Received={result.ReceivedCount} " +
                           $"Failed={result.Failed} Warning={result.Warning} Remaining={result.Remaining} {result.DurationMs}ms";
+            var baseMsg = techMsg;
 
             if (!success && result.Completed == 0 && result.DicomStatus == null)
             {
@@ -821,6 +822,7 @@ public class MigrationWorker(
 
             if (success)
             {
+                OriginEmptyMoves.RecordSent(migration.Id);
                 await RecordAttemptAsync(studyRepo, study, workerId, "Migrated", null);
                 await auditRepo.AddAsync(new MigrationAuditLog
                 {
@@ -884,7 +886,35 @@ public class MigrationWorker(
                         $"el destino {freshMigration.DestNode!.Alias} no responde (C-ECHO)",
                         freshMigration.DestNode!.Alias);
                 }
-                // El destino SÍ responde → el estudio realmente no se pudo migrar.
+                // El destino SÍ responde. ¿Episodio del origen? Si la mayoría de los últimos
+                // C-MOVE de la migración tampoco enviaron nada, el problema es del origen
+                // (no de este estudio): devolverlo sin gastar intento y contar como fallo
+                // transitorio, que lleva a la auto-pausa (ver OriginEmptyMoves).
+                if (OriginEmptyMoves.RecordEmpty(migration.Id, out var empties))
+                {
+                    await studyRepo.ReleaseMigrationLockAsync(study.Id);
+                    logger.LogWarning("[{Worker}] {Uid}: el origen no envió ninguna instancia, como en {N} de los últimos {W} " +
+                        "estudios. Episodio del origen: estudio devuelto sin gastar intento.",
+                        workerId, study.StudyInstanceUid, empties, OriginEmptyMoves.Window);
+                    await auditRepo.AddAsync(new MigrationAuditLog
+                    {
+                        MigrationId      = migration.Id,
+                        Action           = "C-MOVE",
+                        Level            = "WARN",
+                        Result           = "ERROR",
+                        StudyInstanceUid = study.StudyInstanceUid,
+                        UserOrProcess    = workerId,
+                        TechnicalMessage = $"Origen sin envío (reintento sin penalizar): {baseMsg} — {empties} de los últimos " +
+                                           $"{OriginEmptyMoves.Window} estudios tampoco recibieron nada. El problema parece del PACS " +
+                                           "origen (tarea programada, almacenamiento ocupado…), no del estudio.",
+                    });
+                    return MoveOutcome.Transient(
+                        $"el origen {freshMigration.OriginNode?.Alias} responde pero no envía imágenes " +
+                        $"({empties} de los últimos {OriginEmptyMoves.Window} estudios sin ninguna instancia)",
+                        freshMigration.OriginNode?.Alias);
+                }
+
+                // Caso aislado: el estudio realmente no se pudo migrar.
                 var currentStudy = await studyRepo.GetByIdAsync(study.Id);
                 var retries      = (currentStudy?.RetryCount ?? study.RetryCount) + 1;
                 var nextStatus   = retries >= migration.MaxRetries ? "Failed" : "RetryPending";
@@ -910,6 +940,7 @@ public class MigrationWorker(
                 // instancia falló (Failed > 0), o el C-MOVE se cortó a medias sin respuesta
                 // final. Se gasta un reintento: así un estudio que se corta siempre acaba
                 // "Failed" y visible, en vez de quedar en bucle o darse por migrado.
+                OriginEmptyMoves.RecordSent(migration.Id);
                 var currentStudy = await studyRepo.GetByIdAsync(study.Id);
                 var retries      = (currentStudy?.RetryCount ?? study.RetryCount) + 1;
                 var nextStatus   = retries >= migration.MaxRetries ? "Failed" : "RetryPending";
