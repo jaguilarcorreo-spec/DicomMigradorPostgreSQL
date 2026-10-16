@@ -1,0 +1,498 @@
+@* ════════════════════════════════════════════════════════════════════════════
+   Pestaña «Rendimiento» de la ficha de migración: fuerza y capacidad de migración.
+
+   · Resumen: tiempo trabajado (sin pausas) frente a calendario, estudios, imágenes, ritmo,
+     hilos trabajando y verificación.
+   · Ritmo por jornada: filas de tramos de 15 min (hasta 10 jornadas) o barras por jornada +
+     mapa de calor + detalle de la pulsada (más de 10). El eje se adapta a la ventana.
+   · Fuerza por franja horaria, duración de cada estudio, tabla por tipo de estudio,
+     capacidad estimada e incidencias.
+
+   Todo sale de los estudios y de la auditoría (StudyRepository.GetPerformanceAsync), sin
+   tablas nuevas; los cálculos y la geometría están en PerformanceModel.cs. Recorre los
+   estudios del lote, así que se calcula al abrir la pestaña y con ↺, nunca en el refresco.
+   ════════════════════════════════════════════════════════════════════════════ *@
+@using DicomMigrator.Core.Interfaces
+@using DicomMigrator.Core.Models
+@using DicomMigrator.Web.Services
+@inject IStudyRepository StudyRepo
+@inject ILogger<PerformanceTab> Logger
+
+<div class="cmp-root perf">
+@if (_error is not null)
+{
+    <section class="cmp-card"><div class="cmp-body cmp-empty">@_error
+        <button type="button" class="cmp-link" @onclick="LoadAsync">↺ Reintentar</button></div></section>
+}
+else if (_m is null)
+{
+    <section class="cmp-card"><div class="cmp-body cmp-empty">Calculando el rendimiento de la migración…</div></section>
+}
+else if (_m.D.Migrated == 0)
+{
+    <section class="cmp-card"><div class="cmp-body cmp-empty">Todavía no hay estudios migrados.
+        <button type="button" class="cmp-link" @onclick="LoadAsync">↺ Recalcular</button></div></section>
+}
+else
+{
+    var m = _m; var d = m.D;
+    var rate = m.ActiveSeconds > 0 ? d.Images / m.ActiveSeconds : 0;
+    var studiesH = m.ActiveSeconds > 0 ? d.Migrated / (m.ActiveSeconds / 3600) : 0;
+
+    <div class="perf-top">
+        <span class="cmp-muted">Horas en @(_tzName) · calculado a las @_at.ToString("HH:mm")</span>
+        <button type="button" class="cmp-link" @onclick="LoadAsync" disabled="@_busy">↺ Recalcular</button>
+    </div>
+
+    @* ── Resumen ── *@
+    <section class="perf-kpis" aria-label="Resumen">
+        <div class="perf-kpi"><span class="l">Tiempo trabajado</span><span class="v">@PerformanceModel.Hm(m.NetSeconds)</span>
+            <span class="s">sin pausas@(m.AutoInsideSeconds >= 60 ? $" · +{PerformanceModel.Hm(m.AutoInsideSeconds)} en auto-pausas cortas" : "") · en @PerformanceModel.Hm(m.CalendarSeconds) de calendario</span></div>
+        <div class="perf-kpi"><span class="l">Estudios</span><span class="v">@PerformanceModel.N(d.Total)</span>
+            <span class="s"><span style="color:var(--green)">@PerformanceModel.N(d.Migrated) migrados (@PerformanceModel.N(100.0 * d.Migrated / Math.Max(1, d.Total), 1) %)</span> · @PerformanceModel.N(d.Failed) fallidos</span></div>
+        <div class="perf-kpi"><span class="l">Imágenes migradas</span><span class="v">@BigN(d.Images)</span>
+            <span class="s">@PerformanceModel.N((double)d.Images / Math.Max(1, d.Migrated), 1) por estudio de media</span></div>
+        <div class="perf-kpi"><span class="l">Ritmo medio</span><span class="v">@PerformanceModel.N(rate, 1) img/s</span>
+            <span class="s">@PerformanceModel.N(studiesH) estudios/h@(m.AutoInsideSeconds >= 60 && m.NetSeconds > 0 ? $" · {PerformanceModel.N(d.Images / m.NetSeconds, 1)} img/s sin auto-pausas" : $" · {PerformanceModel.N(1000 / Math.Max(rate, 0.001), 1)} s por 1.000 imágenes")</span></div>
+        <div class="perf-kpi"><span class="l">Hilos trabajando</span><span class="v">@PerformanceModel.N(d.ThreadSeconds / Math.Max(1, m.ActiveSeconds), 1) de @Threads</span>
+            <span class="s">@PerformanceModel.N(100 * d.ThreadSeconds / Math.Max(1, m.ActiveSeconds) / Math.Max(1, Threads)) % de aprovechamiento</span></div>
+        <div class="perf-kpi"><span class="l">Verificación</span><span class="v">@(m.VerifyActiveSeconds > 0 ? PerformanceModel.Hm(m.VerifyActiveSeconds) : "—")</span>
+            <span class="s">@PerformanceModel.N(d.Verified) verificados@(m.VerifyActiveSeconds > 0 ? $" · {PerformanceModel.N(d.Verified / (m.VerifyActiveSeconds / 60))} estudios/min" : "")</span></div>
+    </section>
+
+    @* ── Ritmo por jornada ── *@
+    <section class="cmp-card" aria-label="Ritmo por jornada">
+        <div class="cmp-header">
+            <span class="cmp-title">@(m.CrossesMidnight ? "Ritmo de cada noche" : m.AxisHours == 24 ? "Ritmo por día y hora" : "Ritmo de cada jornada")</span>
+            <span class="cmp-muted mono">@m.Rows.Count @(m.CrossesMidnight ? (m.Rows.Count == 1 ? "noche" : "noches") : (m.Rows.Count == 1 ? "día" : "días")) · @m.HourLabel(0):00–@($"{(m.AxisStartHour + m.AxisHours) % 24:00}"):00</span>
+        </div>
+        <div class="cmp-body">
+            <ul class="cmp-mlegend">
+                <li><span class="cmp-sw" style="background:var(--accent)"></span>Migrando (imágenes por segundo)</li>
+                <li><span class="cmp-sw" style="background:color-mix(in srgb, var(--orange) 45%, transparent)"></span>Auto-pausa</li>
+                <li><span class="cmp-sw" style="background:color-mix(in srgb, var(--text-muted) 40%, transparent)"></span>Pausa (ventana, manual…)</li>
+                <li><span class="cmp-sw" style="background:var(--border2)"></span>Media del lote</li>
+            </ul>
+            @if (!m.UseHeatmap)
+            {
+                <div class="cmp-wrap"><svg class="cmp-bars cmp-fit" viewBox="0 0 900 @F(RowsHeight)" role="img" aria-label="Ritmo por jornada">
+                    @RowsSvg()
+                </svg></div>
+            }
+            else
+            {
+                <div class="perf-sub"><span><b>Imágenes migradas cada @(m.CrossesMidnight ? "noche" : "día")</b> · pulsa una barra para ver su detalle</span></div>
+                <div class="cmp-wrap"><svg class="cmp-bars cmp-fit" viewBox="0 0 900 150" role="img" aria-label="Imágenes por jornada">@DayBarsSvg()</svg></div>
+                <div class="perf-sub"><span><b>Mapa de calor</b> · cada casilla, una hora; el color, el ritmo de esa hora</span>
+                    <span class="perf-scale"><span>0</span><span class="ramp"></span><span>@PerformanceModel.N(_heatMax) img/s</span></span></div>
+                <div class="cmp-wrap"><svg class="cmp-bars cmp-fit" viewBox="0 0 900 @F(4 + m.Rows.Count * HeatRowH + 20)" role="img" aria-label="Mapa de calor">@HeatSvg()</svg></div>
+                <div class="perf-sub"><span><b>@m.Rows[_sel].LongLabel</b> · tramos de 15 min</span>
+                    <span class="mono">@PerformanceModel.N(m.Rows[_sel].Total.Images) img · @PerformanceModel.N(m.Rows[_sel].Total.ActiveSeconds / 3600, 1) h trabajadas</span></div>
+                <div class="cmp-wrap"><svg class="cmp-bars cmp-fit" viewBox="0 0 900 120" role="img" aria-label="Detalle">@DetailSvg(m.Rows[_sel], 0, 120)</svg></div>
+            }
+            <p class="cmp-note">Imágenes por segundo de cada tramo, según la hora en que terminó cada estudio. La línea discontinua es la media del lote.
+                @if (m.UseHeatmap) { <text>Con más de @PerformanceModel.MaxRowsAsDetail jornadas se muestran resumidas: pulsa una barra o una fila del mapa para ver su detalle.</text> }</p>
+        </div>
+    </section>
+
+    <div class="perf-grid2">
+        @* ── Fuerza por franja horaria ── *@
+        <section class="cmp-card" aria-label="Fuerza por franja horaria">
+            <div class="cmp-header"><span class="cmp-title">Fuerza por franja horaria</span>
+                <div class="cmp-seg" role="group" aria-label="Medida">
+                    <button type="button" aria-pressed="@(_perStudy ? "false" : "true")" @onclick="() => _perStudy = false">Imágenes/s</button>
+                    <button type="button" aria-pressed="@(_perStudy ? "true" : "false")" @onclick="() => _perStudy = true">Estudios/h</button>
+                </div></div>
+            <div class="cmp-body">
+                <svg class="cmp-bars cmp-fit perf-small" viewBox="0 0 440 220" role="img" aria-label="Ritmo medio por hora">@HoursSvg()</svg>
+                <p class="cmp-note">Media de todas las jornadas en cada hora, contando solo el tiempo trabajado. En naranja, la hora más floja.</p>
+            </div>
+        </section>
+        @* ── Duración de cada estudio ── *@
+        <section class="cmp-card" aria-label="Duración de cada estudio">
+            <div class="cmp-header"><span class="cmp-title">Duración de cada estudio</span><span class="cmp-muted mono">@PerformanceModel.N(d.Migrated) estudios</span></div>
+            <div class="cmp-body">
+                <svg class="cmp-bars cmp-fit perf-small" viewBox="0 0 440 220" role="img" aria-label="Duración de los estudios">@DurationSvg()</svg>
+                <p class="cmp-note">De principio a fin de su C-MOVE. Los estudios pequeños suelen tardar unos segundos (coste fijo por estudio); los TC y RM, minutos, según sus imágenes.</p>
+            </div>
+        </section>
+    </div>
+
+    @* ── Por tipo de estudio ── *@
+    <section class="cmp-card" aria-label="Por tipo de estudio">
+        <div class="cmp-header"><span class="cmp-title">Por tipo de estudio</span><span class="cmp-muted">modalidad principal, como en Gráficas</span></div>
+        <div class="cmp-body">
+            <div class="cmp-tbl-wrap"><table class="cmp-table perf-types">
+                <thead><tr><th>Tipo</th><th>Estudios</th><th>Imágenes</th><th>Img/estudio</th><th>Media</th><th>Mediana</th><th>P95</th><th>s / 1.000 img por hilo</th><th>Parte del tiempo</th></tr></thead>
+                <tbody>
+                    @foreach (var t in m.Types)
+                    {
+                        var perStudy = t.Studies == 0 ? 0 : (double)t.Images / t.Studies;
+                        <tr>
+                            <td><span class="cmp-sw" style="background:@t.Color"></span>@t.Code · @t.Name</td>
+                            <td>@PerformanceModel.N(t.Studies)</td><td>@PerformanceModel.N(t.Images)</td><td>@PerformanceModel.N(perStudy, perStudy < 10 ? 1 : 0)</td>
+                            <td>@PerformanceModel.Dur(t.Avg)</td><td>@PerformanceModel.Dur(t.Median)</td><td>@PerformanceModel.Dur(t.P95)</td>
+                            <td>@(t.Images == 0 ? "—" : PerformanceModel.N(t.ThreadSeconds / t.Images * 1000))</td>
+                            <td><div class="perf-barcell"><span>@PerformanceModel.Hm(t.Share * m.ActiveSeconds)</span><span class="perf-minibar"><i style="width:@F(t.Share * 100)%"></i></span><span class="pct">@PerformanceModel.N(t.Share * 100, 1) %</span></div></td>
+                        </tr>
+                    }
+                </tbody>
+                <tfoot><tr>
+                    <td>Total</td><td>@PerformanceModel.N(d.Migrated)</td><td>@PerformanceModel.N(d.Images)</td><td>@PerformanceModel.N((double)d.Images / Math.Max(1, d.Migrated), 1)</td>
+                    <td>@PerformanceModel.Dur(d.ThreadSeconds / Math.Max(1, d.Migrated))</td><td></td><td></td>
+                    <td>@(d.Images == 0 ? "—" : PerformanceModel.N(d.ThreadSeconds / d.Images * 1000))</td>
+                    <td><div class="perf-barcell"><span>@PerformanceModel.Hm(m.ActiveSeconds)</span><span class="perf-minibar"><i style="width:100%"></i></span><span class="pct">100 %</span></div></td>
+                </tr></tfoot>
+            </table></div>
+            <p class="cmp-note">«Media», «Mediana» y «P95»: lo que tarda un estudio de ese tipo de principio a fin. «s / 1.000 img»: coste para un hilo; los tipos pequeños salen caros por imagen por el coste fijo de cada C-MOVE. «Parte del tiempo»: el tiempo trabajado repartido según lo que consumió cada tipo.</p>
+        </div>
+    </section>
+
+    <div class="perf-grid2">
+        @* ── Capacidad ── *@
+        <section class="cmp-card" aria-label="Capacidad estimada">
+            <div class="cmp-header"><span class="cmp-title">Capacidad estimada</span><span class="cmp-muted">con el ritmo y la mezcla de este lote</span></div>
+            <div class="cmp-body">
+                <div class="perf-result"><span class="cmp-muted">Una jornada de @m.AxisHours h:</span>
+                    <b>@PerformanceModel.N(m.AxisHours * 3600 / Math.Max(0.001, m.SecondsPerStudy))</b><span class="cmp-muted">estudios</span>
+                    <b>@BigN((long)(m.AxisHours * 3600 / Math.Max(0.001, m.SecondsPerStudy) * d.Images / Math.Max(1, d.Migrated)))</b><span class="cmp-muted">imágenes</span></div>
+                <div class="perf-calc">
+                    <label for="perf-est">Estudios a migrar<input id="perf-est" type="number" min="0" step="1000" @bind="_capStudies" @bind:event="oninput" /></label>
+                    <label for="perf-h">Horas de trabajo por jornada<input id="perf-h" type="number" min="1" max="24" step="1" @bind="_capHours" @bind:event="oninput" /></label>
+                </div>
+                @{
+                    var hours = Math.Max(0, _capStudies) * m.SecondsPerStudy / 3600;
+                    var days = hours / Math.Clamp(_capHours, 1, 24);
+                }
+                <div class="perf-result"><span class="cmp-muted">Tiempo de trabajo:</span><b>@PerformanceModel.N(hours, hours < 100 ? 1 : 0) h</b>
+                    <span class="cmp-muted">→</span><b>@PerformanceModel.N(Math.Ceiling(days))</b><span class="cmp-muted">jornadas de @Math.Clamp(_capHours, 1, 24) h</span></div>
+                <p class="cmp-note">Supone la misma mezcla de tipos, los mismos hilos y el mismo origen. Si el lote nuevo tiene más TC o RM, tardará más.</p>
+            </div>
+        </section>
+        @* ── Incidencias ── *@
+        <section class="cmp-card" aria-label="Incidencias">
+            <div class="cmp-header"><span class="cmp-title">Incidencias</span></div>
+            <div class="cmp-body">
+                <ul class="perf-inc">
+                    @Inc("var(--text-muted)", "Pausas por ventana horaria", $"cerradas en total {PerformanceModel.Hm(m.Seconds(PauseKind.Window))}; se reanudan solas", m.Count(PauseKind.Window))
+                    @Inc("var(--orange)", "Auto-pausas", $"{m.NoSendPauses} por origen sin envío · {PerformanceModel.Hm(m.Seconds(PauseKind.Auto))} en total · {PerformanceModel.N(d.NoSendReturns)} C-MOVE devueltos sin gastar intento", m.Count(PauseKind.Auto))
+                    @Inc("var(--text-dim)", "Pausas manuales", $"{PerformanceModel.Hm(m.Seconds(PauseKind.Manual))} en total" + (m.Count(PauseKind.Config) + m.Count(PauseKind.License) > 0 ? $" · {m.Count(PauseKind.Config)} por configuración · {m.Count(PauseKind.License)} por licencia" : ""), m.Count(PauseKind.Manual))
+                    @Inc("var(--yellow)", "C-MOVE reintentados", "fallaron, volvieron a la cola gastando un intento", d.RetriedMoves)
+                    @Inc("var(--red)", "Fallidos al terminar", $"{PerformanceModel.N(d.FailedPartial)} parciales (el destino rechazó imágenes) · {PerformanceModel.N(d.FailedNoSend)} sin envío · {PerformanceModel.N(d.Failed - d.FailedPartial - d.FailedNoSend)} otros", d.Failed)
+                    @Inc("var(--purple)", "Verificación fallida", "ver la pestaña Estudios", d.VerifyFailed)
+                </ul>
+                @if (m.AuditPurged)
+                {
+                    <p class="cmp-note">La auditoría antigua de esta migración ya se purgó: pausas, reintentos e incidencias pueden estar incompletos. Los tiempos, ritmos y tipos salen de los estudios y están completos.</p>
+                }
+            </div>
+        </section>
+    </div>
+
+    <p class="cmp-note">Tiempo trabajado: periodos con algún estudio en curso (los huecos de menos de 5 min cuentan como trabajo), sin el tiempo en auto-pausa. El ritmo medio sí incluye las auto-pausas cortas: es el ritmo efectivo, el que sirve para planificar con el mismo origen. De un estudio reintentado se conoce solo la duración de su último intento.</p>
+}
+</div>
+
+@code {
+    [Parameter, EditorRequired] public int MigrationId { get; set; }
+    /// <summary>Zona horaria de la ventana de la migración (o null: la del servidor).</summary>
+    [Parameter] public string? TimeZoneId { get; set; }
+    [Parameter] public int Threads { get; set; } = 1;
+
+    private PerformanceModel? _m;
+    private string? _error;
+    private bool _busy, _perStudy;
+    private int _loadedFor = -1, _sel;
+    private DateTime _at;
+    private string _tzName = "";
+    private double _heatMax = 40;
+    private int _capStudies = 100_000, _capHours = 24;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_loadedFor == MigrationId) return;
+        _loadedFor = MigrationId;
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        if (_busy) return;
+        _busy = true; _error = null;
+        try
+        {
+            // Colores y «Otras» como en la pestaña Gráficas (composición guardada del lote).
+            var rows = await StudyRepo.GetCompositionAsync(MigrationId);
+            if (rows.Count == 0)
+            {
+                await StudyRepo.RecomputeCompositionAsync(MigrationId);
+                rows = await StudyRepo.GetCompositionAsync(MigrationId);
+            }
+            var comp = CompositionModel.Build(rows, DateOnly.FromDateTime(DateTime.Today));
+            var data = await StudyRepo.GetPerformanceAsync(MigrationId, comp.OwnKeys);
+
+            TimeZoneInfo tz;
+            try { tz = TimeZoneId is null ? TimeZoneInfo.Local : TimeZoneInfo.FindSystemTimeZoneById(TimeZoneOptions.Normalize(TimeZoneId)); }
+            catch { tz = TimeZoneInfo.Local; }
+            _tzName = TimeZoneOptions.DisplayOf(tz.Id);
+            _m = new PerformanceModel(data, tz, comp);
+            _at = DateTime.Now;
+            _capHours = _m.AxisHours;
+            _sel = _m.Rows.Count == 0 ? 0 : _m.Rows.IndexOf(_m.Rows.MaxBy(r => r.Total.Images)!);
+            var cells = _m.Rows.SelectMany(r => r.Hours).Select(h => h.Images / 3600.0).Where(v => v > 0).OrderBy(v => v).ToList();
+            _heatMax = cells.Count == 0 ? 1 : Math.Max(1, Math.Ceiling(cells[(int)(cells.Count * 0.95)] / 5) * 5);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "No se pudo calcular el rendimiento de la migración {Id}.", MigrationId);
+            _error = "No se pudo calcular el rendimiento. Inténtalo de nuevo en unos segundos.";
+        }
+        finally { _busy = false; }
+    }
+
+    private static string F(double v) => v.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
+    private static string Compact(double v) => v >= 1e6 ? $"{PerformanceModel.N(v / 1e6, 1)} M" : v >= 1e4 ? $"{PerformanceModel.N(v / 1e3)} mil" : PerformanceModel.N(v);
+    private static string BigN(long n) => n >= 10_000_000 ? $"{PerformanceModel.N(n / 1e6, 1)} M" : PerformanceModel.N(n);
+    private static double Nice(double max)
+    {
+        if (max <= 0) return 1;
+        var raw = max / 4; var p = Math.Pow(10, Math.Floor(Math.Log10(raw))); var n = raw / p;
+        return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10) * p;
+    }
+    private static string RoundTop(double x, double y, double w, double h, double r)
+    {
+        r = Math.Max(0, Math.Min(r, Math.Min(w / 2, h)));
+        return PieLayout.F($"M{x:0.##},{y + h:0.##} V{y + r:0.##} Q{x:0.##},{y:0.##} {x + r:0.##},{y:0.##} H{x + w - r:0.##} Q{x + w:0.##},{y:0.##} {x + w:0.##},{y + r:0.##} V{y + h:0.##} Z");
+    }
+    private static readonly int[][] Ramp = [[18, 50, 74], [14, 95, 134], [10, 143, 189], [51, 196, 234], [168, 236, 255]];
+    private static string RampColor(double t)
+    {
+        t = Math.Clamp(t, 0, 1) * (Ramp.Length - 1);
+        var i = Math.Min(Ramp.Length - 2, (int)t); var f = t - i;
+        var c = Ramp[i].Select((a, k) => (int)Math.Round(a + (Ramp[i + 1][k] - a) * f)).ToArray();
+        return $"rgb({c[0]},{c[1]},{c[2]})";
+    }
+
+    private double HeatRowH => (_m?.Rows.Count ?? 0) > 40 ? 11 : 16;
+    private double RowsHeight => 8 + (_m?.Rows.Count ?? 0) * 64 + 22;
+
+    // ── Filas de detalle (hasta 10 jornadas) ──────────────────────────────────
+    private RenderFragment RowsSvg() => __builder =>
+    {
+        var m = _m!;
+        const double W = 900, left = 170, right = 10, rowH = 64, top = 8;
+        var bins = m.AxisHours * 4; var bw = (W - left - right) / bins;
+        var avg = m.D.Images / Math.Max(1, m.ActiveSeconds);
+        var max = Math.Max(avg * 1.3, m.Rows.SelectMany(r => r.Bins).Select(b => b.Images / 900.0).DefaultIfEmpty(1).Max());
+        for (var r = 0; r < m.Rows.Count; r++)
+        {
+            var row = m.Rows[r];
+            var y0 = top + r * rowH; var baseY = y0 + rowH - 14; var h = rowH - 22;
+            double Y(double v) => baseY - h * v / max;
+            <g><text x="0" y="@F(y0 + 18)" class="ax-lbl" style="fill:var(--text)">@row.Label</text></g>
+            <g><text x="0" y="@F(y0 + 34)" class="ax-tick">@BigN(row.Total.Images) img · @PerformanceModel.N(row.Total.ActiveSeconds / 3600, 1) h</text></g>
+            <line x1="@F(left)" x2="@F(W - right)" y1="@F(baseY)" y2="@F(baseY)" class="grid-base" />
+            <line x1="@F(left)" x2="@F(W - right)" y1="@F(Y(avg))" y2="@F(Y(avg))" class="grid" stroke-dasharray="3 3" />
+            for (var k = 0; k < bins; k++)
+            {
+                var b = row.Bins[k]; var x = left + k * bw;
+                if (b.AutoSeconds >= 60)
+                {
+                    <rect x="@F(x)" y="@F(baseY - h)" width="@F(bw)" height="@F(h)" fill="color-mix(in srgb, var(--orange) 22%, transparent)" />
+                }
+                else if (b.PauseSeconds >= 60)
+                {
+                    <rect x="@F(x)" y="@F(baseY - h)" width="@F(bw)" height="@F(h)" fill="color-mix(in srgb, var(--text-muted) 16%, transparent)" />
+                }
+                var v = b.Images / 900.0;
+                if (v > 0)
+                {
+                    var t = row.StartLocal.AddMinutes(k * 15);
+                    <rect x="@F(x + 0.5)" y="@F(Y(v))" width="@F(Math.Max(1, bw - 1))" height="@F(baseY - Y(v))" rx="1.5" fill="var(--accent)"
+                          data-tip="@PerformanceModel.Tip($"{t:HH:mm} · {row.Label}", $"{PerformanceModel.N(v, 1)} img/s · {PerformanceModel.N(b.Studies)} estudios")" />
+                }
+            }
+        }
+        var lastY = top + m.Rows.Count * rowH + 14;
+        for (var hIdx = 0; hIdx < m.AxisHours; hIdx += m.AxisHours > 12 ? 2 : 1)
+        {
+            <g><text x="@F(left + hIdx * 4 * bw)" y="@F(lastY)" class="ax-tick">@m.HourLabel(hIdx):00</text></g>
+        }
+    };
+
+    // ── Barras por jornada (más de 10) ────────────────────────────────────────
+    private RenderFragment DayBarsSvg() => __builder =>
+    {
+        var m = _m!;
+        const double W = 900, H = 150, l = 56, r = 8, t = 14, b = 30;
+        var max = Math.Max(1, m.Rows.Max(x => x.Total.Images)); var step = Nice(max); var topV = Math.Ceiling(max / step) * step;
+        double Y(double v) => t + (H - t - b) * (1 - v / topV);
+        for (var v = 0.0; v <= topV + 0.5; v += step)
+        {
+            <line x1="@F(l)" x2="@F(W - r)" y1="@F(Y(v))" y2="@F(Y(v))" class="grid" />
+            <g><text x="@F(l - 6)" y="@F(Y(v) + 3)" text-anchor="end" class="ax-tick">@Compact(v)</text></g>
+        }
+        var band = (W - l - r) / m.Rows.Count; var bw = Math.Max(2, band * 0.62);
+        for (var i = 0; i < m.Rows.Count; i++)
+        {
+            var row = m.Rows[i]; var idx = i; var x = l + i * band + (band - bw) / 2; var v = row.Total.Images;
+            <g class="perf-click" @onclick="() => _sel = idx"
+               data-tip="@PerformanceModel.Tip(row.LongLabel, $"{PerformanceModel.N(v)} imágenes · {PerformanceModel.N(row.Total.ActiveSeconds / 3600, 1)} h trabajadas")">
+                <rect x="@F(l + i * band)" y="@F(t)" width="@F(band)" height="@F(H - t - b)" fill="transparent" />
+                @if (v > 0)
+                {
+                    <path d="@RoundTop(x, Y(v), bw, Y(0) - Y(v), 3)" fill="@(i == _sel ? "var(--accent)" : "color-mix(in srgb, var(--accent) 55%, var(--surface))")" />
+                }
+                @if (row.Total.AutoSeconds >= 60)
+                {
+                    <circle cx="@F(x + bw / 2)" cy="@F(Y(0) + 7)" r="2.5" fill="var(--orange)" />
+                }
+            </g>
+            if (m.Rows.Count <= 31 || i % Math.Max(1, m.Rows.Count / 15) == 0)
+            {
+                <g><text x="@F(x + bw / 2)" y="@F(H - 6)" text-anchor="middle" class="ax-tick" style="@(i == _sel ? "fill:var(--accent)" : null)">@row.Label.Split(' ')[^1]</text></g>
+            }
+        }
+    };
+
+    // ── Mapa de calor jornada × hora ──────────────────────────────────────────
+    private RenderFragment HeatSvg() => __builder =>
+    {
+        var m = _m!;
+        const double W = 900, l = 96, r = 8, t = 4; var rowH = HeatRowH;
+        var cw = (W - l - r) / m.AxisHours;
+        for (var i = 0; i < m.Rows.Count; i++)
+        {
+            var row = m.Rows[i]; var idx = i; var y = t + i * rowH;
+            <g class="perf-click" @onclick="() => _sel = idx">
+                <rect x="0" y="@F(y)" width="@F(l - 4)" height="@F(rowH)" fill="transparent" />
+                <text x="@F(l - 6)" y="@F(y + rowH - (rowH < 14 ? 2 : 4))" text-anchor="end" class="ax-tick" style="@((rowH < 14 ? "font-size:9px;" : "") + (i == _sel ? "fill:var(--accent)" : ""))">@row.Label</text>
+                @for (var h = 0; h < m.AxisHours; h++)
+                {
+                    var c = row.Hours[h];
+                    if (c.ActiveSeconds <= 0 && c.AutoSeconds <= 0 && c.PauseSeconds <= 0 && c.Images == 0) { continue; }
+                    var rate = c.Images / 3600.0;
+                    var fill = c.PauseSeconds >= 1800 ? "var(--panel)" : RampColor(rate / _heatMax);
+                    var stroke = c.AutoSeconds >= 60 ? "var(--orange)" : c.PauseSeconds >= 60 ? "var(--border2)" : "none";
+                    var state = c.AutoSeconds >= 60 ? $"auto-pausa {PerformanceModel.N(c.AutoSeconds / 60)} min" : c.PauseSeconds > 0 ? $"en pausa {PerformanceModel.N(c.PauseSeconds / 60)} min" : $"trabajando {PerformanceModel.N(c.ActiveSeconds / 60)} min";
+                    <rect x="@F(l + h * cw + 1)" y="@F(y + 1)" width="@F(cw - 2)" height="@F(rowH - 2)" rx="2" fill="@fill" stroke="@stroke" stroke-width="@(c.AutoSeconds >= 60 ? "1.5" : "1")"
+                          data-tip="@PerformanceModel.Tip($"{row.LongLabel} · {m.HourLabel(h)}:00", $"{PerformanceModel.N(rate, 1)} img/s · {PerformanceModel.N(c.Images)} imágenes", [state])" />
+                }
+            </g>
+            if (i == _sel)
+            {
+                <rect x="@F(l - 1)" y="@F(y)" width="@F(W - l - r + 2)" height="@F(rowH)" rx="3" fill="none" stroke="var(--accent)" />
+            }
+        }
+        var ly = t + m.Rows.Count * rowH + 14;
+        for (var h = 0; h < m.AxisHours; h += m.AxisHours > 12 ? 2 : 1)
+        {
+            <g><text x="@F(l + h * cw)" y="@F(ly)" class="ax-tick">@m.HourLabel(h):00</text></g>
+        }
+    };
+
+    // ── Detalle de una jornada (tramos de 15 min) ─────────────────────────────
+    private RenderFragment DetailSvg(PerfRow row, double top, double height) => __builder =>
+    {
+        var m = _m!;
+        const double W = 900, l = 56, r = 8;
+        var t = top + 8; var b = top + height - 20;
+        var avg = m.D.Images / Math.Max(1, m.ActiveSeconds);
+        var max = Math.Max(avg * 1.3, row.Bins.Select(x => x.Images / 900.0).DefaultIfEmpty(1).Max());
+        var step = Nice(max); var topV = Math.Ceiling(max / step) * step;
+        double Y(double v) => b - (b - t) * v / topV;
+        for (var v = 0.0; v <= topV + 0.01; v += step)
+        {
+            <line x1="@F(l)" x2="@F(W - r)" y1="@F(Y(v))" y2="@F(Y(v))" class="grid" />
+            <g><text x="@F(l - 6)" y="@F(Y(v) + 3)" text-anchor="end" class="ax-tick">@PerformanceModel.N(v)</text></g>
+        }
+        <line x1="@F(l)" x2="@F(W - r)" y1="@F(Y(avg))" y2="@F(Y(avg))" class="grid" stroke-dasharray="3 3" />
+        var bw = (W - l - r) / row.Bins.Length;
+        for (var k = 0; k < row.Bins.Length; k++)
+        {
+            var c = row.Bins[k]; var x = l + k * bw;
+            if (c.AutoSeconds >= 60) { <rect x="@F(x)" y="@F(t)" width="@F(bw)" height="@F(b - t)" fill="color-mix(in srgb, var(--orange) 22%, transparent)" /> }
+            else if (c.PauseSeconds >= 60) { <rect x="@F(x)" y="@F(t)" width="@F(bw)" height="@F(b - t)" fill="color-mix(in srgb, var(--text-muted) 16%, transparent)" /> }
+            var v = c.Images / 900.0;
+            if (v > 0)
+            {
+                var when = row.StartLocal.AddMinutes(k * 15);
+                <rect x="@F(x + 0.5)" y="@F(Y(v))" width="@F(Math.Max(1, bw - 1))" height="@F(b - Y(v))" fill="var(--accent)"
+                      data-tip="@PerformanceModel.Tip($"{when:HH:mm}", $"{PerformanceModel.N(v, 1)} img/s · {PerformanceModel.N(c.Studies)} estudios")" />
+            }
+        }
+        for (var h = 0; h < m.AxisHours; h += m.AxisHours > 12 ? 2 : 1)
+        {
+            <g><text x="@F(l + h * 4 * bw)" y="@F(top + height - 6)" class="ax-tick">@m.HourLabel(h):00</text></g>
+        }
+    };
+
+    // ── Fuerza por franja horaria ─────────────────────────────────────────────
+    private RenderFragment HoursSvg() => __builder =>
+    {
+        var m = _m!;
+        const double W = 440, H = 220, l = 44, r = 8, t = 18, b = 24;
+        var perImg = m.D.Migrated == 0 ? 0 : (double)m.D.Images / m.D.Migrated;
+        var vals = m.PerHour.Select(c => c.ActiveSeconds <= 0 ? 0 : _perStudy ? c.Studies / (c.ActiveSeconds / 3600) : c.Images / c.ActiveSeconds).ToArray();
+        var max = vals.DefaultIfEmpty(1).Max(); var step = Nice(max); var topV = Math.Max(step, Math.Ceiling(max / step) * step);
+        double Y(double v) => t + (H - t - b) * (1 - v / topV);
+        for (var v = 0.0; v <= topV + 0.01; v += step)
+        {
+            <line x1="@F(l)" x2="@F(W - r)" y1="@F(Y(v))" y2="@F(Y(v))" class="grid" />
+            <g><text x="@F(l - 6)" y="@F(Y(v) + 3)" text-anchor="end" class="ax-tick">@PerformanceModel.N(v)</text></g>
+        }
+        var positive = vals.Where(v => v > 0).ToList();
+        var worst = positive.Count > 1 ? positive.Min() : -1; var best = positive.Count > 0 ? positive.Max() : -1;
+        var band = (W - l - r) / Math.Max(1, vals.Length); var bw = band * 0.68;
+        var unit = _perStudy ? "estudios/h" : "img/s"; var dec = _perStudy ? 0 : 1;
+        for (var h = 0; h < vals.Length; h++)
+        {
+            var v = vals[h]; var x = l + h * band + (band - bw) / 2;
+            if (v > 0)
+            {
+                <path d="@RoundTop(x, Y(v), bw, Y(0) - Y(v), 3)" fill="@(v == worst ? "var(--orange)" : "var(--accent)")"
+                      data-tip="@PerformanceModel.Tip($"{m.HourLabel(h)}:00–{(m.AxisStartHour + h + 1) % 24:00}:00", $"{PerformanceModel.N(v, dec)} {unit} (media de las jornadas)")" />
+                if (v == best || v == worst)
+                {
+                    <g><text x="@F(x + bw / 2)" y="@F(Y(v) - 5)" text-anchor="middle" class="ax-val">@PerformanceModel.N(v, dec)</text></g>
+                }
+            }
+            if (vals.Length <= 12 || h % 3 == 0)
+            {
+                <g><text x="@F(x + bw / 2)" y="@F(H - 8)" text-anchor="middle" class="ax-tick">@m.HourLabel(h)</text></g>
+            }
+        }
+    };
+
+    // ── Duración de cada estudio ──────────────────────────────────────────────
+    private RenderFragment DurationSvg() => __builder =>
+    {
+        var d = _m!.D;
+        const double W = 440, H = 220, l = 48, r = 8, t = 18, b = 24;
+        var vals = d.DurationBuckets;
+        var max = Math.Max(1, vals.Max()); var step = Nice(max); var topV = Math.Ceiling(max / step) * step;
+        double Y(double v) => t + (H - t - b) * (1 - v / topV);
+        for (var v = 0.0; v <= topV + 0.5; v += step)
+        {
+            <line x1="@F(l)" x2="@F(W - r)" y1="@F(Y(v))" y2="@F(Y(v))" class="grid" />
+            <g><text x="@F(l - 6)" y="@F(Y(v) + 3)" text-anchor="end" class="ax-tick">@PerformanceModel.N(v)</text></g>
+        }
+        var band = (W - l - r) / vals.Length; var bw = band * 0.66;
+        for (var i = 0; i < vals.Length; i++)
+        {
+            var v = vals[i]; var x = l + i * band + (band - bw) / 2;
+            if (v > 0)
+            {
+                <path d="@RoundTop(x, Y(v), bw, Y(0) - Y(v), 3)" fill="@(i < 4 ? "var(--series-4)" : "var(--series-1)")"
+                      data-tip="@PerformanceModel.Tip(PerformanceModel.DurationLabels[i], $"{PerformanceModel.N(v)} estudios · {PerformanceModel.N(100.0 * v / Math.Max(1, d.Migrated), 1)} %")" />
+                <g><text x="@F(x + bw / 2)" y="@F(Y(v) - 5)" text-anchor="middle" class="ax-val">@PerformanceModel.N(v)</text></g>
+            }
+            <g><text x="@F(x + bw / 2)" y="@F(H - 8)" text-anchor="middle" class="ax-tick">@PerformanceModel.DurationLabels[i]</text></g>
+        }
+    };
+
+    private static RenderFragment Inc(string color, string title, string detail, long value) => __builder =>
+    {
+        <li><span class="dot" style="background:@color"></span><span>@title<span class="d">@detail</span></span><span class="v">@PerformanceModel.N(value)</span></li>
+    };
+}

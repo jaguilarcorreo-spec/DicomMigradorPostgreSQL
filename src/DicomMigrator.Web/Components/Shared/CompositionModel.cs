@@ -70,6 +70,11 @@ public sealed class CompositionModel
 
     private readonly Dictionary<string, string> _keyOf;   // modalidad real → clave mostrada (o «Otras»)
 
+    /// <summary>Clave mostrada de una modalidad real: ella misma si tiene color propio, o «Otras».</summary>
+    public string KeyOf(string modality) => _keyOf.TryGetValue(modality, out var k) ? k : OthersKey;
+    /// <summary>Modalidades con color propio (sin «Otras»).</summary>
+    public IReadOnlyList<string> OwnKeys => Modalities.Where(m => m.Key != OthersKey).Select(m => m.Key).ToList();
+
     public string ColorOf(string key) => Modalities.FirstOrDefault(m => m.Key == key)?.Color ?? "var(--series-other)";
     public static string NameOf(string key) =>
         key == OthersKey ? "Resto de modalidades" : Names.TryGetValue(key, out var n) ? n : key;

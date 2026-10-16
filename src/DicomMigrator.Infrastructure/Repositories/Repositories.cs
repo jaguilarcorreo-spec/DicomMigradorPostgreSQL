@@ -506,6 +506,135 @@ GROUP BY t.month, t.modality;";
             .ToListAsync();
     }
 
+
+    // ── Rendimiento de la migración (pestaña Rendimiento) ────────────────────
+    // Estudios migrados con su duración: los que tienen inicio y fin y están en un estado de
+    // «ya migrado» (los fallidos también tienen fechas, pero no cuentan como trabajo hecho).
+    private const string PerfDone = @"
+s.""MigrationId"" = @mig AND s.""MigrationStartDate"" IS NOT NULL AND s.""MigrationDate"" >= s.""MigrationStartDate""
+AND s.""MigrationStatus"" IN ('Migrated', 'VerificationPending', 'Verified', 'VerifyFailed', 'VerifyRetryPending')";
+
+    // Tramos de trabajo: une los intervalos (en orden de inicio, empieza tramo nuevo si arranca
+    // más de 5 min después del fin más tardío visto) y devuelve el inicio y el fin de cada uno.
+    private static string IslandsSql(string start, string end, string where) => $@"
+SELECT min(g.s) AS ""StartUtc"", max(g.e) AS ""EndUtc""
+FROM (SELECT o.s, o.e, sum(CASE WHEN o.prev IS NULL OR o.s > o.prev + interval '5 minutes' THEN 1 ELSE 0 END) OVER (ORDER BY o.s, o.e) AS grp
+      FROM (SELECT s.""{start}"" AS s, s.""{end}"" AS e,
+                   max(s.""{end}"") OVER (ORDER BY s.""{start}"", s.""{end}"" ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS prev
+            FROM ""MigrationStudies"" s WHERE {where}) o) g
+GROUP BY g.grp ORDER BY 1";
+
+    private sealed class PerfTotalsRow
+    {
+        public long Total { get; set; } public long Migrated { get; set; } public long Failed { get; set; }
+        public long Verified { get; set; } public long VerifyFailed { get; set; } public long Images { get; set; }
+        public double ThreadSeconds { get; set; } public DateTime? FirstStartUtc { get; set; } public DateTime? LastEndUtc { get; set; }
+        public long FailedPartial { get; set; } public long FailedNoSend { get; set; }
+        public long D0 { get; set; } public long D1 { get; set; } public long D2 { get; set; } public long D3 { get; set; }
+        public long D4 { get; set; } public long D5 { get; set; } public long D6 { get; set; }
+    }
+    private sealed class PerfIslandRow { public DateTime StartUtc { get; set; } public DateTime EndUtc { get; set; } }
+    private sealed class PerfBinRow { public DateTime StartUtc { get; set; } public long Studies { get; set; } public long Images { get; set; } }
+    private sealed class PerfTypeRow
+    {
+        public string Key { get; set; } = ""; public long Studies { get; set; } public long Images { get; set; }
+        public double AvgSeconds { get; set; } public double MedianSeconds { get; set; } public double P95Seconds { get; set; }
+        public double ThreadSeconds { get; set; }
+    }
+    private sealed class PerfEventRow
+    {
+        public DateTime Utc { get; set; } public string Action { get; set; } = ""; public string Level { get; set; } = "";
+        public string Result { get; set; } = ""; public string Message { get; set; } = "";
+    }
+    private sealed class PerfAuditRow { public long RetriedMoves { get; set; } public long NoSendReturns { get; set; } public DateTime? FirstAuditUtc { get; set; } }
+
+    public async Task<MigrationPerformanceData> GetPerformanceAsync(int migrationId, IReadOnlyList<string> ownModalities,
+        CancellationToken ct = default)
+    {
+        await using var db = factory.CreateDbContext();
+        db.Database.SetCommandTimeout(TimeSpan.FromMinutes(5));
+        var mig = new NpgsqlParameter("mig", migrationId);
+        NpgsqlParameter M() => new("mig", migrationId);
+        const string dur = @"extract(epoch FROM s.""MigrationDate"" - s.""MigrationStartDate"")";
+        const string migrated = @"s.""MigrationStatus"" IN ('Migrated', 'VerificationPending', 'Verified', 'VerifyFailed', 'VerifyRetryPending')";
+
+        var t = await db.Database.SqlQueryRaw<PerfTotalsRow>($@"
+SELECT count(*) AS ""Total"",
+       count(*) FILTER (WHERE {migrated}) AS ""Migrated"",
+       count(*) FILTER (WHERE s.""MigrationStatus"" = 'Failed') AS ""Failed"",
+       count(*) FILTER (WHERE s.""MigrationStatus"" = 'Verified') AS ""Verified"",
+       count(*) FILTER (WHERE s.""MigrationStatus"" = 'VerifyFailed') AS ""VerifyFailed"",
+       coalesce(sum(s.""SourceInstanceCount"") FILTER (WHERE {migrated}), 0)::bigint AS ""Images"",
+       coalesce(sum({dur}) FILTER (WHERE d.ok), 0)::float8 AS ""ThreadSeconds"",
+       min(s.""MigrationStartDate"") FILTER (WHERE d.ok) AS ""FirstStartUtc"",
+       max(s.""MigrationDate"") FILTER (WHERE d.ok) AS ""LastEndUtc"",
+       count(*) FILTER (WHERE s.""MigrationStatus"" = 'Failed' AND s.""LastError"" LIKE '%0xB000%') AS ""FailedPartial"",
+       count(*) FILTER (WHERE s.""MigrationStatus"" = 'Failed' AND s.""LastError"" LIKE '%no procesó ninguna%') AS ""FailedNoSend"",
+       count(*) FILTER (WHERE d.ok AND {dur} < 2) AS ""D0"",
+       count(*) FILTER (WHERE d.ok AND {dur} >= 2 AND {dur} < 5) AS ""D1"",
+       count(*) FILTER (WHERE d.ok AND {dur} >= 5 AND {dur} < 15) AS ""D2"",
+       count(*) FILTER (WHERE d.ok AND {dur} >= 15 AND {dur} < 60) AS ""D3"",
+       count(*) FILTER (WHERE d.ok AND {dur} >= 60 AND {dur} < 300) AS ""D4"",
+       count(*) FILTER (WHERE d.ok AND {dur} >= 300 AND {dur} < 900) AS ""D5"",
+       count(*) FILTER (WHERE d.ok AND {dur} >= 900) AS ""D6""
+FROM ""MigrationStudies"" s
+CROSS JOIN LATERAL (SELECT (s.""MigrationStartDate"" IS NOT NULL AND s.""MigrationDate"" >= s.""MigrationStartDate"" AND {migrated}) AS ok) d
+WHERE s.""MigrationId"" = @mig", mig).SingleAsync(ct);
+
+        var islands = await db.Database.SqlQueryRaw<PerfIslandRow>(
+            IslandsSql("MigrationStartDate", "MigrationDate", PerfDone), M()).ToListAsync(ct);
+        var vIslands = await db.Database.SqlQueryRaw<PerfIslandRow>(
+            IslandsSql("VerificationStartDate", "VerificationDate",
+                @"s.""MigrationId"" = @mig AND s.""VerificationStartDate"" IS NOT NULL AND s.""VerificationDate"" >= s.""VerificationStartDate"""),
+            M()).ToListAsync(ct);
+
+        var bins = await db.Database.SqlQueryRaw<PerfBinRow>($@"
+SELECT date_bin('15 minutes', s.""MigrationDate"", timestamptz '2000-01-01 00:00:00+00') AS ""StartUtc"",
+       count(*) AS ""Studies"", coalesce(sum(s.""SourceInstanceCount""), 0)::bigint AS ""Images""
+FROM ""MigrationStudies"" s WHERE {PerfDone}
+GROUP BY 1 ORDER BY 1", M()).ToListAsync(ct);
+
+        var types = await db.Database.SqlQueryRaw<PerfTypeRow>($@"
+SELECT CASE WHEN t.pm = ANY(@own) THEN t.pm ELSE '+' END AS ""Key"",
+       count(*) AS ""Studies"", coalesce(sum(t.inst), 0)::bigint AS ""Images"",
+       avg(t.d)::float8 AS ""AvgSeconds"",
+       (percentile_cont(0.5) WITHIN GROUP (ORDER BY t.d))::float8 AS ""MedianSeconds"",
+       (percentile_cont(0.95) WITHIN GROUP (ORDER BY t.d))::float8 AS ""P95Seconds"",
+       sum(t.d)::float8 AS ""ThreadSeconds""
+FROM (SELECT coalesce({PrimaryModalitySql}, '—') AS pm, {dur} AS d, coalesce(s.""SourceInstanceCount"", 0) AS inst
+      FROM ""MigrationStudies"" s WHERE {PerfDone}) t
+GROUP BY 1", M(), new NpgsqlParameter("own", ownModalities.ToArray())).ToListAsync(ct);
+
+        var events = await db.Database.SqlQueryRaw<PerfEventRow>(@"
+SELECT a.""Timestamp"" AS ""Utc"", a.""Action"", a.""Level"", a.""Result"", left(coalesce(a.""TechnicalMessage"", ''), 300) AS ""Message""
+FROM ""AuditLogs"" a
+WHERE a.""MigrationId"" = @mig AND a.""Action"" IN ('START', 'PAUSE', 'WINDOW_CLOSE', 'WINDOW_OPEN', 'LICENSE', 'COMPLETE')
+ORDER BY a.""Timestamp"", a.""Id""", M()).ToListAsync(ct);
+
+        var audit = await db.Database.SqlQueryRaw<PerfAuditRow>(@"
+SELECT count(*) FILTER (WHERE a.""Action"" = 'C-MOVE' AND a.""Level"" = 'WARN' AND a.""TechnicalMessage"" LIKE 'Fallo intento%') AS ""RetriedMoves"",
+       count(*) FILTER (WHERE a.""Action"" = 'C-MOVE' AND a.""TechnicalMessage"" LIKE 'Origen sin envío%') AS ""NoSendReturns"",
+       min(a.""Timestamp"") AS ""FirstAuditUtc""
+FROM ""AuditLogs"" a WHERE a.""MigrationId"" = @mig", M()).SingleAsync(ct);
+
+        static DateTime U(DateTime d) => DateTime.SpecifyKind(d, DateTimeKind.Utc);
+        return new MigrationPerformanceData
+        {
+            Total = t.Total, Migrated = t.Migrated, Failed = t.Failed, Verified = t.Verified, VerifyFailed = t.VerifyFailed,
+            Images = t.Images, ThreadSeconds = t.ThreadSeconds,
+            FirstStartUtc = t.FirstStartUtc is { } f ? U(f) : null, LastEndUtc = t.LastEndUtc is { } l ? U(l) : null,
+            FailedPartial = t.FailedPartial, FailedNoSend = t.FailedNoSend,
+            DurationBuckets = [t.D0, t.D1, t.D2, t.D3, t.D4, t.D5, t.D6],
+            Islands = islands.Select(i => new PerfInterval(U(i.StartUtc), U(i.EndUtc))).ToList(),
+            VerifyIslands = vIslands.Select(i => new PerfInterval(U(i.StartUtc), U(i.EndUtc))).ToList(),
+            Bins = bins.Select(b => new PerfBin(U(b.StartUtc), b.Studies, b.Images)).ToList(),
+            Types = types.Select(x => new PerfType(x.Key, x.Studies, x.Images, x.AvgSeconds, x.MedianSeconds, x.P95Seconds, x.ThreadSeconds)).ToList(),
+            Events = events.Select(e => new PerfEvent(U(e.Utc), e.Action, e.Level, e.Result, e.Message)).ToList(),
+            RetriedMoves = audit.RetriedMoves, NoSendReturns = audit.NoSendReturns,
+            FirstAuditUtc = audit.FirstAuditUtc is { } fa ? U(fa) : null,
+        };
+    }
+
     /// <summary>Recalcula la composición tras cambiar el lote. Si falla, borra la guardada:
     /// así la pestaña Gráficas la vuelve a calcular al abrirse, en vez de mostrar una
     /// composición que ya no corresponde al lote. Nunca hace fallar el alta de estudios.</summary>

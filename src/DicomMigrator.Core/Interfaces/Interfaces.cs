@@ -164,6 +164,12 @@ public interface IStudyRepository
     Task RecomputeCompositionAsync(int migrationId, CancellationToken ct = default);
     /// <summary>Composición guardada del lote; vacía si aún no se ha calculado.</summary>
     Task<List<MigrationCompositionRow>> GetCompositionAsync(int migrationId);
+    /// <summary>Datos de la pestaña Rendimiento (ver MigrationPerformanceData). Recorre los
+    /// estudios de la migración: no va en el refresco automático, solo al abrir la pestaña o
+    /// con ↺. <paramref name="ownModalities"/>: modalidades con fila propia en la tabla por
+    /// tipo; el resto se agrupa en «+» (Otras), como en la pestaña Gráficas.</summary>
+    Task<MigrationPerformanceData> GetPerformanceAsync(int migrationId, IReadOnlyList<string> ownModalities,
+        CancellationToken ct = default);
     /// <summary>
     /// Keyset (cursor) pagination — scales to millions of rows without the OFFSET
     /// penalty. Returns the next PageSize rows after the cursor in the filter.

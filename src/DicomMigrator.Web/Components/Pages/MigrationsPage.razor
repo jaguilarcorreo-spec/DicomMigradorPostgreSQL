@@ -478,7 +478,7 @@
 
     @* ── Tab bar ── *@
     <div class="tab-bar mb2">
-        @foreach (var t in new[] { ("dashboard","📊 Dashboard"), ("graficas","📈 Gráficas"), ("estudios","🗂 Estudios"), ("ventana","🕐 Ventana"), ("logs","📋 Logs") })
+        @foreach (var t in new[] { ("dashboard","📊 Dashboard"), ("graficas","📈 Gráficas"), ("rendimiento","⚡ Rendimiento"), ("estudios","🗂 Estudios"), ("ventana","🕐 Ventana"), ("logs","📋 Logs") })
         {
             <button class="@(_detailTab == t.Item1 ? "tab active" : "tab")" @onclick="@(() => SetDetailTab(t.Item1))">
                 @t.Item2
@@ -608,6 +608,13 @@
     {
         <CompositionCharts MigrationId="_detail.Id" PopulateStatus="@_detail.PopulateStatus"
                            PopulateDone="_detail.PopulateDone" PopulateTotal="_detail.PopulateTotal" />
+    }
+
+    @* ── RENDIMIENTO: fuerza y capacidad de la migración (se calcula al abrir la pestaña) ── *@
+    @if (_detailTab == "rendimiento" && _detail is not null)
+    {
+        <PerformanceTab MigrationId="_detail.Id" Threads="_detail.WorkerThreads"
+                        TimeZoneId="@_detail.Windows.FirstOrDefault()?.TimeZoneId" />
     }
 
     @* ── ESTUDIOS ── *@

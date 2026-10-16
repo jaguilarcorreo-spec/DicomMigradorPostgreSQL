@@ -422,3 +422,52 @@ public class CsvImportStats
     public int     Errors      { get; set; }   // lines with missing/invalid UID
     public List<string> ErrorDetails { get; set; } = [];
 }
+
+// ══════════════════════════════════════════════════════════════════════════════
+// RENDIMIENTO DE UNA MIGRACIÓN (pestaña «Rendimiento» de la ficha)
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// <summary>Datos en bruto para la pestaña Rendimiento: todo sale de los estudios de la
+/// migración (fechas de inicio y fin, imágenes, modalidad, estado) y de su auditoría
+/// (pausas, auto-pausas, reintentos). Sin tablas nuevas. Fechas en UTC; la pantalla las pasa
+/// a la zona horaria de la migración.</summary>
+public sealed class MigrationPerformanceData
+{
+    public long Total { get; set; }
+    public long Migrated { get; set; }
+    public long Failed { get; set; }
+    public long Verified { get; set; }
+    public long VerifyFailed { get; set; }
+    /// <summary>Imágenes (SourceInstanceCount) de los estudios migrados.</summary>
+    public long Images { get; set; }
+    /// <summary>Suma de lo que tardó cada estudio migrado (tiempo de hilo).</summary>
+    public double ThreadSeconds { get; set; }
+    public DateTime? FirstStartUtc { get; set; }
+    public DateTime? LastEndUtc { get; set; }
+    public long FailedPartial { get; set; }
+    public long FailedNoSend { get; set; }
+    /// <summary>Tramos de trabajo: unión de los intervalos inicio → fin de los estudios
+    /// migrados; los huecos de menos de 5 min cuentan como trabajo.</summary>
+    public List<PerfInterval> Islands { get; set; } = [];
+    public List<PerfInterval> VerifyIslands { get; set; } = [];
+    /// <summary>Estudios e imágenes por tramo de 15 min (UTC) según la hora en que terminó cada estudio.</summary>
+    public List<PerfBin> Bins { get; set; } = [];
+    public List<PerfType> Types { get; set; } = [];
+    /// <summary>Estudios por duración: &lt;2 s, 2-5 s, 5-15 s, 15-60 s, 1-5 min, 5-15 min, &gt;15 min.</summary>
+    public long[] DurationBuckets { get; set; } = new long[7];
+    /// <summary>Arranques, pausas, cierres de ventana… de la auditoría, en orden.</summary>
+    public List<PerfEvent> Events { get; set; } = [];
+    /// <summary>C-MOVE fallidos que volvieron a la cola (gastando intento).</summary>
+    public long RetriedMoves { get; set; }
+    /// <summary>C-MOVE «sin envío» devueltos sin gastar intento (episodio del origen).</summary>
+    public long NoSendReturns { get; set; }
+    /// <summary>Primera entrada de auditoría que queda de la migración (para avisar si se purgó).</summary>
+    public DateTime? FirstAuditUtc { get; set; }
+}
+
+public sealed record PerfInterval(DateTime StartUtc, DateTime EndUtc);
+public sealed record PerfBin(DateTime StartUtc, long Studies, long Images);
+/// <summary>Por tipo (modalidad principal, o «+» = el resto): duraciones en segundos.</summary>
+public sealed record PerfType(string Key, long Studies, long Images, double AvgSeconds, double MedianSeconds,
+                              double P95Seconds, double ThreadSeconds);
+public sealed record PerfEvent(DateTime Utc, string Action, string Level, string Result, string Message);
