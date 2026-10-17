@@ -3,7 +3,8 @@ namespace DicomMigrator.Core.Models;
 // ═══════════════════════════════════════════════════════════════════════════
 // RF-020 — Discovery Engine
 // Capa independiente de descubrimiento de estudios DICOM en PACS origen.
-// El inventario generado es reutilizable por múltiples migraciones.
+// Cada job tiene su propio inventario (estudios y UIDs de instancia), del que se
+// pueden crear una o varias migraciones.
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// <summary>
@@ -95,8 +96,10 @@ public class DiscoveryPartition
 }
 
 /// <summary>
-/// Inventario persistente de estudios descubiertos. Clave única: StudyInstanceUID.
-/// Independiente de MigrationStudies — reutilizable por múltiples migraciones.
+/// Estudio del inventario de un job de descubrimiento. Clave única: (DiscoveryJobId,
+/// StudyInstanceUid): el mismo estudio descubierto por dos jobs son dos filas
+/// independientes. Independiente de MigrationStudies: de un inventario se pueden crear
+/// varias migraciones.
 /// </summary>
 public class DiscoveredStudy
 {
@@ -124,7 +127,7 @@ public class DiscoveredStudy
     /// <summary>Nodo PACS donde se descubrió.</summary>
     public int      SourcePacsId     { get; set; }
 
-    /// <summary>Job de descubrimiento que lo encontró por primera vez.</summary>
+    /// <summary>Job al que pertenece este estudio del inventario.</summary>
     public int?     DiscoveryJobId   { get; set; }
 
     /// <summary>Partición que descubrió el estudio (para agregados por partición).</summary>

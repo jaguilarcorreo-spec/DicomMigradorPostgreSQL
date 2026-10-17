@@ -508,10 +508,13 @@
 {
     <HelpSection Title="Política de reintentos" Color="var(--orange)">
         <p style="margin:0;color:var(--text-dim);font-size:13px;line-height:1.6">
-            Cada migración tiene un campo <code>MaxRetries</code> (por defecto 3). Cuando un C-MOVE falla, el estudio pasa a <code>Failed</code>
-            y se incrementa su contador <code>AttemptCount</code>. Si pulsas "Reintentar fallidos", todos los estudios <code>Failed</code> con
-            <code>AttemptCount &lt; MaxRetries</code> vuelven a <code>RetryPending</code>. Al recogerlos un worker, su estado vuelve a
-            <code>Migrating</code> y se borra la fecha previa de migración para que el cronómetro se reinicie.
+            Cada migración tiene <strong>Intentos máximos</strong> (<code>MaxRetries</code>, por defecto 3): los intentos en total que tiene
+            cada estudio, igual para la migración y para la verificación. Cuando un C-MOVE falla por causa del estudio, sube su contador de
+            intentos fallidos (<code>RetryCount</code>) y vuelve a la cola como <code>RetryPending</code>; al llegar a los intentos máximos
+            pasa a <code>Failed</code>. La verificación hace lo mismo con <code>VerifyRetryCount</code> y termina en <code>VerifyFailed</code>.
+            Con 3, un estudio fallido ha tenido 3 intentos y muestra 3 en la columna «Intentos fallidos (M/V)». Los fallos que no son del
+            estudio (conexión, PACS saturado, origen sin envío, pausas) no gastan intento. «Reintentar fallidos», «Reintentar fallidos de
+            verificación», «Reintentar» y «Reiniciar» ponen el contador a cero, así que el estudio vuelve a tener todos sus intentos.
         </p>
     </HelpSection>
 
@@ -1027,7 +1030,7 @@
         new("3", "Descubrir inventario (opcional)", "var(--purple)", "Crea un Discovery Job para catalogar el PACS origen completo. Útil cuando el origen tiene millones de estudios o no puedes lanzar una migración a ciegas."),
         new("4", "Crear migración",                 "var(--yellow)", "Define origen, destino, método y prioridad de modalidad. Puedes crearla desde cero o desde el inventario de un Discovery Job (más rápido)."),
         new("5", "Ejecutar y verificar",            "var(--green)",  "Los N workers procesan estudios en paralelo. La verificación confirma la llegada al destino. Dos barras independientes (migración + verificación) muestran el progreso."),
-        new("6", "Reintentos automáticos",          "var(--red)",    "Estudios fallidos pasan a Failed. Pulsando 'Reintentar fallidos' vuelven a la cola hasta agotar MaxRetries."),
+        new("6", "Reintentos automáticos",          "var(--red)",    "Estudios fallidos pasan a Failed. Pulsando 'Reintentar fallidos' vuelven a la cola con todos sus intentos (MaxRetries)."),
     ];
 
     private record Screen(string Icon, string Name, string Color, string Desc);
@@ -1066,7 +1069,7 @@
         new("4", "Ejecución multihilo",      "var(--green)",  "N workers (configurable) procesan estudios en paralelo con lock atómico en BD. Cada worker coge un estudio, lo migra y actualiza su estado."),
         new("5", "Transferencia C-MOVE",     "var(--purple)", "El worker ordena al PACS origen un C-MOVE al AET local. El PACS origen envía las instancias vía C-STORE al SCP local."),
         new("6", "Verificación independiente","var(--orange)", "Multihilo. Lanza C-FIND o QIDO contra el destino para confirmar la presencia del estudio. Estado VerificationPending → Verified o VerificationFailed."),
-        new("7", "Reintentos automáticos",   "var(--red)",    "Si el C-MOVE falla, el estudio pasa a RetryPending. Tras un delay configurable vuelve a la cola. Al superar MaxRetries pasa a Failed."),
+        new("7", "Reintentos automáticos",   "var(--red)",    "Si el C-MOVE falla, el estudio pasa a RetryPending. Tras un delay configurable vuelve a la cola. Al agotar MaxRetries intentos pasa a Failed."),
     ];
 
     // ── Study states ────────────────────────────────────────────────────────
@@ -1101,7 +1104,7 @@
         new("Verified",             "Verificado",               "Confirmada la presencia del estudio en el destino con series e instancias coherentes."),
         new("VerifyFailed",         "Verificación fallida",     "El destino no devuelve el estudio, lo devuelve incompleto o faltan UIDs. Ya no quedan reintentos de verificación."),
         new("VerifyRetryPending",   "Reintento verificación",   "La verificación no cuadró pero quedan reintentos. Espera RetryDelaySeconds antes de volver a comprobarse."),
-        new("Failed",               "Fallido",                  "El C-MOVE falló. Si no se ha superado MaxRetries puede pasar a RetryPending."),
+        new("Failed",               "Fallido",                  "El C-MOVE falló en todos sus intentos (MaxRetries). «Reintentar fallidos» lo devuelve a la cola con el contador a cero."),
         new("RetryPending",         "Reintento pendiente",      "Marcado para reintento. Volverá a Migrating cuando un worker lo recoja."),
     ];
 
@@ -1112,7 +1115,7 @@
         new("ModalityPriority",   "CSV de modalidades: los estudios se migran por grupos en este orden y, dentro de cada grupo, por fecha. Cuenta la modalidad principal del estudio (un SR\\US es ecografía). Vacía = sin prioridad: solo por fecha. Un cambio se aplica al iniciar o reanudar.", "CT,MR,CR,DX,US,MG,..."),
         new("OldestFirst",        "Switch de orden por fecha. ON = más antiguos primero (StudyDate asc). OFF = más recientes primero (desc). Independiente de la prioridad de modalidad.", "OFF"),
         new("StartFromDate",      "Filtro previo opcional: solo se migran estudios con StudyDate ≥ esta fecha.", "(vacío)"),
-        new("MaxRetries",         "Intentos máximos antes de marcar como Failed.",                           "3"),
+        new("MaxRetries",         "Intentos en total de cada estudio, en la migración y en la verificación, antes de marcarlo como Failed o VerifyFailed.",                           "3"),
         new("RetryDelaySeconds",  "Segundos que un estudio espera en RetryPending antes de volver a la cola.","60"),
         new("DiscoveryMethod",    "Método de verificación en destino (auto-seleccionado según capacidades del nodo).", "C-FIND | QIDO-RS"),
         new("TransferMethod",     "Protocolo de transferencia.",                                            "C-MOVE | C-GET | WADO+STOW"),

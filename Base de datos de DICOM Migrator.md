@@ -1,4 +1,4 @@
-MOVE · DICOM Migrator 1.8.1 · PostgreSQL 16+ · EF Core 9
+MOVE · DICOM Migrator 1.9.5 · PostgreSQL 16+ · EF Core 9
 
 # Base de datos de DICOM Migrator
 
@@ -450,7 +450,7 @@ stateDiagram-v2
 - **Workers con el mismo nombre:** los nombres (`WORKER-1`…) se repiten entre migraciones, así que la liberación de bloqueos al terminar un worker filtra también por migración.
 - **Acciones manuales:** «Cancelar» lleva `Pending` o `RetryPending` sin bloqueo a `Cancelled`; «Reiniciar» devuelve `Failed`, `Cancelled`, `Verified` o `Migrated` a `Pending`, con `RetryCount`, `VerifyRetryCount`, error y resultado de verificación a cero; «Reintentar» lleva `Failed` a `RetryPending`. Cada una comprueba el estado en el mismo `UPDATE`: si un worker acaba de tomar el estudio, no hace nada.
 - **Transiciones condicionadas:** `Queued → Migrating` solo si el estudio sigue bloqueado por ese worker; el cierre del C-MOVE (`Migrated`, `RetryPending` o `Failed`) solo si sigue en `Migrating` con su bloqueo; y el resultado de una verificación solo si sigue en `VerificationPending`. Así ningún proceso pisa un estado que ha cambiado entretanto.
-- **Contadores:** `RetryCount` sube al pasar a `RetryPending`; «Reintentar fallidos» y «Reintentar» de un estudio lo ponen a 0, así que el estudio vuelve a tener todos sus intentos. Un C-MOVE «sin instancias» durante un episodio del origen (6 de los últimos 10 sin ninguna instancia) no lo sube. `VerifyRetryCount` sube en cada verificación fallida y «Reintentar verificación» lo pone a 0.
+- **Contadores:** `RetryCount` y `VerifyRetryCount` cuentan los intentos fallidos, incluido el último. `MaxRetries` es el número de intentos en total, igual en la migración y en la verificación: con 3, el tercer fallo deja el estudio en `Failed` o `VerifyFailed` con el contador a 3 (antes la verificación hacía un cuarto intento y `Failed` se quedaba en 2). `RetryCount` sube al pasar a `RetryPending` o a `Failed`; «Reintentar fallidos» y «Reintentar» de un estudio lo ponen a 0, así que el estudio vuelve a tener todos sus intentos. Un C-MOVE «sin instancias» durante un episodio del origen (6 de los últimos 10 sin ninguna instancia) no lo sube. `VerifyRetryCount` sube en cada verificación fallida y «Reintentar verificación» lo pone a 0.
 - **Verificación sin respuesta frente a respuesta con error:** si el destino no responde (caído, red, HTTP 502/503/504/429/408), el estudio vuelve a `Migrated` sin gastar `VerifyRetryCount`. Si responde con un error a la consulta del estudio (estado DIMSE de fallo, HTTP 400/413/500…), cuenta como intento fallido.
 - `VerifiedBy` no es un estado: indica qué comprobación se aplicó (`UidSet`, `Counts` o `ExistenceOnly`).
 
@@ -638,4 +638,4 @@ La auditoría no se escribe en el momento: va a un búfer en memoria que se vuel
 
 El mantenimiento actúa sobre las siete tablas de más movimiento (`MigrationStudies`, `MigrationInstances`, `DiscoveredStudies`, `DiscoveredInstances`, `DiscoveryPartitions`, `DiscoveryRequests` y `AuditLogs`). El diagrama solo dibuja las flechas principales.
 
-Esquema: Infrastructure/Migrations/AppDbContextModelSnapshot.cs, contrastado con la base local (pg_constraint, pg_indexes, pg_stat_user_tables). Estados y flujos: repositorios y servicios de Infrastructure y páginas de Web, leídos del directorio de trabajo del proyecto (commit 922ddae, 16 oct 2026).
+Esquema: Infrastructure/Migrations/AppDbContextModelSnapshot.cs, contrastado con la base local (pg_constraint, pg_indexes, pg_stat_user_tables). Estados y flujos: repositorios y servicios de Infrastructure y páginas de Web, leídos del directorio de trabajo del proyecto (commit 1c4dd70, 17 oct 2026).

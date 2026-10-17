@@ -1118,10 +1118,13 @@ RETURNING m.*";
         // resultado de esta verificación ya no vale y no debe pisar el nuevo estado.
         return 0 < await db.MigrationStudies
             .Where(s => s.Id == id && s.MigrationStatus == "VerificationPending")
+            // MaxRetries = intentos en total, igual que en la migración (CONC-20): el
+            // contador cuenta los intentos fallidos, incluido este; al llegar a MaxRetries,
+            // VerifyFailed. Antes se comparaba el valor previo y se hacía un intento más.
             .ExecuteUpdateAsync(u => u
                 .SetProperty(s => s.MigrationStatus,
                     s => success ? "Verified"
-                       : s.VerifyRetryCount < maxRetries ? "VerifyRetryPending"
+                       : s.VerifyRetryCount + 1 < maxRetries ? "VerifyRetryPending"
                        : "VerifyFailed")
                 .SetProperty(s => s.VerifyRetryCount,
                     s => success ? s.VerifyRetryCount
@@ -1153,8 +1156,10 @@ RETURNING m.*";
                 .SetProperty(s => s.LockedByWorker, (string?)null)
                 .SetProperty(s => s.LockDate, (DateTime?)null)
                 .SetProperty(s => s.LastUpdateDate, DateTime.UtcNow)
+                // Intentos fallidos, también el último (CONC-20): un estudio Failed con
+                // MaxRetries = 3 queda con 3, igual que VerifyRetryCount en VerifyFailed.
                 .SetProperty(s => s.RetryCount,
-                    s => status == "RetryPending" ? s.RetryCount + 1 : s.RetryCount)
+                    s => status == "RetryPending" || status == "Failed" ? s.RetryCount + 1 : s.RetryCount)
                 // MigrationDate: set when Migrated, clear when Pending/RetryPending, preserve otherwise
                 .SetProperty(s => s.MigrationDate,
                     s => status == "Migrated"                             ? (DateTime?)DateTime.UtcNow :

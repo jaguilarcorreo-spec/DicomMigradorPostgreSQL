@@ -358,9 +358,10 @@
     }
 
     @* ── Barra de progreso de ENUMERACIÓN (Nivel 2) ──
-       Solo se pinta como progreso si la enumeración se ha iniciado para ESTE job. Si está
-       en Idle y aun así hay UIDs, son heredados del inventario global (Opción A): se avisa,
-       no se muestra una barra al 100% que parezca enumeración en vivo. ── *@
+       Solo se pinta como progreso si la enumeración se ha iniciado para ESTE job. Con el
+       inventario por job no debería haber UIDs sin enumeración registrada; si los hubiera
+       (datos anteriores al inventario por job), se avisa en vez de pintar una barra al 100%
+       que parezca enumeración en vivo. ── *@
     @if (_stats.StudiesDiscovered > 0 && EnumStarted)
     {
         <div class="card mb2">
@@ -389,15 +390,14 @@
     }
     else if (_stats.StudiesDiscovered > 0 && _capturedInstances > 0)
     {
-        @* Idle + hay UIDs → heredados del inventario, NO progreso de esta ejecución. *@
+        @* Idle + hay UIDs → no son progreso de una enumeración de este job. *@
         <div class="card mb2">
             <div class="card-body" style="padding:12px 16px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
                 <span style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.08em">Enumeración</span>
                 <span style="font-size:12px;color:var(--text-dim)">
-                    Sin enumerar en este job. Hay
+                    No consta ninguna enumeración en este job, pero su inventario tiene
                     <strong style="color:var(--purple)">@_capturedInstances.ToString("N0")</strong>
-                    UIDs de instancia en el inventario de una enumeración previa (se reutilizan por
-                    inventario global). Pulsa <strong>Enumerar</strong> para capturarlos de nuevo desde el origen.
+                    UIDs de instancia guardados de antes. Pulsa <strong>Enumerar</strong> para capturarlos de nuevo desde el origen.
                 </span>
             </div>
         </div>
@@ -722,9 +722,9 @@ else
                                     <span class="mono" style="color:var(--accent);font-size:12px;min-width:46px;text-align:right">@(jc.Stats.ProgressPercent.ToString("F1", ci))%</span>
                                 </div>
                                 @* ── Barra de ENUMERAR (morado). Solo es progreso real si la
-                                   enumeración se ha iniciado para este job; si está en Idle, los
-                                   UIDs que haya son heredados del inventario (Opción A) y se avisa
-                                   en vez de pintar una barra al 100%. ── *@
+                                   enumeración se ha iniciado para este job; si está en Idle no hubo
+                                   enumeración (los UIDs que hubiera serían de datos anteriores al
+                                   inventario por job) y se avisa en vez de pintar una barra al 100%. ── *@
                                 @{ var enumStarted = j.CaptureStartedDate is not null || j.CaptureStatus is not "Idle"; }
                                 @if (enumStarted)
                                 {
@@ -780,10 +780,10 @@ else
         => _stats.StudiesDiscovered > 0 ? _capturedStudies * 100.0 / _stats.StudiesDiscovered : 0;
 
     // ¿La enumeración se ha iniciado ALGUNA VEZ para este job? Solo entonces la barra de
-    // enumeración es progreso real. Con CaptureStatus="Idle" y sin CaptureStartedDate, los
-    // UIDs que pueda haber son HEREDADOS del inventario global (Opción A: el redescubrimiento
-    // reasigna DiscoveryJobId a estudios ya enumerados por otra ejecución/job) y no deben
-    // pintarse como una barra al 100% que aparente enumeración en vivo.
+    // enumeración es progreso real. Con CaptureStatus="Idle" y sin CaptureStartedDate no
+    // hubo enumeración en este job: cada job tiene su propio inventario, así que no debería
+    // haber UIDs; si los hay (datos anteriores al inventario por job), no se pintan como una
+    // barra al 100% que aparente enumeración en vivo.
     private bool EnumStarted =>
         _detail is not null &&
         (_detail.CaptureStartedDate is not null || _detail.CaptureStatus is not "Idle");
