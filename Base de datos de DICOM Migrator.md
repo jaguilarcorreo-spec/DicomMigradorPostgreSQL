@@ -363,6 +363,8 @@ DiscoveredStudies |o..o{ MigrationStudies : "copia por StudyInstanceUid"
 
 `MigrationComposition` tiene una fila por mes de la fecha del estudio (`Month`, `YYYYMM`; vacío si falta o no es válida) y modalidad principal (la primera de `ModalitiesInStudy` que no sea SR, PR ni KO), con el número de estudios y la suma de `SourceInstanceCount`. Se recalcula entera, en una sola consulta, al terminar de añadir estudios al lote (poblado desde inventario o alta directa) y se borra al vaciarlo. No cambia con el avance de la migración. Son pocas filas (modalidades × meses) sea cual sea el número de estudios.
 
+La pestaña Rendimiento no tiene tabla propia: se calcula al abrirla con consultas de lectura sobre `MigrationStudies` (inicio y fin de cada C-MOVE y de cada verificación, imágenes, modalidad principal) y sobre `AuditLogs` de la migración (inicios, pausas, ventanas, auto-pausas, reintentos). Como el mantenimiento diario purga la auditoría INFO de más de 90 días, en migraciones antiguas las pausas e incidencias pueden salir incompletas; los tiempos y ritmos, que salen de `MigrationStudies`, no se ven afectados.
+
 `StudyDate` se guarda como texto DICOM `YYYYMMDD`, no como fecha: el orden y los filtros por fecha dependen de que el PACS siempre devuelva ese formato exacto (lo advierte el propio código de `AcquireNextPendingAsync`).
 
 `ModalityRank` es la posición de la modalidad principal del estudio en la lista de prioridad de la migración (999 si no está o si la migración no tiene prioridad). La modalidad principal es la primera de `ModalitiesInStudy` que no sea SR, PR ni KO (un estudio «SR\US» cuenta como US); es la misma que agrupa la pestaña Gráficas. Se recalcula al iniciar o reanudar la migración, solo en las filas `Pending` o `RetryPending` cuyo valor cambia, y es la primera columna del orden de la cola.
@@ -626,4 +628,4 @@ La auditoría no se escribe en el momento: va a un búfer en memoria que se vuel
 
 El mantenimiento actúa sobre las siete tablas de más movimiento (`MigrationStudies`, `MigrationInstances`, `DiscoveredStudies`, `DiscoveredInstances`, `DiscoveryPartitions`, `DiscoveryRequests` y `AuditLogs`). El diagrama solo dibuja las flechas principales.
 
-Esquema: Infrastructure/Migrations/AppDbContextModelSnapshot.cs, contrastado con la base local (pg_constraint, pg_indexes, pg_stat_user_tables). Estados y flujos: repositorios y servicios de Infrastructure y páginas de Web, leídos del directorio de trabajo del proyecto (commit 9c7a16a, 14 oct 2026).
+Esquema: Infrastructure/Migrations/AppDbContextModelSnapshot.cs, contrastado con la base local (pg_constraint, pg_indexes, pg_stat_user_tables). Estados y flujos: repositorios y servicios de Infrastructure y páginas de Web, leídos del directorio de trabajo del proyecto (commit 922ddae, 16 oct 2026).
