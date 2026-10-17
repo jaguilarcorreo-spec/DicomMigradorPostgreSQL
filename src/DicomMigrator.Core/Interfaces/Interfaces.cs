@@ -170,6 +170,9 @@ public interface IStudyRepository
     /// tipo; el resto se agrupa en «+» (Otras), como en la pestaña Gráficas.</summary>
     Task<MigrationPerformanceData> GetPerformanceAsync(int migrationId, IReadOnlyList<string> ownModalities,
         CancellationToken ct = default);
+    /// <summary>Copia a MigrationPerformance los eventos de la línea de tiempo de la migración
+    /// que haya en la auditoría (acumulando, sin repetir), para que sobrevivan a la purga.</summary>
+    Task SavePerformanceEventsAsync(int migrationId, CancellationToken ct = default);
     /// <summary>
     /// Keyset (cursor) pagination — scales to millions of rows without the OFFSET
     /// penalty. Returns the next PageSize rows after the cursor in the filter.

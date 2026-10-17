@@ -71,6 +71,7 @@ public sealed class PerformanceModel
     public bool AuditPurged { get; }
     public bool UseHeatmap => Rows.Count > MaxRowsAsDetail;
     public double SecondsPerStudy => D.Migrated == 0 ? 0 : ActiveSeconds / D.Migrated;
+    public double SecondsPerImage => D.Images == 0 ? 0 : ActiveSeconds / D.Images;
 
     public PerformanceModel(MigrationPerformanceData d, TimeZoneInfo tz, CompositionModel? comp)
     {
@@ -78,7 +79,8 @@ public sealed class PerformanceModel
         ActiveSeconds = d.Islands.Sum(i => (i.EndUtc - i.StartUtc).TotalSeconds);
         VerifyActiveSeconds = d.VerifyIslands.Sum(i => (i.EndUtc - i.StartUtc).TotalSeconds);
         CalendarSeconds = d.FirstStartUtc is { } f && d.LastEndUtc is { } l ? (l - f).TotalSeconds : 0;
-        AuditPurged = d.FirstStartUtc is { } fs && (d.FirstAuditUtc is null || d.FirstAuditUtc > fs.AddHours(1));
+        // Sin eventos desde el principio: la auditoría se purgó antes de que se guardaran.
+        AuditPurged = d.FirstStartUtc is { } fs && (d.Events.Count == 0 || d.Events[0].Utc > fs.AddHours(1));
         BuildPauses();
         AutoInsideSeconds = Pauses.Where(p => p.Kind == PauseKind.Auto)
             .Sum(p => d.Islands.Sum(i => Math.Max(0, ((p.EndUtc < i.EndUtc ? p.EndUtc : i.EndUtc) - (p.StartUtc > i.StartUtc ? p.StartUtc : i.StartUtc)).TotalSeconds)));
@@ -192,21 +194,19 @@ public sealed class PerformanceModel
         (DateTime At, PauseKind Kind, bool NoSend)? open = null;
         foreach (var e in D.Events)
         {
-            switch (e.Action)
+            // Una pausa mientras ya estaba en pausa (p. ej. manual con la ventana cerrada) no abre otra.
+            switch (e.Kind)
             {
-                case "START":
+                case "S":
                     if (open is { } o) Pauses.Add(new PauseSpan(o.At, e.Utc, o.Kind, o.NoSend));
                     open = null;
                     break;
-                case "WINDOW_CLOSE": open ??= (e.Utc, PauseKind.Window, false); break;
-                case "LICENSE": open ??= (e.Utc, PauseKind.License, false); break;
-                case "PAUSE":
-                    var kind = e.Message.StartsWith("Auto-pausa", StringComparison.Ordinal) ? PauseKind.Auto
-                             : e.Message.Contains("error de configuración", StringComparison.Ordinal) ? PauseKind.Config
-                             : PauseKind.Manual;
-                    // Una pausa manual mientras ya estaba en pausa por ventana no abre otra.
-                    open ??= (e.Utc, kind, e.Message.Contains("no envía imágenes", StringComparison.Ordinal));
-                    break;
+                case "W": open ??= (e.Utc, PauseKind.Window, false); break;
+                case "L": open ??= (e.Utc, PauseKind.License, false); break;
+                case "PA": open ??= (e.Utc, PauseKind.Auto, false); break;
+                case "PN": open ??= (e.Utc, PauseKind.Auto, true); break;
+                case "PC": open ??= (e.Utc, PauseKind.Config, false); break;
+                case "PM": open ??= (e.Utc, PauseKind.Manual, false); break;
             }
         }
     }

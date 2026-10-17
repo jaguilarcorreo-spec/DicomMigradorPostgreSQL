@@ -864,6 +864,23 @@ namespace DicomMigrator.Infrastructure.Migrations
                     b.ToTable("MigrationInstances");
                 });
 
+            modelBuilder.Entity("DicomMigrator.Core.Models.MigrationPerformance", b =>
+                {
+                    b.Property<int>("MigrationId")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Events")
+                        .IsRequired()
+                        .HasColumnType("jsonb");
+
+                    b.Property<DateTime>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("MigrationId");
+
+                    b.ToTable("MigrationPerformance", (string)null);
+                });
+
             modelBuilder.Entity("DicomMigrator.Core.Models.MigrationStudy", b =>
                 {
                     b.Property<long>("Id")
@@ -1204,6 +1221,15 @@ namespace DicomMigrator.Infrastructure.Migrations
                         .IsRequired();
 
                     b.Navigation("Study");
+                });
+
+            modelBuilder.Entity("DicomMigrator.Core.Models.MigrationPerformance", b =>
+                {
+                    b.HasOne("DicomMigrator.Core.Models.Migration", null)
+                        .WithOne()
+                        .HasForeignKey("DicomMigrator.Core.Models.MigrationPerformance", "MigrationId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("DicomMigrator.Core.Models.MigrationStudy", b =>

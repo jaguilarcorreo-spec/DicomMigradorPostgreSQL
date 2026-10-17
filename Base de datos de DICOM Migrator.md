@@ -2,9 +2,9 @@ MOVE · DICOM Migrator 1.8.1 · PostgreSQL 16+ · EF Core 9
 
 # Base de datos de DICOM Migrator
 
-Esquema físico, índices, ciclo de vida de los estados y flujo de datos entre tablas. El esquema sale del snapshot de migraciones EF (23 migraciones, la última `IndiceInventarioPorJob`) y lo he contrastado con la base local. Los estados y flujos salen del código de los servicios y repositorios.
+Esquema físico, índices, ciclo de vida de los estados y flujo de datos entre tablas. El esquema sale del snapshot de migraciones EF (26 migraciones, la última `LineaTiempoRendimiento`) y lo he contrastado con la base local. Los estados y flujos salen del código de los servicios y repositorios.
 
-**16** tablas **9** claves foráneas **9** relaciones sin clave foránea **24** índices · 5 únicos · 3 parciales **5** tablas de una sola fila
+**18** tablas **11** claves foráneas **9** relaciones sin clave foránea **24** índices · 5 únicos · 3 parciales **5** tablas de una sola fila
 
 [1 · Esquema físico](#er) [2 · Índices](#indices) [3 · Estados](#estados) [4 · Flujo de datos](#flujo)
 
@@ -230,7 +230,7 @@ DiscoveryPartitions |o..o{ DiscoveryRequests : "PartitionId · sin FK"
 
 ### Migración
 
-Una migración copia estudios del inventario (o los importa directamente) y guarda en `MigrationInstances` los UID de origen para la verificación de nivel 2. `MigrationComposition` guarda la composición del lote para la pestaña Gráficas.
+Una migración copia estudios del inventario (o los importa directamente) y guarda en `MigrationInstances` los UID de origen para la verificación de nivel 2. `MigrationComposition` guarda la composición del lote para la pestaña Gráficas, y `MigrationPerformance` la línea de tiempo de la ejecución para la pestaña Rendimiento.
 
 ```mermaid
 erDiagram
@@ -339,6 +339,11 @@ MigrationComposition {
   bigint Images
   timestamptz ComputedAt
 }
+MigrationPerformance {
+  int MigrationId PK, FK
+  jsonb Events
+  timestamptz UpdatedAt
+}
 AuditLogs {
   bigint Id PK
   int MigrationId FK
@@ -357,13 +362,16 @@ Migrations ||--o{ MigrationStudies : "CASCADE"
 Migrations ||--o{ AuditLogs : "CASCADE"
 MigrationStudies ||--o{ MigrationInstances : "CASCADE"
 Migrations ||--o{ MigrationComposition : "CASCADE"
+Migrations ||--o| MigrationPerformance : "CASCADE"
 DiscoveryJobs |o..o{ Migrations : "PopulateSourceJobId · sin FK"
 DiscoveredStudies |o..o{ MigrationStudies : "copia por StudyInstanceUid"
 ```
 
 `MigrationComposition` tiene una fila por mes de la fecha del estudio (`Month`, `YYYYMM`; vacío si falta o no es válida) y modalidad principal (la primera de `ModalitiesInStudy` que no sea SR, PR ni KO), con el número de estudios y la suma de `SourceInstanceCount`. Se recalcula entera, en una sola consulta, al terminar de añadir estudios al lote (poblado desde inventario o alta directa) y se borra al vaciarlo. No cambia con el avance de la migración. Son pocas filas (modalidades × meses) sea cual sea el número de estudios.
 
-La pestaña Rendimiento no tiene tabla propia: se calcula al abrirla con consultas de lectura sobre `MigrationStudies` (inicio y fin de cada C-MOVE y de cada verificación, imágenes, modalidad principal) y sobre `AuditLogs` de la migración (inicios, pausas, ventanas, auto-pausas, reintentos). Como el mantenimiento diario purga la auditoría INFO de más de 90 días, en migraciones antiguas las pausas e incidencias pueden salir incompletas; los tiempos y ritmos, que salen de `MigrationStudies`, no se ven afectados.
+La pestaña Rendimiento se calcula al abrirla con consultas de lectura sobre `MigrationStudies` (inicio y fin de cada C-MOVE y de cada verificación, imágenes, modalidad principal) y sobre la línea de tiempo de la migración: arranques, pausas, cierres y aperturas de ventana, verja de licencia y fin. Esa línea de tiempo sale de `AuditLogs`, pero el mantenimiento diario purga la auditoría INFO de más de 90 días; por eso se copia a `MigrationPerformance`, una fila por migración con un JSONB compacto: `[{"i": Id de auditoría, "t": milisegundos Unix UTC, "k": código}, …]`. El código ya clasifica el evento (`S` arranque, `C` fin, `W` cierre de ventana, `O` apertura, `L` licencia, `PA` auto-pausa, `PN` auto-pausa por origen sin envío, `PC` pausa por error de configuración, `PM` pausa manual), así que no se guarda el mensaje: unos 45 bytes por evento, del orden de 2 MB en el peor caso de un lote de un millón de estudios con auto-pausas todas las noches.
+
+Se escribe en dos momentos, siempre acumulando y sin repetir eventos (por el Id de auditoría): al terminar la migración (tras volcar el búfer de auditoría) y en el mantenimiento diario, justo antes de purgar, para las migraciones que van a perder eventos; así también quedan cubiertas las que duran más de 90 días o no llegan a terminar. Si ese guardado falla, la purga no se ejecuta. La pestaña lee la unión de lo guardado y lo que siga en `AuditLogs`. Los recuentos de reintentos y de C-MOVE «sin envío» son WARN y no se purgan.
 
 `StudyDate` se guarda como texto DICOM `YYYYMMDD`, no como fecha: el orden y los filtros por fecha dependen de que el PACS siempre devuelva ese formato exacto (lo advierte el propio código de `AcquireNextPendingAsync`).
 
@@ -608,6 +616,8 @@ flowchart LR
   pVer --> pBuf
   pBuf -- por lotes --> tAud[(AuditLogs)]
   pMnt([Mantenimiento diario]) -- purga INFO de más de 90 días --> tAud
+  pMnt -- antes de purgar, guarda la línea de tiempo --> tPerf[(MigrationPerformance)]
+  pWrk -- al terminar, línea de tiempo --> tPerf
   pMnt -- VACUUM y REINDEX de índices inflados --> tMI
   pMnt -- VACUUM y REINDEX de índices inflados --> tDI
   pBorr([Borrar o limpiar migración o job, por lotes]) --> pVac([VACUUM diferido])

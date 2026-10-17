@@ -187,6 +187,8 @@ WHERE n.nspname = 'public' AND x.indisvalid AND i.reltuples >= 0 AND i.relpages 
     /// <summary>
     /// Purge old INFO audit logs, keeping WARN/ERROR entries for diagnostics.
     /// AuditLogs is the fastest-growing table; without purging it grows unbounded.
+    /// Antes guarda en MigrationPerformance la línea de tiempo (arranques, pausas,
+    /// ventanas…) de las migraciones que van a perder eventos; si eso falla, no purga.
     /// </summary>
     /// <param name="retentionDays">Days of INFO logs to keep. Default 90.</param>
     public async Task<int> PurgeOldAuditLogsAsync(int retentionDays = 90, CancellationToken ct = default)
@@ -195,6 +197,12 @@ WHERE n.nspname = 'public' AND x.indisvalid AND i.reltuples >= 0 AND i.relpages 
         {
             await using var db = await factory.CreateDbContextAsync(ct);
             var cutoff = DateTime.UtcNow.AddDays(-retentionDays);
+            var saved = await db.Database.ExecuteSqlRawAsync(PerformanceEventsSql.Save(
+                @"SELECT a.""MigrationId"" FROM ""AuditLogs"" a WHERE a.""Level"" = 'INFO' AND a.""Timestamp"" < @cutoff " +
+                $@"AND a.""MigrationId"" IS NOT NULL AND a.""Action"" IN ({PerformanceEventsSql.Actions})"),
+                [new Npgsql.NpgsqlParameter("cutoff", cutoff)], ct);
+            if (saved > 0)
+                logger.LogInformation("Línea de tiempo de rendimiento guardada para {Count} migración(es) antes de purgar.", saved);
             var deleted = await db.Database.ExecuteSqlRawAsync(
                 "DELETE FROM \"AuditLogs\" WHERE \"Level\" = 'INFO' AND \"Timestamp\" < {0};",
                 new object[] { cutoff }, ct);

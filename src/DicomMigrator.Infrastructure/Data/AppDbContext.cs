@@ -13,6 +13,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<MigrationStudy>    MigrationStudies => Set<MigrationStudy>();
     public DbSet<MigrationInstance> MigrationInstances => Set<MigrationInstance>();
     public DbSet<MigrationCompositionRow> MigrationComposition => Set<MigrationCompositionRow>();
+    public DbSet<MigrationPerformance> MigrationPerformance => Set<MigrationPerformance>();
     public DbSet<MigrationAuditLog> AuditLogs        => Set<MigrationAuditLog>();
     public DbSet<AppUser>           AppUsers         => Set<AppUser>();
     public DbSet<LicenseState>      LicenseStates    => Set<LicenseState>();
@@ -151,6 +152,20 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             e.HasOne<Migration>()
              .WithMany()
              .HasForeignKey(x => x.MigrationId)
+             .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        // Eventos de la línea de tiempo para la pestaña Rendimiento (sobreviven a la purga
+        // de auditoría): una fila por migración, JSONB compacto.
+        mb.Entity<MigrationPerformance>(e =>
+        {
+            e.ToTable("MigrationPerformance");
+            e.HasKey(x => x.MigrationId);
+            e.Property(x => x.MigrationId).ValueGeneratedNever();
+            e.Property(x => x.Events).IsRequired().HasColumnType("jsonb");
+            e.HasOne<Migration>()
+             .WithOne()
+             .HasForeignKey<MigrationPerformance>(x => x.MigrationId)
              .OnDelete(DeleteBehavior.Cascade);
         });
 

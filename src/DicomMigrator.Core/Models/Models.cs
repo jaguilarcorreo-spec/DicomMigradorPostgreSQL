@@ -386,3 +386,17 @@ public class MigrationCompositionRow
     public long     Images      { get; set; }
     public DateTime ComputedAt  { get; set; }
 }
+
+/// <summary>
+/// Copia compacta de los eventos de la línea de tiempo de una migración (arranques,
+/// pausas, ventanas, licencia, fin) para la pestaña Rendimiento: la purga diaria borra la
+/// auditoría INFO de más de 90 días. Una fila por migración; se escribe al terminar la
+/// migración y antes de cada purga, acumulando. Formato en PerformanceEventsSql.
+/// </summary>
+public class MigrationPerformance
+{
+    public int      MigrationId { get; set; }
+    /// <summary>JSONB: [{"i": Id de auditoría, "t": ms Unix UTC, "k": código}, …].</summary>
+    public string   Events      { get; set; } = "[]";
+    public DateTime UpdatedAt   { get; set; }
+}

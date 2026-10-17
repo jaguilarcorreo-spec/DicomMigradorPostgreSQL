@@ -541,12 +541,8 @@ GROUP BY g.grp ORDER BY 1";
         public double AvgSeconds { get; set; } public double MedianSeconds { get; set; } public double P95Seconds { get; set; }
         public double ThreadSeconds { get; set; }
     }
-    private sealed class PerfEventRow
-    {
-        public DateTime Utc { get; set; } public string Action { get; set; } = ""; public string Level { get; set; } = "";
-        public string Result { get; set; } = ""; public string Message { get; set; } = "";
-    }
-    private sealed class PerfAuditRow { public long RetriedMoves { get; set; } public long NoSendReturns { get; set; } public DateTime? FirstAuditUtc { get; set; } }
+    private sealed class PerfEventRow { public long UnixMs { get; set; } public string Kind { get; set; } = ""; }
+    private sealed class PerfAuditRow { public long RetriedMoves { get; set; } public long NoSendReturns { get; set; } }
 
     public async Task<MigrationPerformanceData> GetPerformanceAsync(int migrationId, IReadOnlyList<string> ownModalities,
         CancellationToken ct = default)
@@ -605,16 +601,13 @@ FROM (SELECT coalesce({PrimaryModalitySql}, '—') AS pm, {dur} AS d, coalesce(s
       FROM ""MigrationStudies"" s WHERE {PerfDone}) t
 GROUP BY 1", M(), new NpgsqlParameter("own", ownModalities.ToArray())).ToListAsync(ct);
 
-        var events = await db.Database.SqlQueryRaw<PerfEventRow>(@"
-SELECT a.""Timestamp"" AS ""Utc"", a.""Action"", a.""Level"", a.""Result"", left(coalesce(a.""TechnicalMessage"", ''), 300) AS ""Message""
-FROM ""AuditLogs"" a
-WHERE a.""MigrationId"" = @mig AND a.""Action"" IN ('START', 'PAUSE', 'WINDOW_CLOSE', 'WINDOW_OPEN', 'LICENSE', 'COMPLETE')
-ORDER BY a.""Timestamp"", a.""Id""", M()).ToListAsync(ct);
+        // Los guardados en MigrationPerformance más los que sigan en la auditoría (la purga
+        // borra los INFO de más de 90 días). Los dos recuentos siguientes son WARN: no se purgan.
+        var events = await db.Database.SqlQueryRaw<PerfEventRow>(PerformanceEventsSql.Read, M()).ToListAsync(ct);
 
         var audit = await db.Database.SqlQueryRaw<PerfAuditRow>(@"
 SELECT count(*) FILTER (WHERE a.""Action"" = 'C-MOVE' AND a.""Level"" = 'WARN' AND a.""TechnicalMessage"" LIKE 'Fallo intento%') AS ""RetriedMoves"",
-       count(*) FILTER (WHERE a.""Action"" = 'C-MOVE' AND a.""TechnicalMessage"" LIKE 'Origen sin envío%') AS ""NoSendReturns"",
-       min(a.""Timestamp"") AS ""FirstAuditUtc""
+       count(*) FILTER (WHERE a.""Action"" = 'C-MOVE' AND a.""TechnicalMessage"" LIKE 'Origen sin envío%') AS ""NoSendReturns""
 FROM ""AuditLogs"" a WHERE a.""MigrationId"" = @mig", M()).SingleAsync(ct);
 
         static DateTime U(DateTime d) => DateTime.SpecifyKind(d, DateTimeKind.Utc);
@@ -629,10 +622,16 @@ FROM ""AuditLogs"" a WHERE a.""MigrationId"" = @mig", M()).SingleAsync(ct);
             VerifyIslands = vIslands.Select(i => new PerfInterval(U(i.StartUtc), U(i.EndUtc))).ToList(),
             Bins = bins.Select(b => new PerfBin(U(b.StartUtc), b.Studies, b.Images)).ToList(),
             Types = types.Select(x => new PerfType(x.Key, x.Studies, x.Images, x.AvgSeconds, x.MedianSeconds, x.P95Seconds, x.ThreadSeconds)).ToList(),
-            Events = events.Select(e => new PerfEvent(U(e.Utc), e.Action, e.Level, e.Result, e.Message)).ToList(),
+            Events = events.Select(e => new PerfEvent(DateTime.UnixEpoch.AddMilliseconds(e.UnixMs), e.Kind)).ToList(),
             RetriedMoves = audit.RetriedMoves, NoSendReturns = audit.NoSendReturns,
-            FirstAuditUtc = audit.FirstAuditUtc is { } fa ? U(fa) : null,
         };
+    }
+
+    public async Task SavePerformanceEventsAsync(int migrationId, CancellationToken ct = default)
+    {
+        await using var db = await factory.CreateDbContextAsync(ct);
+        await db.Database.ExecuteSqlRawAsync(PerformanceEventsSql.Save("@mig"),
+            [new NpgsqlParameter("mig", migrationId)], ct);
     }
 
     /// <summary>Recalcula la composición tras cambiar el lote. Si falla, borra la guardada:

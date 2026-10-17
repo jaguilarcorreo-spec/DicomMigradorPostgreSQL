@@ -403,6 +403,20 @@ public class MigrationWorker(
         });
         logger.LogInformation("Migration {Id} finished with status {Status}", migrationId, finalStatus);
 
+        // Línea de tiempo para la pestaña Rendimiento, a salvo de la purga de auditoría.
+        // Primero se vuelca el búfer de auditoría para que entren los últimos eventos.
+        // Nunca impide terminar: el mantenimiento la vuelve a guardar antes de purgar.
+        try
+        {
+            if (scope.ServiceProvider.GetService<DicomMigrator.Infrastructure.Data.AuditLogBuffer>() is { } auditBuffer)
+                await auditBuffer.FlushAsync();
+            await StudyRepo(scope).SavePerformanceEventsAsync(migrationId);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Migración {Id}: no se pudo guardar la línea de tiempo de rendimiento.", migrationId);
+        }
+
         // Verificación en espera: verificar lo que quede o, si ya está todo verificado,
         // promover la migración a Completed (CONC-4).
         await RelaunchWaitingVerificationAsync(migrationId, "la migración ha terminado");

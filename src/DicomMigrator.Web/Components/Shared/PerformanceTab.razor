@@ -151,22 +151,39 @@ else
     <div class="perf-grid2">
         @* ── Capacidad ── *@
         <section class="cmp-card" aria-label="Capacidad estimada">
-            <div class="cmp-header"><span class="cmp-title">Capacidad estimada</span><span class="cmp-muted">con el ritmo y la mezcla de este lote</span></div>
+            <div class="cmp-header"><span class="cmp-title">Capacidad estimada</span>
+                <div class="cmp-seg" role="group" aria-label="Calcular por">
+                    <button type="button" aria-pressed="@(_capByImages ? "false" : "true")" @onclick="() => _capByImages = false">Por estudios</button>
+                    <button type="button" aria-pressed="@(_capByImages ? "true" : "false")" @onclick="() => _capByImages = true">Por imágenes</button>
+                </div></div>
             <div class="cmp-body">
                 <div class="perf-result"><span class="cmp-muted">Una jornada de @m.AxisHours h:</span>
                     <b>@PerformanceModel.N(m.AxisHours * 3600 / Math.Max(0.001, m.SecondsPerStudy))</b><span class="cmp-muted">estudios</span>
                     <b>@BigN((long)(m.AxisHours * 3600 / Math.Max(0.001, m.SecondsPerStudy) * d.Images / Math.Max(1, d.Migrated)))</b><span class="cmp-muted">imágenes</span></div>
                 <div class="perf-calc">
-                    <label for="perf-est">Estudios a migrar<input id="perf-est" type="number" min="0" step="1000" @bind="_capStudies" @bind:event="oninput" /></label>
+                    @if (_capByImages)
+                    {
+                        <label for="perf-img">Imágenes a migrar<input id="perf-img" type="number" min="0" step="100000" @bind="_capImages" @bind:event="oninput" /></label>
+                    }
+                    else
+                    {
+                        <label for="perf-est">Estudios a migrar<input id="perf-est" type="number" min="0" step="1000" @bind="_capStudies" @bind:event="oninput" /></label>
+                    }
                     <label for="perf-h">Horas de trabajo por jornada<input id="perf-h" type="number" min="1" max="24" step="1" @bind="_capHours" @bind:event="oninput" /></label>
                 </div>
                 @{
-                    var hours = Math.Max(0, _capStudies) * m.SecondsPerStudy / 3600;
+                    var imgPerStudy = (double)d.Images / Math.Max(1, d.Migrated);
+                    var hours = _capByImages
+                        ? Math.Max(0, _capImages) * m.SecondsPerImage / 3600
+                        : Math.Max(0, _capStudies) * m.SecondsPerStudy / 3600;
                     var days = hours / Math.Clamp(_capHours, 1, 24);
                 }
                 <div class="perf-result"><span class="cmp-muted">Tiempo de trabajo:</span><b>@PerformanceModel.N(hours, hours < 100 ? 1 : 0) h</b>
-                    <span class="cmp-muted">→</span><b>@PerformanceModel.N(Math.Ceiling(days))</b><span class="cmp-muted">jornadas de @Math.Clamp(_capHours, 1, 24) h</span></div>
-                <p class="cmp-note">Supone la misma mezcla de tipos, los mismos hilos y el mismo origen. Si el lote nuevo tiene más TC o RM, tardará más.</p>
+                    <span class="cmp-muted">→</span><b>@PerformanceModel.N(Math.Ceiling(days))</b><span class="cmp-muted">jornadas de @Math.Clamp(_capHours, 1, 24) h</span>
+                    <span class="cmp-muted">@(_capByImages
+                        ? $"· unos {PerformanceModel.N(Math.Max(0, _capImages) / Math.Max(0.001, imgPerStudy))} estudios de {PerformanceModel.N(imgPerStudy, 1)} imágenes"
+                        : $"· unos {BigN((long)(Math.Max(0, _capStudies) * imgPerStudy))} imágenes")</span></div>
+                <p class="cmp-note">Con el ritmo, los hilos y el origen de este lote. <b>Por estudios</b> supone también la misma mezcla de tipos: si el lote nuevo tiene más TC o RM, tardará más. <b>Por imágenes</b> sigue mejor un lote con más imágenes por estudio, pero se queda corto si tiene muchos estudios pequeños (radiografías, ecografías), que pagan unos segundos fijos por C-MOVE. Con la pestaña Gráficas del lote nuevo puedes ver sus estudios e imágenes y comparar las dos estimaciones.</p>
             </div>
         </section>
         @* ── Incidencias ── *@
@@ -183,7 +200,7 @@ else
                 </ul>
                 @if (m.AuditPurged)
                 {
-                    <p class="cmp-note">La auditoría antigua de esta migración ya se purgó: pausas, reintentos e incidencias pueden estar incompletos. Los tiempos, ritmos y tipos salen de los estudios y están completos.</p>
+                    <p class="cmp-note">La auditoría antigua de esta migración se purgó antes de guardarse su línea de tiempo: pausas, reintentos e incidencias pueden estar incompletos. Los tiempos, ritmos y tipos salen de los estudios y están completos.</p>
                 }
             </div>
         </section>
@@ -207,6 +224,8 @@ else
     private string _tzName = "";
     private double _heatMax = 40;
     private int _capStudies = 100_000, _capHours = 24;
+    private long _capImages = 20_000_000;
+    private bool _capByImages;
 
     protected override async Task OnParametersSetAsync()
     {
