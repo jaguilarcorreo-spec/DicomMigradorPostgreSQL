@@ -484,8 +484,9 @@ public interface IVerificationService
     /// mismatch up to MaxRetries. Runs independently of migration. Idempotent.</summary>
     Task StartVerificationAsync(int migrationId, CancellationToken ct = default);
 
-    /// <summary>Pause verification: stops acquiring new studies. Studies not yet taken
-    /// remain 'Migrated' so verification can resume later.</summary>
+    /// <summary>Pausa la verificación: cancela los workers al momento; el estudio que se
+    /// estuviera verificando vuelve a 'Migrated' sin gastar intento, igual que los no
+    /// tomados, y se verifica al reanudar.</summary>
     Task PauseVerificationAsync(int migrationId);
 
     /// <summary>Resume a paused verification.</summary>
@@ -505,7 +506,8 @@ public interface IMigrationWorker
     /// <summary>Cancela todos los workers activos al apagar el proceso (sin tocar BD).</summary>
     void CancelAllForShutdown();
 
-    /// <summary>Pause all workers for a migration gracefully. <paramref name="byWindow"/>:
+    /// <summary>Pausa los workers de una migración: cancela su token, el C-MOVE en curso
+    /// se corta y el estudio vuelve a 'Pending' sin gastar intento. <paramref name="byWindow"/>:
     /// la pausa la hace el planificador al cerrarse la ventana horaria, y se reanudará
     /// sola al abrirse; si no, es una pausa manual que solo se reanuda a mano.</summary>
     Task PauseAsync(int migrationId, bool byWindow = false);

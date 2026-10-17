@@ -26,6 +26,8 @@ public class DicomNode
     public bool     UseTls                    { get; set; } = false;
     public int      AssociationTimeoutSeconds { get; set; } = 30;
     public int      OperationTimeoutSeconds   { get; set; } = 120;
+    /// <summary>Se guarda y se muestra, pero aún no se aplica: las asociaciones a la vez
+    /// las marcan los hilos de cada proceso (la interfaz lo indica, UI-33).</summary>
     public int      MaxConcurrentAssociations { get; set; } = 10;
 
     // ── DICOMweb (reutilizado de DicomWebConfiguration del Tester) ───────────
@@ -355,7 +357,8 @@ public class LocalConfiguration
     public string   LocalHostname { get; set; } = string.Empty;
     public string   Description   { get; set; } = string.Empty;
 
-    /// <summary>Global max simultaneous migrations running at the same time</summary>
+    /// <summary>Máximo de migraciones en marcha a la vez. Se guarda, pero aún no se aplica
+    /// (la interfaz lo indica, UI-33).</summary>
     public int      MaxConcurrentMigrations { get; set; } = 3;
 
     public DateTime UpdatedAt     { get; set; } = DateTime.UtcNow;

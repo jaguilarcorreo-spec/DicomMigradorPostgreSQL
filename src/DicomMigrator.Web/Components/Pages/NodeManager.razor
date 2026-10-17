@@ -182,6 +182,7 @@
                             <div class="form-group">
                                 <label class="form-label">Máx. asociaciones simult.</label>
                                 <input class="form-input mono" type="number" @bind="_maxAssoc" />
+                                <div class="form-hint">Aún no se aplica: las asociaciones a la vez las marcan los hilos de cada migración, verificación o descubrimiento.</div>
                             </div>
                         </div>
                     </div>
@@ -397,7 +398,7 @@ else
                         </div>
                         <div>
                             <div class="pacs-info-label">Límites</div>
-                            <div class="pacs-info-val">Máx. asociaciones: @n.MaxConcurrentAssociations</div>
+                            <div class="pacs-info-val" title="Aún no se aplica: las asociaciones a la vez las marcan los hilos de cada proceso">Máx. asociaciones: @n.MaxConcurrentAssociations <span style="color:var(--text-muted)">(no se aplica)</span></div>
                             <div class="pacs-info-val">Timeout op.: @n.OperationTimeoutSeconds s</div>
                         </div>
 

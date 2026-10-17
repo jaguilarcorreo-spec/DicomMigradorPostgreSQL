@@ -8,13 +8,16 @@ namespace DicomMigrator.Infrastructure.Data;
 
 /// <summary>
 /// Singleton in-memory buffer for audit log entries. Instead of one DB commit per
-/// study (which, with N workers and millions of studies, makes the single-writer
-/// SQLite the bottleneck of the whole migration), entries are queued here and
-/// flushed in batches inside a single transaction by <see cref="AuditLogFlushService"/>.
+/// entry (with N workers and millions of studies, a round trip and a commit per C-MOVE
+/// in PostgreSQL), entries are queued here and flushed in batches inside a single
+/// transaction by AuditLogFlushService: every 5 s, or sooner when BatchSize is reached.
 ///
 /// AddAsync (called from the workers) only enqueues — it never touches the DB.
-/// Reads from the repository call FlushAsync() first so the UI never shows stale data.
-/// Pause/Stop/shutdown also force a flush so nothing is lost.
+/// Reads from the repository call FlushAsync() first so the UI never shows stale data;
+/// the end of a migration also flushes (before saving its performance timeline), and
+/// the service flushes once more on a clean shutdown. Pause and Stop do not flush: the
+/// 5 s cycle persists their entries. If the process dies abruptly, entries still in
+/// the queue are lost.
 ///
 /// NOTE: IDbContextFactory is registered Scoped in this project, so a singleton
 /// cannot take it via the constructor. We inject IServiceScopeFactory and resolve

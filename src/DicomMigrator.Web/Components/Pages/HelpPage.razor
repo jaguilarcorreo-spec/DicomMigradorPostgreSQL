@@ -209,7 +209,7 @@
             <thead><tr><th>Acción</th><th>Descripción</th></tr></thead>
             <tbody>
                 <tr><td><strong>▶ Iniciar / Reanudar</strong></td><td>Lanza los workers para procesar particiones pendientes. Un job que estaba en marcha se reanuda solo al reiniciar el servicio. Si un error inesperado detiene los workers, el job pasa a <strong>Paused</strong> (con correo de «descubrimiento fallido») y basta con reanudarlo: continúa donde lo dejó.</td></tr>
-                <tr><td><strong>⏸ Pausar</strong></td><td>Detiene los workers. Las particiones en curso terminan limpiamente.</td></tr>
+                <tr><td><strong>⏸ Pausar</strong></td><td>Detiene los workers al momento: las consultas en curso se cortan y sus particiones vuelven a Pendiente sin gastar intento; se repiten al reanudar.</td></tr>
                 <tr><td><strong>✎ Editar</strong></td><td>Modifica nombre, descripción, rango de fechas, método, límite y workers. Si cambias el rango deberás reiniciar el descubrimiento.</td></tr>
                 <tr><td><strong>🧹 Limpiar</strong></td><td>Resetea todas las particiones a Pendiente y borra los estudios descubiertos. <strong>Mantiene la configuración.</strong> Bloqueado si el job está Running.</td></tr>
                 <tr><td><strong>🗑 Eliminar</strong></td><td>Borra el job y toda su información (particiones, estudios, peticiones). Doble confirmación. Bloqueado si el job está Running. Con un inventario grande tarda unos minutos y muestra cuántos estudios lleva borrados; si se interrumpe, volver a eliminarlo continúa donde se quedó.</td></tr>
@@ -236,9 +236,11 @@
 
     <HelpSection Title="Multihilo y bloqueo atómico" Color="var(--purple)">
         <p style="margin:0 0 10px 0;color:var(--text-dim);font-size:13px;line-height:1.6">
-            Cada migración se procesa con <code>N workers</code> en paralelo (configurable). El reparto de estudios usa un
-            <strong>lock atómico en PostgreSQL</strong>: el primer worker que ejecuta el <code>UPDATE ... WHERE Status='Pending' AND LockedByWorker IS NULL</code> se lleva el estudio.
-            Imposible que dos workers procesen el mismo estudio.
+            Cada migración se procesa con <code>N workers</code> en paralelo (configurable). Cada worker toma su estudio con una
+            sola sentencia atómica en PostgreSQL (<code>UPDATE … WHERE Id = (SELECT … ORDER BY … LIMIT 1 FOR UPDATE SKIP LOCKED)</code>):
+            cada uno obtiene uno distinto sin esperar a los demás, y el estudio queda bloqueado a su nombre mientras dura el
+            C-MOVE (el bloqueo se renueva). Al cerrar el intento solo puede escribir el worker que lo tiene, así que dos workers
+            no procesan el mismo estudio ni se pisan el resultado. La verificación usa su propio bloqueo, del mismo modo.
         </p>
         <p style="margin:0;color:var(--text-dim);font-size:13px;line-height:1.6">
             El SCP de C-STORE local escucha en el puerto configurado en <strong>Config. local SCU</strong>. Es <strong>compartido</strong> por todos los workers
@@ -324,7 +326,7 @@
         <p style="margin:0 0 10px 0;color:var(--text-dim);font-size:13px;line-height:1.6">
             El sistema distingue entre un <strong>error de conexión transitorio</strong> (el PACS se cae o la red falla) y un
             <strong>fallo lógico real</strong> del estudio. Un corte de conexión <strong>no consume reintentos</strong> ni manda el
-            estudio a Fallido: lo devuelve a su estado anterior (Pendiente o Migrado) y reintenta la conexión con backoff creciente.
+            estudio a Fallido: lo devuelve a su estado anterior (Pendiente o Migrado), espera 10 s y vuelve a intentarlo.
         </p>
         <p style="margin:0 0 10px 0;color:var(--text-dim);font-size:13px;line-height:1.6">
             Tras <strong>5 errores de conexión consecutivos</strong>, el proceso afectado se <strong>auto-pausa</strong> y lo señala
@@ -431,8 +433,8 @@
             <thead><tr><th>Acción</th><th>Descripción</th></tr></thead>
             <tbody>
                 <tr><td><strong>▶ Iniciar / Reanudar</strong></td><td>Lanza (o relanza) los N workers del proceso correspondiente. Al iniciar manualmente se limpia el indicador de auto-pausa.</td></tr>
-                <tr><td><strong>⏸ Pausar</strong></td><td>Los workers terminan su estudio actual y paran. El proceso queda en Paused y puede reanudarse.</td></tr>
-                <tr><td><strong>⏹ Parar</strong></td><td>Detiene el proceso por completo al terminar los hilos activos.</td></tr>
+                <tr><td><strong>⏸ Pausar</strong></td><td>Detiene los workers al momento: el C-MOVE o la verificación en curso se corta y el estudio vuelve a la cola sin gastar intento (se repite entero al reanudar). El proceso queda en Paused y puede reanudarse.</td></tr>
+                <tr><td><strong>⏹ Parar</strong></td><td>Detiene el proceso igual que Pausar (corta lo que esté en curso y lo devuelve a la cola) y lo deja detenido; se relanza con Iniciar.</td></tr>
                 <tr><td><strong>↺ Reintentar fallidos de migración</strong></td><td>Marca los estudios en Failed como RetryPending para que vuelvan a la cola de migración, con sus intentos a cero.</td></tr>
                 <tr><td><strong>↺ Reintentar fallidos de verificación</strong></td><td>Devuelve los estudios en VerifyFailed a la cola de verificación.</td></tr>
                 <tr><td><strong>✎ Editar</strong></td><td>Modifica nombre, descripción, hilos, max. reintentos, delay de reintento, prioridad de modalidad y, si está en Draft o Paused, el orden por fecha. Un cambio de prioridad hecho con la migración en marcha se aplica al pausarla y reanudarla.</td></tr>
@@ -650,7 +652,9 @@
         <p style="margin:0 0 10px 0;color:var(--text-dim);font-size:13px;line-height:1.6">
             <strong>Primer acceso:</strong> si no hay ningún usuario, al arrancar se crea
             <code>admin</code> con una contraseña inicial y la obligación de cambiarla. Hasta que no
-            se cambia no se puede usar nada más. La contraseña inicial se puede fijar con
+            se cambia no se puede usar nada más: cualquier página lleva a la de cambio de contraseña. Lo mismo
+            vale para cualquier usuario con la casilla <strong>«Debe cambiar la contraseña al entrar»</strong>,
+            que se marca por defecto al darlo de alta. La contraseña inicial se puede fijar con
             <code>Auth:InitialAdminPassword</code> en <code>appsettings.Production.json</code>.
         </p>
         <p style="margin:0 0 10px 0;color:var(--text-dim);font-size:13px;line-height:1.6">
@@ -981,7 +985,7 @@
             <tbody>
                 <tr><td>Umbral de auto-pausa</td><td>Errores de conexión consecutivos antes de que un proceso (migración o verificación) se auto-pause.</td><td class="mono" style="color:var(--accent)">5</td></tr>
                 <tr><td>Espera entre errores</td><td>Pausa fija entre errores de conexión mientras se cuenta hacia el umbral (fija, no exponencial, para llegar rápido al umbral).</td><td class="mono" style="color:var(--accent)">10 s</td></tr>
-                <tr><td>Backoff exponencial</td><td>Espera creciente entre reintentos de conexión: 10 s, 20 s, 40 s, 80 s… con tope.</td><td class="mono" style="color:var(--accent)">hasta 5 min</td></tr>
+                <tr><td>Backoff exponencial</td><td>Espera creciente cuando falla la base de datos propia o hay errores inesperados seguidos en un worker: 10 s, 20 s, 40 s, 80 s… con tope. Los errores de conexión con el PACS usan la espera fija de arriba.</td><td class="mono" style="color:var(--accent)">hasta 5 min</td></tr>
                 <tr><td>Tamaño máx. CSV</td><td>Límite de tamaño del fichero en el importador CSV.</td><td class="mono" style="color:var(--accent)">50 MB</td></tr>
                 <tr><td>Líneas máx. CSV</td><td>Número máximo de líneas admitidas en el importador CSV.</td><td class="mono" style="color:var(--accent)">500.000</td></tr>
             </tbody>
@@ -1041,9 +1045,9 @@
         new("🔍", "Discovery Engine", "#3B82F6",       "Listado de jobs de descubrimiento. Detalle con métricas en tiempo real, tabla de particiones con paginación, inventario descubierto y exportación CSV/Excel."),
         new("⊞", "Nodos DICOM",      "var(--green)",  "CRUD de nodos: AET/host/puerto para DIMSE, Base URL + paths + auth para DICOMweb. Toggle independiente para DICOMweb."),
         new("⚙", "Config. local SCU","var(--orange)", "AET, hostname y puerto del C-STORE SCP local. Estos datos los necesita el PACS origen para enviarte estudios."),
-        new("🩺", "Diagnóstico",      "var(--yellow)", "Tests de conectividad: C-ECHO, C-FIND y QIDO contra cualquier nodo registrado para verificar que el canal funciona antes de lanzar una migración."),
+        new("🩺", "Diagnóstico",      "var(--yellow)", "Comprobaciones antes de migrar: C-ECHO con cada nodo registrado, la configuración del SCU local, el generador de configuración para dar de alta los AE en el PACS origen y una lista de requisitos. No hace C-FIND ni QIDO: la conectividad DICOMweb se comprueba al usarla."),
         new("👤", "Usuarios",         "var(--purple)", "Alta, edición y desactivación de usuarios, asignación de rol, reseteo de contraseña y desbloqueo de cuentas. Solo visible para el rol Administrador."),
-        new("📋", "Logs y auditoría", "var(--text)",   "Logs en vivo del sistema. El nivel se cambia en caliente (Verbose, Debug, Information, Warning, Error). Rolling file diario en disco."),
+        new("📋", "Logs y auditoría", "var(--text)",   "Últimas 300 líneas del fichero de log del día y las 200 entradas de auditoría más recientes, en hora local; se actualizan con ↺ (no en vivo). El nivel de log se cambia en caliente (solo Administrador). Rolling file diario en disco."),
     ];
 
     // ── Discovery steps ─────────────────────────────────────────────────────

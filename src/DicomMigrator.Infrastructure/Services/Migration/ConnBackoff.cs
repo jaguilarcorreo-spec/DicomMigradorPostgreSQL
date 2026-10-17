@@ -40,8 +40,9 @@ internal static class ConnBackoff
     public static void ResetPauseAnnouncement(string process, int migrationId)
         => _pauseAnnounced.TryRemove($"{process}:{migrationId}", out _);
 
-    /// <summary>Exponential backoff for consecutive connection errors: 10s, 20s,
-    /// 40s, 80s... capped at 5 minutes. consecutiveErrors starts at 1.</summary>
+    /// <summary>Exponential backoff for consecutive errors of our own database or unexpected
+    /// worker errors: 10s, 20s, 40s, 80s... capped at 5 minutes. consecutiveErrors starts
+    /// at 1. PACS connection errors use the fixed PrePauseWait instead.</summary>
     public static TimeSpan ForAttempt(int consecutiveErrors)
     {
         var n = Math.Max(1, consecutiveErrors);

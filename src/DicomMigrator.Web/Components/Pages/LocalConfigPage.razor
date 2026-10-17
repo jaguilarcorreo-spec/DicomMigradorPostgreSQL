@@ -50,7 +50,7 @@ else
                 <div class="form-group" style="max-width:220px">
                     <label class="form-label">Máx. migraciones simultáneas</label>
                     <input class="form-input mono" type="number" @bind="_maxMigrations" min="1" max="20" />
-                    <div class="form-hint">Número máximo de migraciones en estado Running a la vez.</div>
+                    <div class="form-hint">Aún no se aplica: se guarda, pero se pueden ejecutar a la vez todas las migraciones que se inicien.</div>
                 </div>
 
                 <div class="form-group">
@@ -86,7 +86,7 @@ else
                     </div>
                     <div class="config-row">
                         <span class="config-key">Máx. migraciones</span>
-                        <span class="config-val mono">@_maxMigrations</span>
+                        <span class="config-val mono" title="Aún no se aplica">@_maxMigrations <span style="color:var(--text-muted)">(no se aplica)</span></span>
                     </div>
                     <div class="config-row">
                         <span class="config-key">Última actualización</span>

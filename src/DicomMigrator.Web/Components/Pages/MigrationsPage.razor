@@ -1766,16 +1766,16 @@ else
         finally { _actionBusy = false; }
     }
 
-    /// <summary>Parar: detiene el proceso. Los hilos en curso terminan su estudio
-    /// actual (no se interrumpen), pero no se toma más trabajo. Deja estado Cancelled;
-    /// con Iniciar se puede relanzar.</summary>
+    /// <summary>Parar: detiene el proceso como Pausar (el C-MOVE en curso se corta y el
+    /// estudio vuelve a Pendiente sin gastar intento) y deja estado Cancelled; con
+    /// Iniciar se puede relanzar.</summary>
     async Task StopMigrationAsync()
     {
         if (_detail is null) return;
         _actionBusy = true;
         try
         {
-            await Worker.PauseAsync(_detail.Id);   // cancela el token: los workers salen al terminar el actual
+            await Worker.PauseAsync(_detail.Id);   // cancela el token: corta el C-MOVE en curso y devuelve el estudio a la cola
             await MigrationRepo.UpdateStatusAsync(_detail.Id, "Cancelled");
             await RefreshDetailAsync();
             StopAutoRefresh();

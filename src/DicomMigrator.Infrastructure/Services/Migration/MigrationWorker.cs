@@ -272,7 +272,7 @@ public class MigrationWorker(
                 if (!lic.CanMigrate && m.Status == "Running")
                 {
                     // Licencia caducada (o inválida) con la migración en marcha: pausa
-                    // ORDENADA, como el botón Pausar (los workers terminan su estudio actual),
+                    // como el botón Pausar (el C-MOVE en curso vuelve a la cola sin gastar intento),
                     // con la marca para reanudarla sola en cuanto vuelva a haber licencia.
                     logger.LogWarning("Licencia no válida ({Verdict}): se pausa la migración {Id} ('{Name}').",
                         lic.Verdict, m.Id, m.Name);
