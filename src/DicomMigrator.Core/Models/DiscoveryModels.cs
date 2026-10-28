@@ -48,6 +48,13 @@ public class DiscoveryJob
     public string   CaptureStatus { get; set; } = "Idle";
     /// <summary>Inicio/fin del proceso de enumeración (Nivel 2), para medir el tiempo transcurrido.</summary>
     public DateTime? CaptureStartedDate  { get; set; }
+    /// <summary>Estudios del inventario de este job con UIDs capturados y nº de UIDs
+    /// (instancias). Se mantienen al enumerar cada estudio (en la misma transacción que sus
+    /// UIDs), se recalculan al terminar la enumeración y se ponen a 0 al limpiar el job. Así
+    /// la lista y la ficha no cuentan millones de filas. NULL = aún sin calcular (jobs
+    /// anteriores a estas columnas: los calcula el mantenimiento al arrancar).</summary>
+    public int? CapturedStudies   { get; set; } = 0;
+    public int? CapturedInstances { get; set; } = 0;
     public DateTime? CaptureFinishedDate { get; set; }
 
     public DateTime CreatedDate   { get; set; } = DateTime.UtcNow;

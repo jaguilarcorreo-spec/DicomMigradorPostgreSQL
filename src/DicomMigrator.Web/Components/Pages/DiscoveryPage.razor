@@ -21,7 +21,20 @@
 <ActionErrorToast Message="@GuardError" OnDismiss="ClearGuardError" />
 <PageTitle>Discovery Engine — Migrator</PageTitle>
 
-@if (_detail is not null)
+@if (_detail is not null && _detailLoading)
+{
+    @* Al abrir una ficha: los conteos de UIDs recorren la tabla de instancias y con
+       inventarios grandes tardan unos segundos. Mientras, «Cargando» en vez de una ficha
+       a ceros que parezca vacía. *@
+    <div class="page-header">
+        <button class="btn btn-ghost" @onclick="BackToList">← Volver</button>
+        <div>
+            <h1 class="page-title">@_detail.Name</h1>
+        </div>
+    </div>
+    <div class="card"><div class="loading-msg">Cargando la ficha del descubrimiento…</div></div>
+}
+else if (_detail is not null)
 {
     @* ═══════════════════ DETALLE DE JOB ═══════════════════ *@
     <div class="page-header">
@@ -638,15 +651,19 @@ else
     <div class="page-header">
         <div>
             <h1 class="page-title">Discovery Engine</h1>
-            <p class="page-sub">@_jobs.Count job(s) de descubrimiento</p>
+            <p class="page-sub">@(_jobsLoaded ? $"{_jobs.Count} job(s) de descubrimiento" : "Cargando…")</p>
         </div>
-        <button class="btn btn-ghost btn-sm" @onclick="LoadJobsAsync" title="Actualizar">↺ Actualizar</button>
+        <button class="btn btn-ghost btn-sm" @onclick="LoadJobsAsync" title="Actualizar" disabled="@_cardsLoading">@(_cardsLoading ? "⟳ Cargando…" : "↺ Actualizar")</button>
         <AuthorizeView Roles="Administrador,Operador" Context="cNew">
             <button class="btn btn-primary" @onclick="OpenNew">+ Nuevo Job</button>
         </AuthorizeView>
     </div>
 
-    @if (_jobs.Count == 0)
+    @if (!_jobsLoaded)
+    {
+        <div class="card"><div class="loading-msg">Cargando descubrimientos…</div></div>
+    }
+    else if (_jobs.Count == 0)
     {
         <div class="card"><div class="card-body" style="text-align:center;padding:40px;color:var(--text-dim)">
             No hay Discovery Jobs todavía. Crea uno para empezar a inventariar estudios del PACS origen.
@@ -684,6 +701,10 @@ else
                                 {
                                     <span> · @j.StartDate.Value.ToString("yyyy-MM-dd") → @(j.EndDate?.ToString("yyyy-MM-dd") ?? "")</span>
                                 }
+                                @if (jc is null && _cardsLoading)
+                                {
+                                    <span style="color:var(--text-muted)"> · cargando contadores…</span>
+                                }
                             </div>
                         </div>
                         <span class="btn btn-ghost btn-sm">Abrir →</span>
@@ -691,24 +712,25 @@ else
 
                     @if (hasBody)
                     {
-                        var enumPct = jc!.Stats.StudiesDiscovered > 0
-                            ? Math.Round(jc.CapturedStudies * 100.0 / jc.Stats.StudiesDiscovered, 1)
+                        var uidsPending = jc!.CapturedStudies is null || jc.CapturedInstances is null;
+                        var enumPct = jc.Stats.StudiesDiscovered > 0
+                            ? Math.Round((jc.CapturedStudies ?? 0) * 100.0 / jc.Stats.StudiesDiscovered, 1)
                             : 0;
                         var ci = System.Globalization.CultureInfo.InvariantCulture;
                         <div style="padding:12px 16px">
                             <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:10px">
-                                @foreach (var c in new (string Label, int Value, string Color)[]
+                                @foreach (var c in new (string Label, string Value, string Color)[]
                                 {
-                                    ("Estudios",    jc.Stats.StudiesDiscovered, "var(--text)"),
-                                    ("Nuevos",      jc.Stats.StudiesNew,        "var(--green)"),
-                                    ("Particiones", jc.Stats.TotalPartitions,   "var(--text)"),
-                                    ("Fallidas",    jc.Stats.FailedPartitions,  "var(--red)"),
-                                    ("Instancias",  jc.CapturedInstances,       "var(--purple)"),
+                                    ("Estudios",    jc.Stats.StudiesDiscovered.ToString("N0"), "var(--text)"),
+                                    ("Nuevos",      jc.Stats.StudiesNew.ToString("N0"),        "var(--green)"),
+                                    ("Particiones", jc.Stats.TotalPartitions.ToString("N0"),   "var(--text)"),
+                                    ("Fallidas",    jc.Stats.FailedPartitions.ToString("N0"),  "var(--red)"),
+                                    ("Instancias",  uidsPending ? "calculando…" : jc.CapturedInstances!.Value.ToString("N0"), "var(--purple)"),
                                 })
                                 {
                                     <div style="text-align:center">
                                         <div style="font-size:10px;color:var(--text-muted)">@c.Label</div>
-                                        <div class="mono" style="font-size:15px;font-weight:700;color:@c.Color">@c.Value.ToString("N0")</div>
+                                        <div class="mono" style="font-size:15px;font-weight:700;color:@c.Color">@c.Value</div>
                                     </div>
                                 }
                             </div>
@@ -733,14 +755,14 @@ else
                                         <div class="progress-track" style="flex:1">
                                             <div class="progress-fill" style="width:@(enumPct.ToString("F1", ci))%;background:#a78bfa"></div>
                                         </div>
-                                        <span class="mono" style="color:#a78bfa;font-size:12px;min-width:46px;text-align:right">@(enumPct.ToString("F1", ci))%</span>
+                                        <span class="mono" style="color:#a78bfa;font-size:12px;min-width:46px;text-align:right">@(uidsPending ? "…" : enumPct.ToString("F1", ci) + "%")</span>
                                     </div>
                                 }
-                                else if (jc.CapturedInstances > 0)
+                                else if (jc.CapturedInstances is > 0)
                                 {
                                     <div style="display:flex;align-items:center;gap:8px">
                                         <span style="font-size:10px;color:var(--text-muted);min-width:82px;text-transform:uppercase;letter-spacing:0.06em">Enumerar</span>
-                                        <span style="font-size:10px;color:var(--text-dim)">Sin enumerar · @jc.CapturedInstances.ToString("N0") UIDs en inventario (previo)</span>
+                                        <span style="font-size:10px;color:var(--text-dim)">Sin enumerar · @jc.CapturedInstances.Value.ToString("N0") UIDs en inventario (previo)</span>
                                     </div>
                                 }
                             </div>
@@ -756,8 +778,13 @@ else
     private List<DiscoveryJob>  _jobs = [];
     // Stats por job para las fichas de la lista (contadores + barras). Se cargan en
     // LoadJobsAsync, igual que la lista de Migraciones carga su _statsList.
-    private sealed record JobCard(DiscoveryStats Stats, int CapturedStudies, int CapturedInstances);
+    private sealed record JobCard(DiscoveryStats Stats, int? CapturedStudies, int? CapturedInstances);
     private Dictionary<int, JobCard> _jobCards = new();
+    // Indicadores de carga: con inventarios grandes los conteos de UIDs tardan segundos.
+    // _jobsLoaded: ya se leyó la lista (antes, «No hay Discovery Jobs» mientras cargaba);
+    // _cardsLoading: se están calculando los contadores de las fichas;
+    // _detailLoading: se está abriendo una ficha.
+    private bool _jobsLoaded, _cardsLoading, _detailLoading;
     private List<DicomNode>     _nodes = [];
     private DiscoveryJob?       _detail;
     private DiscoveryStats      _stats = new();
@@ -837,19 +864,32 @@ else
 
     async Task LoadJobsAsync()
     {
-        _jobs = await JobRepo.GetAllAsync();
-        // Stats por job para las fichas (contadores + barras). Una consulta de stats y
-        // dos conteos de enumeración por job, como hace la lista de Migraciones.
-        var cards = new Dictionary<int, JobCard>();
-        foreach (var j in _jobs)
+        _cardsLoading = true;
+        try
         {
-            var st   = await JobRepo.GetStatsAsync(j.Id);
-            var cap  = await DiscInstanceRepo.CountCapturedStudiesForJobAsync(j.Id);
-            var inst = await DiscInstanceRepo.CountInstancesForJobAsync(j.Id);
-            cards[j.Id] = new JobCard(st, cap, inst);
+            _jobs = await JobRepo.GetAllAsync();
+            // La lista se pinta ya; los contadores llegan después (las fichas que aún no
+            // los tienen dicen «cargando contadores…»; al pulsar ↺ se mantienen los anteriores).
+            _jobsLoaded = true;
+            StateHasChanged();
+            // Stats por job para las fichas (contadores + barras). Los UIDs capturados vienen
+            // ya en el job (CapturedStudies/CapturedInstances): antes se contaban recorriendo
+            // las instancias, segundos o minutos con decenas de millones. NULL = aún sin
+            // calcular (lo hace el mantenimiento al arrancar).
+            var cards = new Dictionary<int, JobCard>();
+            foreach (var j in _jobs)
+            {
+                var st = await JobRepo.GetStatsAsync(j.Id);
+                cards[j.Id] = new JobCard(st, j.CapturedStudies, j.CapturedInstances);
+            }
+            _jobCards = cards;
         }
-        _jobCards = cards;
-        StateHasChanged();
+        finally
+        {
+            _cardsLoading = false;
+            ScheduleListPollIfPending();
+            StateHasChanged();
+        }
     }
 
     void OpenNew()
@@ -929,8 +969,16 @@ else
     {
         _partPage = 1;
         _deleteStep = 0; _deleteMsg = ""; _editing = false; _resetStep = 0;
-        _detail = await JobRepo.GetByIdAsync(j.Id);
-        await RefreshDetailAsync();
+        // «Cargando la ficha…» hasta tener estadísticas y conteos (con inventarios grandes,
+        // varios segundos); antes se veía la ficha a ceros, como si estuviera vacía.
+        _detailLoading = true;
+        _detail = j;
+        try
+        {
+            _detail = await JobRepo.GetByIdAsync(j.Id);
+            await RefreshDetailAsync();
+        }
+        finally { _detailLoading = false; }
         // Con la captura en PAUSA no hay nada que refrescar (BD-5): al reanudarla se arranca el refresco.
         if (_detail?.Status == "Running" || _detail?.CaptureStatus == "Running") StartAutoRefresh();
     }
@@ -971,18 +1019,29 @@ else
         _detail = fresh;
 
         _stats             = await JobRepo.GetStatsAsync(fresh.Id);
-        if (withUidCounts)
+        // UIDs capturados: los contadores del job, en cada refresco (no cuestan nada). Solo
+        // si aún no están calculados (jobs antiguos, hasta que pase el mantenimiento) se
+        // cuentan como antes, y con la cadencia de los conteos.
+        if (fresh.CapturedStudies is { } cs && fresh.CapturedInstances is { } ci)
+        {
+            _capturedStudies = cs; _capturedInstances = ci;
+        }
+        else if (withUidCounts)
         {
             _capturedStudies   = await DiscInstanceRepo.CountCapturedStudiesForJobAsync(fresh.Id);
             _capturedInstances = await DiscInstanceRepo.CountInstancesForJobAsync(fresh.Id);
-            _partStats         = await StudyRepo.GetPartitionUidStatsAsync(fresh.Id);
-            _lastUidCounts     = DateTime.UtcNow;
         }
         var (items, total) = await JobRepo.GetPartitionsPagedAsync(fresh.Id, _partPage, PartPageSize);
         _partitions        = items;
         _partTotal         = total;
         _partTotalPages    = total == 0 ? 1 : (int)Math.Ceiling(total / (double)PartPageSize);
         if (_partPage > _partTotalPages) { _partPage = _partTotalPages; }
+        if (withUidCounts)
+        {
+            // Series y UIDs por partición, solo de la página que se ve (antes, de todo el job).
+            _partStats     = await StudyRepo.GetPartitionUidStatsAsync(fresh.Id, items.Select(p => p.Id).ToList());
+            _lastUidCounts = DateTime.UtcNow;
+        }
 
         if (fresh.Status is not "Running" && fresh.CaptureStatus is not "Running") StopAutoRefresh();   // pausa: sin refresco (BD-5)
 

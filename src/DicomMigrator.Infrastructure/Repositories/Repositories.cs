@@ -288,24 +288,42 @@ public class MigrationRepository(IDbContextFactory<AppDbContext> factory, Deferr
 
 public class DiscoveredInstanceRepository(IDbContextFactory<AppDbContext> factory) : IDiscoveredInstanceRepository
 {
-    public async Task<int> AddRangeAsync(long discoveredStudyId,
+    public async Task<int> ReplaceForStudyAsync(long discoveredStudyId,
         IEnumerable<(string SeriesInstanceUid, string SopInstanceUid)> instances)
     {
+        var list = instances.Where(i => !string.IsNullOrEmpty(i.SopInstanceUid)).ToList();
         await using var db = factory.CreateDbContext();
-        var rows = instances
-            .Where(i => !string.IsNullOrEmpty(i.SopInstanceUid))
-            .Select(i => new DiscoveredInstance
+        // Borrar, insertar y ajustar los contadores del job en UNA transacción: o queda todo
+        // o nada, y los contadores nunca se desvían de las filas. Con reintentos de Npgsql
+        // activos, la transacción va dentro de la estrategia de ejecución, que la repite entera.
+        var strategy = db.Database.CreateExecutionStrategy();
+        return await strategy.ExecuteAsync(async () =>
+        {
+            db.ChangeTracker.Clear();   // un reintento parte de cero
+            await using var tx = await db.Database.BeginTransactionAsync();
+            var deleted = await db.DiscoveredInstances
+                .Where(i => i.DiscoveredStudyId == discoveredStudyId)
+                .ExecuteDeleteAsync();
+            db.DiscoveredInstances.AddRange(list.Select(i => new DiscoveredInstance
             {
                 DiscoveredStudyId = discoveredStudyId,
                 SeriesInstanceUid = i.SeriesInstanceUid ?? string.Empty,
                 SopInstanceUid    = i.SopInstanceUid,
-            })
-            .ToList();
+            }));
+            await db.SaveChangesAsync();
 
-        if (rows.Count == 0) return 0;
-        db.DiscoveredInstances.AddRange(rows);
-        await db.SaveChangesAsync();
-        return rows.Count;
+            var dStudies   = (list.Count > 0 ? 1 : 0) - (deleted > 0 ? 1 : 0);
+            var dInstances = list.Count - deleted;
+            if (dStudies != 0 || dInstances != 0)
+                // Con el contador a NULL (aún sin calcular) la suma sigue siendo NULL: lo
+                // calculará el recuento, que ya incluirá estas filas.
+                await db.Database.ExecuteSqlInterpolatedAsync($@"
+UPDATE ""DiscoveryJobs"" SET ""CapturedStudies"" = ""CapturedStudies"" + {dStudies},
+                             ""CapturedInstances"" = ""CapturedInstances"" + {dInstances}
+WHERE ""Id"" = (SELECT ""DiscoveryJobId"" FROM ""DiscoveredStudies"" WHERE ""Id"" = {discoveredStudyId})");
+            await tx.CommitAsync();
+            return list.Count;
+        });
     }
 
     public async Task<int> CountForStudyAsync(long discoveredStudyId)
@@ -322,19 +340,42 @@ public class DiscoveredInstanceRepository(IDbContextFactory<AppDbContext> factor
             .CountAsync(s => s.DiscoveryJobId == jobId && s.Instances.Any());
     }
 
+    /// <summary>Tiempo máximo del recuento de un job: con decenas de millones de UIDs tarda
+    /// minutos, muy por encima de los 30 s por defecto.</summary>
+    private static readonly TimeSpan RecountTimeout = TimeSpan.FromHours(1);
+
+    public async Task RecountForJobAsync(int jobId, CancellationToken ct = default)
+    {
+        await using var db = factory.CreateDbContext();
+        db.Database.SetCommandTimeout(RecountTimeout);
+        // Por estudio primero (índice IX_DiscInstances_Study_Sop) y luego el total del job.
+        await db.Database.ExecuteSqlInterpolatedAsync($@"
+UPDATE ""DiscoveryJobs"" SET ""CapturedStudies"" = c.cs, ""CapturedInstances"" = c.ci
+FROM (SELECT count(*)::int AS cs, coalesce(sum(t.n), 0)::int AS ci
+      FROM (SELECT i.""DiscoveredStudyId"", count(*) AS n
+            FROM ""DiscoveredInstances"" i
+            JOIN ""DiscoveredStudies"" s ON s.""Id"" = i.""DiscoveredStudyId""
+            WHERE s.""DiscoveryJobId"" = {jobId}
+            GROUP BY 1) t) c
+WHERE ""Id"" = {jobId}", ct);
+    }
+
+    public async Task<int> RecountMissingAsync(CancellationToken ct = default)
+    {
+        List<int> ids;
+        await using (var db = factory.CreateDbContext())
+            ids = await db.DiscoveryJobs
+                .Where(j => j.CapturedStudies == null || j.CapturedInstances == null)
+                .Select(j => j.Id).ToListAsync(ct);
+        foreach (var id in ids) await RecountForJobAsync(id, ct);
+        return ids.Count;
+    }
+
     public async Task<int> CountInstancesForJobAsync(int jobId)
     {
         await using var db = factory.CreateDbContext();
         return await db.DiscoveredInstances
             .CountAsync(i => i.Study != null && i.Study.DiscoveryJobId == jobId);
-    }
-
-    public async Task DeleteForStudyAsync(long discoveredStudyId)
-    {
-        await using var db = factory.CreateDbContext();
-        await db.DiscoveredInstances
-            .Where(i => i.DiscoveredStudyId == discoveredStudyId)
-            .ExecuteDeleteAsync();
     }
 }
 

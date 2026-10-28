@@ -1,8 +1,8 @@
-MOVE · DICOM Migrator 1.9.5 · PostgreSQL 16+ · EF Core 9
+MOVE · DICOM Migrator 1.9.6 · PostgreSQL 16+ · EF Core 9
 
 # Base de datos de DICOM Migrator
 
-Esquema físico, índices, ciclo de vida de los estados y flujo de datos entre tablas. El esquema sale del snapshot de migraciones EF (26 migraciones, la última `LineaTiempoRendimiento`) y lo he contrastado con la base local. Los estados y flujos salen del código de los servicios y repositorios.
+Esquema físico, índices, ciclo de vida de los estados y flujo de datos entre tablas. El esquema sale del snapshot de migraciones EF (27 migraciones, la última `ContadoresUidsJob`) y lo he contrastado con la base local. Los estados y flujos salen del código de los servicios y repositorios.
 
 **18** tablas **11** claves foráneas **9** relaciones sin clave foránea **24** índices · 5 únicos · 3 parciales **5** tablas de una sola fila
 
@@ -136,6 +136,8 @@ DicomNodes {
 DiscoveryJobs {
   int Id PK
   int SourcePacsId FK
+  int CapturedInstances "null"
+  int CapturedStudies "null"
   timestamptz CaptureFinishedDate "null"
   timestamptz CaptureStartedDate "null"
   text CaptureStatus
@@ -227,6 +229,15 @@ DicomNodes ||..o{ DiscoveredStudies : "SourcePacsId · sin FK"
 DiscoveryJobs ||..o{ DiscoveryRequests : "DiscoveryJobId · sin FK"
 DiscoveryPartitions |o..o{ DiscoveryRequests : "PartitionId · sin FK"
 ```
+
+`DiscoveryJobs.CapturedStudies` y `CapturedInstances` son los estudios del inventario del job con UIDs capturados y el número de UIDs. Los usan la lista de Discovery y la ficha del job, que antes los contaban recorriendo `DiscoveredInstances` (con decenas de millones de filas, de decenas de segundos a minutos cada vez):
+
+- **Al enumerar un estudio**, el borrado y la reinserción de sus UIDs y el ajuste de los dos contadores van en la misma transacción, así que no se desvían.
+- **Al terminar la enumeración** se recalculan desde las instancias como cuadre (un recorrido de las instancias del job).
+- **Al limpiar el job** se ponen a 0; al borrarlo desaparecen con él.
+- **NULL** significa «sin calcular»: los jobs anteriores a estas columnas. El mantenimiento los calcula en segundo plano unos 30 s después de arrancar el servicio; mientras, la ficha cuenta como antes y la lista muestra «calculando…» y se recarga sola cada 10 s hasta tenerlos.
+
+Las series y los UIDs por partición de la ficha se cuentan solo para la página de particiones que se ve (100), no para todo el job.
 
 ### Migración
 
@@ -638,4 +649,4 @@ La auditoría no se escribe en el momento: va a un búfer en memoria que se vuel
 
 El mantenimiento actúa sobre las siete tablas de más movimiento (`MigrationStudies`, `MigrationInstances`, `DiscoveredStudies`, `DiscoveredInstances`, `DiscoveryPartitions`, `DiscoveryRequests` y `AuditLogs`). El diagrama solo dibuja las flechas principales.
 
-Esquema: Infrastructure/Migrations/AppDbContextModelSnapshot.cs, contrastado con la base local (pg_constraint, pg_indexes, pg_stat_user_tables). Estados y flujos: repositorios y servicios de Infrastructure y páginas de Web, leídos del directorio de trabajo del proyecto (commit c281b51, 17 oct 2026).
+Esquema: Infrastructure/Migrations/AppDbContextModelSnapshot.cs, contrastado con la base local (pg_constraint, pg_indexes, pg_stat_user_tables). Estados y flujos: repositorios y servicios de Infrastructure y páginas de Web, leídos del directorio de trabajo del proyecto (commit 0a38915, 17 oct 2026).

@@ -119,14 +119,22 @@ public interface IInstanceCaptureService
 /// <summary>Repositorio de instancias (UIDs) de ORIGEN capturadas en el descubrimiento (Nivel 2).</summary>
 public interface IDiscoveredInstanceRepository
 {
-    Task<int> AddRangeAsync(long discoveredStudyId,
+    /// <summary>Sustituye los UIDs capturados de un estudio (borra y reinserta) y ajusta los
+    /// contadores CapturedStudies / CapturedInstances de su job, todo en una transacción.
+    /// Devuelve cuántos UIDs quedan guardados.</summary>
+    Task<int> ReplaceForStudyAsync(long discoveredStudyId,
         IEnumerable<(string SeriesInstanceUid, string SopInstanceUid)> instances);
+    /// <summary>Recalcula desde las instancias los contadores de UIDs del job (un recorrido
+    /// de sus instancias: con decenas de millones, minutos). Al terminar la enumeración y
+    /// para los jobs sin contadores.</summary>
+    Task RecountForJobAsync(int jobId, CancellationToken ct = default);
+    /// <summary>Calcula los contadores de los jobs que aún no los tienen (NULL). Devuelve cuántos.</summary>
+    Task<int> RecountMissingAsync(CancellationToken ct = default);
     Task<int> CountForStudyAsync(long discoveredStudyId);
     /// <summary>Nº de estudios de un job que ya tienen UIDs capturados (para la barra de progreso de enumeración).</summary>
     Task<int> CountCapturedStudiesForJobAsync(int jobId);
     /// <summary>Nº total de instancias (UIDs) capturadas de un job (acumulado).</summary>
     Task<int> CountInstancesForJobAsync(int jobId);
-    Task DeleteForStudyAsync(long discoveredStudyId);
 }
 
 /// <summary>Repositorio de instancias (UIDs) de ORIGEN para verificación Nivel 2.</summary>
@@ -386,8 +394,10 @@ public interface IDiscoveryJobRepository
 public interface IDiscoveredStudyRepository
 {
     Task<List<DiscoveredStudy>> GetPagedAsync(DiscoveredStudyFilter filter);
-    /// <summary>Agregados por partición (columnas SERIE/INSTANCE UIDs): suma de series y nº de UIDs capturados, por PartitionId.</summary>
-    Task<Dictionary<int, (int Series, int Instances)>> GetPartitionUidStatsAsync(int jobId);
+    /// <summary>Agregados por partición (columnas SERIE/INSTANCE UIDs): suma de series y nº de
+    /// UIDs capturados, solo de las particiones indicadas (la página que se ve): contar las de
+    /// todo el job recorría todas sus instancias.</summary>
+    Task<Dictionary<int, (int Series, int Instances)>> GetPartitionUidStatsAsync(int jobId, IReadOnlyCollection<int> partitionIds);
     Task<int> CountAsync(DiscoveredStudyFilter filter);
     /// <summary>Upsert by StudyInstanceUID. Returns (inserted, updated) counts.</summary>
     Task<(int inserted, int updated)> UpsertAsync(IEnumerable<DiscoveredStudy> studies);

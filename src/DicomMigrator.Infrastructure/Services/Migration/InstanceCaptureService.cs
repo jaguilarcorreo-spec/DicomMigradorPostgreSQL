@@ -94,6 +94,11 @@ public class InstanceCaptureService(
                 using var scope = scopeFactory.CreateScope();
                 var jr = scope.ServiceProvider.GetRequiredService<IDiscoveryJobRepository>();
                 var status = t.IsFaulted || t.Result?.ErrorMessage is not null ? "Failed" : "Completed";
+                // Cuadre de los contadores de UIDs del job (se mantienen estudio a estudio;
+                // esto corrige cualquier desvío). Un solo recuento al terminar. Si falla, se
+                // quedan los acumulados, que ya son correctos salvo carreras raras.
+                try { await scope.ServiceProvider.GetRequiredService<IDiscoveredInstanceRepository>().RecountForJobAsync(jobId); }
+                catch (Exception rex) { logger.LogWarning(rex, "No se pudieron recalcular los contadores de UIDs del job {Id} (no crítico).", jobId); }
                 await jr.FinishCaptureAsync(jobId, status);
                 logger.LogInformation("Captura Nivel 2 {Status} · job {Id}", status, jobId);
 
@@ -168,7 +173,8 @@ public class InstanceCaptureService(
         // se hacía una consulta por estudio para saltar los ya capturados. Cada tramo abre y
         // cierra su propio contexto, así que no queda un lector abierto durante los C-FIND.
         var studies = discStudyRepo.StreamCaptureCandidatesAsync(jobId, includeCaptured: forceRecapture, ct);
-        var already = forceRecapture ? 0 : await discInstanceRepo.CountCapturedStudiesForJobAsync(jobId);
+        var already = forceRecapture ? 0
+            : job.CapturedStudies ?? await discInstanceRepo.CountCapturedStudiesForJobAsync(jobId);
 
         var threads = Math.Max(1, job.WorkerThreads);
         logger.LogInformation("Captura Nivel 2 · job {Id} · {Done} estudios ya capturados · origen {Alias} · {T} hilo(s)",
@@ -237,9 +243,8 @@ public class InstanceCaptureService(
             throw new InvalidOperationException(enumRes.ErrorMessage
                 ?? (useQido ? "QIDO-instances sin éxito." : "C-FIND IMAGE sin éxito."));
 
-        // Idempotente: delete-then-insert.
-        await discInstanceRepo.DeleteForStudyAsync(discoveredStudyId);
-        return await discInstanceRepo.AddRangeAsync(discoveredStudyId,
+        // Idempotente: delete-then-insert, con los contadores del job, en una transacción.
+        return await discInstanceRepo.ReplaceForStudyAsync(discoveredStudyId,
             enumRes.Instances.Select(i => (i.SeriesInstanceUid, i.SopInstanceUid)));
     }
 }

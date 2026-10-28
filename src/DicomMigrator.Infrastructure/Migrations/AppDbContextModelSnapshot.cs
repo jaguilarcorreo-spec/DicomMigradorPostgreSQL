@@ -316,6 +316,12 @@ namespace DicomMigrator.Infrastructure.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<int?>("CapturedInstances")
+                        .HasColumnType("integer");
+
+                    b.Property<int?>("CapturedStudies")
+                        .HasColumnType("integer");
+
                     b.Property<string>("CreatedBy")
                         .HasColumnType("text");
 

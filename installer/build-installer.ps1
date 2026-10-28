@@ -13,6 +13,11 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+# Sin el mensaje de bienvenida de la primera ejecución de un SDK nuevo: va por stderr y,
+# al lanzar el script con «powershell -File» desde otra consola, PowerShell lo muestra
+# como un error (NativeCommandError) aunque la publicación vaya bien.
+$env:DOTNET_NOLOGO               = '1'
+$env:DOTNET_CLI_TELEMETRY_OPTOUT = '1'
 $root       = Split-Path -Parent $PSScriptRoot
 $installer  = $PSScriptRoot
 $publishDir = Join-Path $installer 'out\publish'

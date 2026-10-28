@@ -312,6 +312,19 @@ public class DatabaseMaintenanceHostedService(
         try { await Task.Delay(TimeSpan.FromSeconds(30), stoppingToken); }
         catch (OperationCanceledException) { return; }
 
+        // Contadores de UIDs de los jobs de descubrimiento que aún no los tienen (jobs
+        // anteriores a esas columnas): un recuento por job, en segundo plano, una sola vez.
+        // Hasta entonces la ficha cuenta como antes y la lista dice «calculando».
+        try
+        {
+            using var scope = scopeFactory.CreateScope();
+            var n = await scope.ServiceProvider.GetRequiredService<IDiscoveredInstanceRepository>()
+                .RecountMissingAsync(stoppingToken);
+            if (n > 0) logger.LogInformation("Contadores de UIDs calculados para {N} job(s) de descubrimiento.", n);
+        }
+        catch (OperationCanceledException) { return; }
+        catch (Exception ex) { logger.LogWarning(ex, "No se pudieron calcular los contadores de UIDs de los jobs (se reintentará en el próximo arranque)."); }
+
         if (runOnStartup)
             await PurgeAsync(retentionDays, indexMaint, stoppingToken);
 

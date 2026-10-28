@@ -102,5 +102,31 @@ public partial class DiscoveryPage
         _timer = null;
     }
 
-    public void Dispose() => StopAutoRefresh();
+    // ── Lista: recarga mientras haya jobs con los contadores de UIDs sin calcular ──
+    // Tras actualizar a la versión con contadores, el mantenimiento los calcula unos 30 s
+    // después de arrancar; la lista abierta antes se quedaba en «calculando…» hasta pulsar ↺.
+    // Mientras quede alguno pendiente, se recarga sola cada 10 s (solo con la lista a la vista).
+    private static readonly TimeSpan ListPendingPollEvery = TimeSpan.FromSeconds(10);
+    private System.Threading.Timer? _listPoll;
+
+    private void ScheduleListPollIfPending()
+    {
+        _listPoll?.Dispose();
+        _listPoll = null;
+        if (_detail is not null || !_jobs.Any(j => j.CapturedStudies is null || j.CapturedInstances is null)) return;
+        _listPoll = new System.Threading.Timer(_ => _ = OnListPollAsync(), null, ListPendingPollEvery, Timeout.InfiniteTimeSpan);
+    }
+
+    private async Task OnListPollAsync()
+    {
+        try { await InvokeAsync(async () => { if (_detail is null && !_cardsLoading) await LoadJobsAsync(); }); }
+        catch (ObjectDisposedException) { /* componente desechado (navegación) */ }
+        catch (Exception ex) { Logger.LogDebug(ex, "Recarga de la lista de descubrimiento falló (se ignora)."); }
+    }
+
+    public void Dispose()
+    {
+        StopAutoRefresh();
+        _listPoll?.Dispose();
+    }
 }

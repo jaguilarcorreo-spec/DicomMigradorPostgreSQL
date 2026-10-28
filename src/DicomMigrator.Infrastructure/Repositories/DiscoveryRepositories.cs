@@ -322,7 +322,10 @@ public class DiscoveryJobRepository(IDbContextFactory<AppDbContext> factory, Def
             .ExecuteUpdateAsync(u => u
                 .SetProperty(j => j.Status, "Draft")
                 .SetProperty(j => j.StartedDate, (DateTime?)null)
-                .SetProperty(j => j.FinishedDate, (DateTime?)null));
+                .SetProperty(j => j.FinishedDate, (DateTime?)null)
+                // El inventario (y con él sus UIDs) se ha vaciado.
+                .SetProperty(j => j.CapturedStudies, 0)
+                .SetProperty(j => j.CapturedInstances, 0));
 
         // El reset vacía el inventario del job para volver a descubrirlo: VACUUM en
         // segundo plano para que el nuevo descubrimiento reutilice las páginas de índice.
@@ -512,20 +515,24 @@ RETURNING p.*",
 
 public class DiscoveredStudyRepository(IDbContextFactory<AppDbContext> factory) : IDiscoveredStudyRepository
 {
-    public async Task<Dictionary<int, (int Series, int Instances)>> GetPartitionUidStatsAsync(int jobId)
+    public async Task<Dictionary<int, (int Series, int Instances)>> GetPartitionUidStatsAsync(int jobId,
+        IReadOnlyCollection<int> partitionIds)
     {
+        if (partitionIds.Count == 0) return new();
+        var pids = partitionIds.ToList();
         await using var db = factory.CreateDbContext();
 
         // Suma de series (conteo declarado en descubrimiento) por partición.
         var series = await db.DiscoveredStudies
-            .Where(s => s.DiscoveryJobId == jobId && s.PartitionId != null)
+            .Where(s => s.DiscoveryJobId == jobId && s.PartitionId != null && pids.Contains(s.PartitionId.Value))
             .GroupBy(s => s.PartitionId!.Value)
             .Select(g => new { Pid = g.Key, Series = g.Sum(x => x.NumberOfStudyRelatedSeries ?? 0) })
             .ToListAsync();
 
         // Nº de UIDs (SOPInstanceUID) capturados por partición (tras enumerar).
         var instances = await db.DiscoveredInstances
-            .Where(i => i.Study != null && i.Study.DiscoveryJobId == jobId && i.Study.PartitionId != null)
+            .Where(i => i.Study != null && i.Study.DiscoveryJobId == jobId && i.Study.PartitionId != null
+                     && pids.Contains(i.Study.PartitionId.Value))
             .GroupBy(i => i.Study!.PartitionId!.Value)
             .Select(g => new { Pid = g.Key, Count = g.Count() })
             .ToListAsync();
