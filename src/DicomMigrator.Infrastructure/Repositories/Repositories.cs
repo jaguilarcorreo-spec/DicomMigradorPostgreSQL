@@ -605,7 +605,7 @@ SELECT count(*) AS ""Total"",
        coalesce(sum({dur}) FILTER (WHERE d.ok), 0)::float8 AS ""ThreadSeconds"",
        min(s.""MigrationStartDate"") FILTER (WHERE d.ok) AS ""FirstStartUtc"",
        max(s.""MigrationDate"") FILTER (WHERE d.ok) AS ""LastEndUtc"",
-       count(*) FILTER (WHERE s.""MigrationStatus"" = 'Failed' AND s.""LastError"" LIKE '%0xB000%') AS ""FailedPartial"",
+       count(*) FILTER (WHERE s.""MigrationStatus"" = 'Failed' AND (s.""LastError"" LIKE '%0xB000%' OR s.""LastError"" LIKE '%rechazó%instancia%')) AS ""FailedPartial"",
        count(*) FILTER (WHERE s.""MigrationStatus"" = 'Failed' AND s.""LastError"" LIKE '%no procesó ninguna%') AS ""FailedNoSend"",
        count(*) FILTER (WHERE d.ok AND {dur} < 2) AS ""D0"",
        count(*) FILTER (WHERE d.ok AND {dur} >= 2 AND {dur} < 5) AS ""D1"",
@@ -1360,6 +1360,20 @@ RETURNING m.*";
                 .SetProperty(s => s.LockedByWorker, (string?)null)
                 .SetProperty(s => s.LockDate, (DateTime?)null)
                 .SetProperty(s => s.MigrationStartDate, (DateTime?)null)
+                .SetProperty(s => s.LastUpdateDate, DateTime.UtcNow));
+    }
+
+    public async Task DeferMigrationAsync(long id)
+    {
+        await using var db = factory.CreateDbContext();
+        await db.MigrationStudies
+            .Where(s => s.Id == id)
+            .ExecuteUpdateAsync(u => u
+                .SetProperty(s => s.MigrationStatus, "RetryPending")
+                .SetProperty(s => s.LockedByWorker, (string?)null)
+                .SetProperty(s => s.LockDate, (DateTime?)null)
+                .SetProperty(s => s.MigrationStartDate, (DateTime?)null)
+                .SetProperty(s => s.MigrationDate, (DateTime?)null)
                 .SetProperty(s => s.LastUpdateDate, DateTime.UtcNow));
     }
 

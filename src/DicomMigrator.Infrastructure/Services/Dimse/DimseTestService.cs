@@ -108,6 +108,8 @@ public class TesterCMoveResult
     public bool    FinalResponseReceived { get; set; }
     /// <summary>Comentario de error (0000,0902) que el PACS adjunta a la respuesta, si lo hay.</summary>
     public string? ErrorComment      { get; set; }
+    /// <summary>Failed SOP Instance UID List (0008,0058) de la respuesta, si el PACS la envía.</summary>
+    public List<string> FailedSopInstanceUids { get; set; } = [];
     public int     ReceivedCount     { get; set; }   // instancias realmente recibidas en el SCP
     public string  DownloadDirectory { get; set; } = string.Empty;
     public string? ErrorMessage      { get; set; }

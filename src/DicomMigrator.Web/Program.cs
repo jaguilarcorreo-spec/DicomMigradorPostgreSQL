@@ -833,6 +833,28 @@ try
         return Results.Empty;
     }).RequireAuthorization(PendingPasswordChange.PasswordChangedPolicy);   // datos de paciente: sesión y contraseña ya cambiada
 
+    // Composición del lote de una migración (pestaña Gráficas) a Excel, con las tartas como
+    // gráficos nativos de Excel. Sale de MigrationComposition: no recorre los estudios.
+    app.MapGet("/migrations/{id:int}/composicion.xlsx",
+        async (int id, IMigrationRepository migrationRepo, IStudyRepository studyRepo) =>
+    {
+        var migration = await migrationRepo.GetByIdAsync(id);
+        if (migration is null) return Results.NotFound();
+        var rows = await studyRepo.GetCompositionAsync(id);
+        if (rows.Count == 0)
+        {
+            // Sin composición guardada (migraciones anteriores a la pestaña): como la pestaña.
+            await studyRepo.RecomputeCompositionAsync(id);
+            rows = await studyRepo.GetCompositionAsync(id);
+        }
+        var bytes = DicomMigrator.Web.Services.CompositionExcel.Build(migration.Name, rows);
+        var safeName = migration.Name;
+        foreach (var c in Path.GetInvalidFileNameChars()) safeName = safeName.Replace(c, '_');
+        // Results.File codifica bien el nombre (filename*) aunque lleve tildes o eñes.
+        return Results.File(bytes, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            $"composicion_{safeName}_{DateTime.Now:yyyyMMdd_HHmmss}.xlsx");
+    }).RequireAuthorization(PendingPasswordChange.PasswordChangedPolicy);
+
     app.MapGet("/discovery/{jobId:int}/export.csv",
         async (int jobId,
                IDiscoveryJobRepository jobRepo,

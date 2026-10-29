@@ -193,6 +193,9 @@ public class CMoveResult
     /// destination". Va aparte de ErrorMessage para no alterar la detección de errores de
     /// conexión, que se basa en el texto de ErrorMessage.</summary>
     public string? ErrorComment      { get; set; }
+    /// <summary>Instancias que el destino no guardó, según el origen: lista Failed SOP Instance
+    /// UID List (0008,0058) de la respuesta del C-MOVE. Opcional: muchos PACS no la envían.</summary>
+    public List<string> FailedSopInstanceUids { get; set; } = [];
     public int     ReceivedCount     { get; set; }   // instancias realmente llegadas al SCP
     public string  DownloadDirectory { get; set; } = string.Empty;
     public string? ErrorMessage      { get; set; }

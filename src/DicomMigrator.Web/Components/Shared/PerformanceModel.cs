@@ -41,8 +41,11 @@ public sealed class PerfRow
     public PerfCell Total = new();
 }
 
+/// <summary>Fila de la tabla por tipo. Studies/Images: migrados; LotStudies/LotImages: del lote
+/// entero según la composición (pestaña Gráficas), null si no hay composición.</summary>
 public sealed record PerfTypeView(string Key, string Code, string Name, string Color, long Studies, long Images,
-                                  double Avg, double Median, double P95, double ThreadSeconds, double Share);
+                                  double Avg, double Median, double P95, double ThreadSeconds, double Share,
+                                  long? LotStudies, long? LotImages);
 
 public sealed class PerformanceModel
 {
@@ -67,6 +70,9 @@ public sealed class PerformanceModel
     public List<PerfRow> Rows { get; } = [];
     public PerfCell[] PerHour { get; }
     public List<PerfTypeView> Types { get; } = [];
+    /// <summary>Estudios e imágenes del lote entero (composición); null si no la hay.</summary>
+    public long? LotStudies { get; }
+    public long? LotImages  { get; }
     public List<PauseSpan> Pauses { get; } = [];
     public bool AuditPurged { get; }
     public bool UseHeatmap => Rows.Count > MaxRowsAsDetail;
@@ -142,16 +148,28 @@ public sealed class PerformanceModel
         foreach (var row in Rows) for (var h = 0; h < AxisHours; h++) PerHour[h].Add(row.Hours[h]);
 
         // ── Tipos de estudio (colores y «Otras» como en la pestaña Gráficas) ──
+        // También los tipos del lote que aún no tienen ningún estudio migrado (0 / total).
         var thread = d.Types.Sum(t => t.ThreadSeconds);
-        foreach (var t in d.Types.OrderByDescending(t => t.Key == "+" ? -1 : t.Studies))
+        var byKey = d.Types.ToDictionary(t => t.Key);
+        var lot = comp?.Modalities.ToDictionary(m => m.Key) ?? new Dictionary<string, ModalitySlice>();
+        var keys = byKey.Keys.Union(lot.Keys)
+            .OrderBy(k => k == CompositionModel.OthersKey ? 1 : 0)
+            .ThenByDescending(k => byKey.TryGetValue(k, out var bt) ? bt.Studies : 0)
+            .ThenByDescending(k => lot.TryGetValue(k, out var ls) ? ls.Studies : 0);
+        foreach (var k in keys)
         {
-            var others = t.Key == "+";
-            var label = others ? (comp?.Modalities.FirstOrDefault(m => m.Key == CompositionModel.OthersKey)?.Label ?? "Otras") : t.Key;
-            Types.Add(new PerfTypeView(t.Key, label, others ? "Resto de modalidades" : CompositionModel.NameOf(t.Key),
-                comp?.ColorOf(others ? CompositionModel.OthersKey : t.Key) ?? "var(--series-other)",
-                t.Studies, t.Images, t.AvgSeconds, t.MedianSeconds, t.P95Seconds, t.ThreadSeconds,
-                thread == 0 ? 0 : t.ThreadSeconds / thread));
+            var others = k == CompositionModel.OthersKey;
+            var t = byKey.GetValueOrDefault(k);
+            var lotRow = lot.GetValueOrDefault(k);
+            var label = others ? (lotRow?.Label ?? "Otras") : k;
+            Types.Add(new PerfTypeView(k, label, others ? "Resto de modalidades" : CompositionModel.NameOf(k),
+                comp?.ColorOf(k) ?? "var(--series-other)",
+                t?.Studies ?? 0, t?.Images ?? 0, t?.AvgSeconds ?? 0, t?.MedianSeconds ?? 0, t?.P95Seconds ?? 0, t?.ThreadSeconds ?? 0,
+                thread == 0 || t is null ? 0 : t.ThreadSeconds / thread,
+                comp is null ? null : lotRow?.Studies ?? 0, comp is null ? null : lotRow?.Images ?? 0));
         }
+        LotStudies = comp?.TotalStudies;
+        LotImages  = comp?.TotalImages;
     }
 
     public DateTime ToLocal(DateTime utc) => TimeZoneInfo.ConvertTimeFromUtc(DateTime.SpecifyKind(utc, DateTimeKind.Utc), Tz);

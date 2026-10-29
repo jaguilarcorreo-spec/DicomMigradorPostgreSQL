@@ -313,6 +313,13 @@ public class CMoveService(ILogger<CMoveService> logger)
                 // move destination". Dice la causa exacta; se muestra en el mensaje (DCM-4).
                 var comment = resp.Command.GetSingleValueOrDefault(DicomTag.ErrorComment, string.Empty);
                 if (!string.IsNullOrWhiteSpace(comment)) result.ErrorComment = comment.Trim();
+                // Instancias que no se pudieron guardar en el destino (0008,0058), en el
+                // identificador de la respuesta final (o de cancelación/fallo). Opcional.
+                if (resp.HasDataset
+                    && resp.Dataset.TryGetValues<string>(DicomTag.FailedSOPInstanceUIDList, out var failedUids)
+                    && failedUids is { Length: > 0 })
+                    result.FailedSopInstanceUids = failedUids.Where(u => !string.IsNullOrWhiteSpace(u))
+                                                             .Select(u => u.Trim()).Distinct().ToList();
 
                 result.Logs.Add($"[INFO] Status={resp.Status} Completed={result.Completed} " +
                                 $"Failed={result.Failed} Remaining={result.Remaining}");

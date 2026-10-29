@@ -279,6 +279,11 @@ public interface IStudyRepository
     /// <summary>Return a single study to 'Pending' and clear its migration lock without
     /// consuming a retry — used on a SOURCE connection error (transient).</summary>
     Task ReleaseMigrationLockAsync(long id);
+    /// <summary>Aparta un estudio a 'RetryPending' sin gastar intento (RetryCount igual) y quita
+    /// su lock: se volverá a tomar cuando no quede ningún 'Pending' y haya pasado el retardo de
+    /// reintento. Para un estudio sin envío durante un episodio del origen: devolverlo a
+    /// 'Pending' hacía que otro worker lo tomara al instante, en bucle.</summary>
+    Task DeferMigrationAsync(long id);
     Task RetryFailedAsync(int migrationId);
     /// <summary>Requeue studies that FAILED VERIFICATION (VerifyFailed) back to
     /// 'Migrated' so the verification workers retry them, resetting VerifyRetryCount.</summary>

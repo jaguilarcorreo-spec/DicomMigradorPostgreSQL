@@ -46,6 +46,38 @@ public class MigrationWorker(
     // Tope de espera a que terminen los workers de una ejecución anterior al reanudar.
     private static readonly TimeSpan PreviousRunWait = TimeSpan.FromSeconds(60);
 
+    // ── Pausa ordenada (auto-pausa y cierre de ventana) ──────────────────────
+    // Cancelar el token corta los C-MOVE en curso: el PACS origen interrumpe el envío al
+    // destino y la imagen que estaba mandando llega a medias (en el VNA: «Did Not Write a full
+    // PixelData length», SERIOUS FAILURE; producción, 23-28/10/2026). Y un estudio grande que
+    // se corta en cada pausa vuelve a la cola sin gastar intento y no termina nunca.
+    // En una pausa ordenada se «drena» la ejecución: los workers dejan de tomar estudios,
+    // terminan el que tienen en curso (el vigilante de inactividad del C-MOVE sigue
+    // protegiendo de un origen colgado) y salen. Su CTS pasa de _cts a _draining, así que se
+    // puede reanudar sin esperar a que acaben; la pausa manual y el apagado sí los cortan.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<int, CancellationTokenSource> _drain    = new();
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<int, CancellationTokenSource> _draining = new();
+
+    // Número de ejecución, para que los nombres de worker no se repitan entre una ejecución
+    // que se está drenando y la siguiente (ReleaseLocksAsync libera por nombre de worker).
+    private static int _runSeq;
+
+    /// <summary>Pausa ordenada de la ejecución en curso: deja de tomar estudios y deja terminar
+    /// los C-MOVE en curso. No toca el estado en BD.</summary>
+    private void DrainRun(int migrationId, CancellationTokenSource cts, CancellationTokenSource drain)
+    {
+        try { drain.Cancel(); } catch (ObjectDisposedException) { }
+        if (_cts.TryRemove(new KeyValuePair<int, CancellationTokenSource>(migrationId, cts)))
+            _draining[migrationId] = cts;
+    }
+
+    /// <summary>Corta también los workers que se estaban drenando (pausa manual, parada).</summary>
+    private void CancelDraining(int migrationId)
+    {
+        if (_draining.TryGetValue(migrationId, out var d))
+            try { d.Cancel(); } catch (ObjectDisposedException) { }
+    }
+
     /// <summary>Cancela TODOS los workers activos de forma inmediata, sin tocar el estado
     /// en BD. Pensado para el apagado del proceso: los estudios en curso quedan como
     /// huérfanos y se recuperan al reiniciar (ReleaseOrphanLocksAsync + auto-reanudación).
@@ -53,7 +85,7 @@ public class MigrationWorker(
     /// reanude sola al volver a arrancar.</summary>
     public void CancelAllForShutdown()
     {
-        foreach (var kv in _cts)
+        foreach (var kv in _cts.Concat(_draining))
         {
             try { kv.Value.Cancel(); } catch { /* ignorar */ }
         }
@@ -161,17 +193,27 @@ public class MigrationWorker(
             // 'Pending'. Lo que siga en 'Queued'/'Migrating' después es huérfano (caída
             // abrupta del proceso: corte de luz, kill, parada forzada del servicio) y se
             // devuelve a 'Pending' sin consumir reintento.
+            var previousAlive = false;
             if (_runs.TryGetValue(migrationId, out var previousRun) && !previousRun.IsCompleted)
             {
                 var finished = await Task.WhenAny(previousRun, Task.Delay(PreviousRunWait, ct)) == previousRun;
                 if (!finished)
-                    logger.LogWarning("Migración {Id}: los workers de la ejecución anterior no terminaron en {S}s; " +
-                        "se rescatan igualmente sus estudios.", migrationId, PreviousRunWait.TotalSeconds);
+                {
+                    // Sigue viva (p. ej. drenándose tras una auto-pausa, con un estudio grande en
+                    // curso): sus estudios NO son huérfanos. Los cierran ellos al terminar;
+                    // rescatarlos lanzaría un segundo C-MOVE del mismo estudio.
+                    previousAlive = true;
+                    logger.LogWarning("Migración {Id}: la ejecución anterior aún termina su(s) estudio(s) en curso; " +
+                        "se arranca sin tocarlos.", migrationId);
+                }
             }
-            var rescued = await StudyRepo(scope).ReleaseOrphanMigrationLocksAsync(migrationId);
-            if (rescued > 0)
-                logger.LogWarning("Migración {Id}: {N} estudio(s) huérfano(s) en 'Queued'/'Migrating' " +
-                    "devuelto(s) a 'Pending' (sin consumir reintento).", migrationId, rescued);
+            if (!previousAlive)
+            {
+                var rescued = await StudyRepo(scope).ReleaseOrphanMigrationLocksAsync(migrationId);
+                if (rescued > 0)
+                    logger.LogWarning("Migración {Id}: {N} estudio(s) huérfano(s) en 'Queued'/'Migrating' " +
+                        "devuelto(s) a 'Pending' (sin consumir reintento).", migrationId, rescued);
+            }
 
             // Rango de modalidad de los estudios en cola, según la prioridad ACTUAL de la
             // migración: lo usa el índice de la cola para que cada worker tome su estudio
@@ -207,20 +249,27 @@ public class MigrationWorker(
 
         // Launch worker threads — each creates its own scope
         var priorities = ParsePriority(migration.ModalityPriority);
+        var drain = new CancellationTokenSource();
+        _drain[migrationId] = drain;
+        var run = Interlocked.Increment(ref _runSeq);
         var tasks = Enumerable.Range(0, migration.WorkerThreads)
-            .Select(i => RunWorkerLoopAsync(migration, $"WORKER-{i + 1}", priorities, cts))
+            .Select(i => RunWorkerLoopAsync(migration, $"WORKER-{i + 1}.{run}", priorities, cts, drain))
             .ToArray();
 
         // Fire and forget — completion handler runs when ALL workers exit
         // (either cancelled via Pause/Cancel, or naturally when the queue empties)
         _runs[migrationId] = Task.WhenAll(tasks).ContinueWith(async _ =>
         {
-            // If the token was cancelled, this was a Pause/Cancel — don't override status
-            var wasCancelled = cts.IsCancellationRequested;
-            // Retirar SOLO nuestro CTS: si tras una pausa ya se reanudó la migración, la
-            // entrada de _cts es la de la nueva ejecución y no debemos quitarla ni liberarla.
-            if (_cts.TryRemove(new KeyValuePair<int, CancellationTokenSource>(migrationId, cts)))
+            // Cancelado o drenado = pausa/parada (manual, auto-pausa, ventana…): el estado ya
+            // está puesto, no se cierra la migración.
+            var wasCancelled = cts.IsCancellationRequested || drain.IsCancellationRequested;
+            // Retirar SOLO nuestros CTS: si tras una pausa ya se reanudó la migración, las
+            // entradas son las de la nueva ejecución y no debemos quitarlas ni liberarlas.
+            var pair = new KeyValuePair<int, CancellationTokenSource>(migrationId, cts);
+            if (_cts.TryRemove(pair) | _draining.TryRemove(pair))
                 cts.Dispose();
+            _drain.TryRemove(new KeyValuePair<int, CancellationTokenSource>(migrationId, drain));
+            drain.Dispose();
 
             if (wasCancelled) return;  // Pause/Cancel already set the right status
 
@@ -463,9 +512,13 @@ public class MigrationWorker(
     }
 
     private async Task RunWorkerLoopAsync(MigrationEntity migration, string workerId,
-        string[] priorities, CancellationTokenSource cts)
+        string[] priorities, CancellationTokenSource cts, CancellationTokenSource drain)
     {
         var ct = cts.Token;
+        // Esperas del bucle: las corta también el drenaje (pausa ordenada), para salir sin
+        // esperar. El C-MOVE en curso usa solo 'ct': el drenaje no lo corta.
+        using var idleCts = CancellationTokenSource.CreateLinkedTokenSource(ct, drain.Token);
+        var idle = idleCts.Token;
         logger.LogInformation("Worker {Id} started for migration {MigId}", workerId, migration.Id);
         int emptyPolls = 0;
         int connErrors = 0;   // fallos de conexión consecutivos (origen caído o saturado, destino caído)
@@ -475,7 +528,7 @@ public class MigrationWorker(
 
         try
         {
-            while (!ct.IsCancellationRequested)
+            while (!idle.IsCancellationRequested)
             {
                 // Cada vuelta del bucle tiene su propio try/catch: un error inesperado
                 // (BD caída unos segundos, fallo puntual de red…) NO saca al worker para
@@ -505,7 +558,7 @@ public class MigrationWorker(
                     {
                         // Window closed — wait without processing. The WindowScheduler will
                         // flip the migration to Paused; meanwhile workers idle politely.
-                        await Task.Delay(30_000, ct);
+                        await Task.Delay(30_000, idle);
                         continue;
                     }
 
@@ -537,7 +590,7 @@ public class MigrationWorker(
                         // Backoff: 5s normally, 30s if we've been empty many times
                         // (remaining studies are in RetryPending delay)
                         var delay = emptyPolls > 3 ? 30_000 : 5_000;
-                        await Task.Delay(delay, ct);
+                        await Task.Delay(delay, idle);
                         continue;
                     }
 
@@ -626,16 +679,18 @@ public class MigrationWorker(
                                 }
                                 await MigrationRepo(scope).SetMigrationAutoPausedAsync(migration.Id, true);
                             }
-                            // Cancelar el token compartido: detiene a los demás workers de
-                            // inmediato (no esperan a llegar cada uno al umbral) y hace que el
-                            // handler de finalización NO marque "Completed" (wasCancelled=true).
-                            cts.Cancel();
+                            // Pausa ORDENADA: los demás workers dejan de tomar estudios (no
+                            // esperan a llegar cada uno al umbral) pero terminan el C-MOVE que
+                            // tengan en curso, que sí funcionaba: cortarlo dejaba una imagen a
+                            // medias en el destino. El handler de finalización ve el drenaje
+                            // y NO cierra la migración.
+                            DrainRun(migration.Id, cts, drain);
                             break;
                         }
                         // Espera corta y fija mientras acumulamos hacia el umbral, para que
                         // la auto-pausa se dispare en un tiempo razonable (no un backoff largo
                         // que retrasaría la pausa varios minutos).
-                        await Task.Delay(ConnBackoff.PrePauseWait, ct);
+                        await Task.Delay(ConnBackoff.PrePauseWait, idle);
                     }
                     else
                     {
@@ -645,7 +700,7 @@ public class MigrationWorker(
                         AutoPauseIncidents.Resolve("MIGRATE", migration.Id);
                     }
                 }
-                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                catch (OperationCanceledException) when (idle.IsCancellationRequested)
                 {
                     break;
                 }
@@ -659,7 +714,7 @@ public class MigrationWorker(
                     // para que no espere a la caducidad del bloqueo.
                     if (!await ReleaseOwnLocksAsync(migration.Id, workerId))
                         releasePending = true;
-                    await Task.Delay(wait, ct);
+                    await Task.Delay(wait, idle);
                 }
             }
         }
@@ -740,6 +795,7 @@ public class MigrationWorker(
                           $"Completed={result.Completed} Received={result.ReceivedCount} " +
                           $"Failed={result.Failed} Warning={result.Warning} Remaining={result.Remaining} {result.DurationMs}ms";
             var baseMsg = techMsg;
+            string? rejection = null;   // texto del rechazo del destino, si lo hubo (para detectar repeticiones)
 
             if (!success && result.Completed == 0 && result.DicomStatus == null)
             {
@@ -758,13 +814,21 @@ public class MigrationWorker(
             {
                 techMsg += " — " + MoveDestinationUnknownMessage(freshMigration, result.ErrorComment);
             }
-            else if (!success && result.DicomStatus is >= 0xA700 and <= 0xA7FF)
+            else if (!success && result.DicomStatus is >= 0xA700 and <= 0xA7FF && result.Failed == 0)
             {
                 techMsg += " — El PACS origen no tiene recursos para atender el C-MOVE ahora (saturado). " +
                            "Se reintentará sin gastar intento." +
                            (result.ErrorComment is null ? "" : $" Mensaje del PACS: «{result.ErrorComment}».");
             }
-            else if (!success && result.Completed == 0)
+            else if (!success && result.Failed > 0 && result.Completed > 0)
+            {
+                // El destino guardó una parte y rechazó el resto (SOP Class no admitida,
+                // objeto que no acepta…). El rechazo con Completed = 0 se explica más abajo,
+                // tras comprobar que el destino responde.
+                rejection = RejectedByDestination(result, freshMigration);
+                techMsg += rejection;
+            }
+            else if (!success && result.Completed == 0 && result.Failed == 0)
             {
                 techMsg += " — El PACS origen no procesó ninguna instancia. Verifica que el StudyInstanceUID existe en el origen." +
                            (result.ErrorComment is null ? "" : $" Mensaje del PACS: «{result.ErrorComment}».");
@@ -816,7 +880,11 @@ public class MigrationWorker(
             }
             // 0xA7xx "Out of resources": el PACS origen está saturado. Transitorio: se
             // devuelve el estudio sin gastar reintento y cuenta para la auto-pausa.
-            if (!success && result.DicomStatus is >= 0xA700 and <= 0xA7FF)
+            // Solo si no hubo sub-operaciones fallidas: con Failed > 0, 0xA702 («Unable to
+            // perform sub-operations») es lo que muchos PACS devuelven cuando fallaron TODOS
+            // los envíos al destino (destino caído o que rechaza las instancias), y eso se
+            // decide más abajo comprobando el destino.
+            if (!success && result.DicomStatus is >= 0xA700 and <= 0xA7FF && result.Failed == 0)
             {
                 await studyRepo.ReleaseMigrationLockAsync(study.Id);
                 await auditRepo.AddAsync(new MigrationAuditLog
@@ -900,15 +968,50 @@ public class MigrationWorker(
                         $"el destino {freshMigration.DestNode!.Alias} no responde (C-ECHO)",
                         freshMigration.DestNode!.Alias);
                 }
+                // El destino SÍ responde y el origen dice que no pudo guardar nada en él
+                // (Failed > 0): el DESTINO rechazó todas las instancias (p. ej. un estudio con
+                // solo un objeto de una SOP Class que no admite). Es un fallo del estudio en
+                // ese destino: gasta intento, y NO cuenta como «el origen no envía», que
+                // llevaba a la auto-pausa por algo que no es del origen.
+                if (result.Failed > 0)
+                {
+                    OriginEmptyMoves.RecordSent(migration.Id);
+                    rejection = RejectedByDestination(result, freshMigration);
+                    techMsg += rejection;
+                    var cur      = await studyRepo.GetByIdAsync(study.Id);
+                    var attempts = (cur?.RetryCount ?? study.RetryCount) + 1;
+                    var next     = attempts >= migration.MaxRetries ? "Failed" : "RetryPending";
+                    if (next != "Failed" && SameRejectionAsBefore(study.LastError, result, rejection))
+                    {
+                        next = "Failed";
+                        techMsg += RepeatedRejectionNote;
+                    }
+                    await RecordAttemptAsync(studyRepo, study, workerId, next,
+                        $"[Intento {attempts}/{migration.MaxRetries}] {techMsg}");
+                    await auditRepo.AddAsync(new MigrationAuditLog
+                    {
+                        MigrationId      = migration.Id,
+                        Action           = "C-MOVE",
+                        Level            = next == "Failed" ? "ERROR" : "WARN",
+                        Result           = "ERROR",
+                        StudyInstanceUid = study.StudyInstanceUid,
+                        UserOrProcess    = workerId,
+                        TechnicalMessage = $"Fallo intento {attempts}/{migration.MaxRetries}. {techMsg}",
+                    });
+                    return MoveOutcome.Done;
+                }
+
                 // El destino SÍ responde. ¿Episodio del origen? Si la mayoría de los últimos
                 // C-MOVE de la migración tampoco enviaron nada, el problema es del origen
                 // (no de este estudio): devolverlo sin gastar intento y contar como fallo
                 // transitorio, que lleva a la auto-pausa (ver OriginEmptyMoves).
-                if (OriginEmptyMoves.RecordEmpty(migration.Id, out var empties))
+                if (OriginEmptyMoves.RecordEmpty(migration.Id, study.StudyInstanceUid, out var empties))
                 {
-                    await studyRepo.ReleaseMigrationLockAsync(study.Id);
+                    // A 'RetryPending', no a 'Pending': si volviera al principio de la cola, otro
+                    // worker lo tomaría al instante y repetiría el mismo C-MOVE vacío en bucle.
+                    await studyRepo.DeferMigrationAsync(study.Id);
                     logger.LogWarning("[{Worker}] {Uid}: el origen no envió ninguna instancia, como en {N} de los últimos {W} " +
-                        "estudios. Episodio del origen: estudio devuelto sin gastar intento.",
+                        "estudios distintos. Episodio del origen: estudio apartado sin gastar intento.",
                         workerId, study.StudyInstanceUid, empties, OriginEmptyMoves.Window);
                     await auditRepo.AddAsync(new MigrationAuditLog
                     {
@@ -918,13 +1021,13 @@ public class MigrationWorker(
                         Result           = "ERROR",
                         StudyInstanceUid = study.StudyInstanceUid,
                         UserOrProcess    = workerId,
-                        TechnicalMessage = $"Origen sin envío (reintento sin penalizar): {baseMsg} — {empties} de los últimos " +
-                                           $"{OriginEmptyMoves.Window} estudios tampoco recibieron nada. El problema parece del PACS " +
+                        TechnicalMessage = $"Origen sin envío (reintento sin penalizar): {baseMsg} — {empties} estudios distintos de los últimos " +
+                                           $"{OriginEmptyMoves.Window} C-MOVE tampoco recibieron nada. El problema parece del PACS " +
                                            "origen (tarea programada, almacenamiento ocupado…), no del estudio.",
                     });
                     return MoveOutcome.Transient(
                         $"el origen {freshMigration.OriginNode?.Alias} responde pero no envía imágenes " +
-                        $"({empties} de los últimos {OriginEmptyMoves.Window} estudios sin ninguna instancia)",
+                        $"({empties} estudios distintos sin ninguna instancia en los últimos {OriginEmptyMoves.Window} C-MOVE)",
                         freshMigration.OriginNode?.Alias);
                 }
 
@@ -958,6 +1061,11 @@ public class MigrationWorker(
                 var currentStudy = await studyRepo.GetByIdAsync(study.Id);
                 var retries      = (currentStudy?.RetryCount ?? study.RetryCount) + 1;
                 var nextStatus   = retries >= migration.MaxRetries ? "Failed" : "RetryPending";
+                if (nextStatus != "Failed" && rejection is not null && SameRejectionAsBefore(study.LastError, result, rejection))
+                {
+                    nextStatus = "Failed";
+                    techMsg += RepeatedRejectionNote;
+                }
 
                 await RecordAttemptAsync(studyRepo, study, workerId, nextStatus,
                     $"[Intento {retries}/{migration.MaxRetries}] {techMsg}");
@@ -999,6 +1107,53 @@ public class MigrationWorker(
             heartbeatCts.Cancel();
             await heartbeat;   // nunca lanza: traga sus propios errores y la cancelación
         }
+    }
+
+    /// <summary>Nota del motivo cuando un rechazo se repite idéntico y se deja de reintentar.</summary>
+    private const string RepeatedRejectionNote =
+        " Mismo rechazo que en el intento anterior: no se reintenta más («Reintentar fallidos» lo vuelve a intentar con sus intentos completos).";
+
+    /// <summary>¿El intento anterior del estudio terminó con exactamente el mismo rechazo del
+    /// destino (mismo estado, mismos contadores y mismas instancias rechazadas)? Entonces
+    /// reintentarlo no cambiará nada: el rechazo es del destino y es estable. En un lote de
+    /// producción, los reintentos de 26 estudios así ocuparon ~10 min sin poder salir bien.
+    /// <paramref name="previousError"/> es el LastError del estudio tal como se tomó de la cola:
+    /// MarkMigratingAsync lo borra al empezar el intento.</summary>
+    private static bool SameRejectionAsBefore(string? previousError, CMoveResult r, string rejection) =>
+        previousError is not null
+        && previousError.Contains(rejection, StringComparison.Ordinal)
+        && previousError.Contains($"Status=0x{r.DicomStatus:X4} Completed={r.Completed} ", StringComparison.Ordinal)
+        && previousError.Contains($" Failed={r.Failed} ", StringComparison.Ordinal);
+
+    /// <summary>Máximo de UIDs de instancias rechazadas que se guardan en LastError.</summary>
+    private const int MaxRejectedUidsShown = 50;
+
+    /// <summary>Texto del rechazo de instancias por el destino, con los SOPInstanceUID que
+    /// indique el origen (0008,0058), si los envía.</summary>
+    private static string RejectedByDestination(CMoveResult r, MigrationEntity m)
+    {
+        var dest = m.DestNode?.Alias ?? "el destino";
+        // Estudio entero rechazado: en producción (29/10/2026) los 26 fallos de un lote eran de
+        // 20 pacientes, todos con TODOS sus estudios rechazados y ninguno a medias: la causa
+        // estaba en el paciente en el destino, no en el tipo de objeto. Con una parte guardada,
+        // lo habitual sí es una SOP Class o un objeto concreto que el destino no admite.
+        var text = r.Completed > 0
+            ? $" — El destino {dest} rechazó {r.Failed} instancia(s) y guardó {r.Completed}: suele ser una SOP Class que no " +
+              "admite o un objeto concreto que no acepta. Reintentar no lo arregla si el destino no cambia."
+            : $" — El destino {dest} rechazó las {r.Failed} instancia(s) y no guardó ninguna. Cuando rechaza el estudio entero, la " +
+              "causa suele estar en el destino y no en las imágenes: el paciente ya existe allí con otros datos (nombre, sexo, " +
+              "fecha de nacimiento o emisor del ID), está en cuarentena o fusionado, o el estudio está bloqueado. Revisa el " +
+              "registro del destino. Si fallan todos los estudios de un mismo paciente, casi seguro es eso.";
+        if (r.FailedSopInstanceUids.Count > 0)
+        {
+            var shown = r.FailedSopInstanceUids.Take(MaxRejectedUidsShown).ToList();
+            text += $" Instancias rechazadas según el origen: {string.Join(", ", shown)}" +
+                    (r.FailedSopInstanceUids.Count > shown.Count ? $" (y {r.FailedSopInstanceUids.Count - shown.Count} más)." : ".");
+        }
+        else
+            text += " El origen no indicó cuáles: búscalas en el registro del destino.";
+        if (r.ErrorComment is not null) text += $" Mensaje del PACS: «{r.ErrorComment}».";
+        return text;
     }
 
     /// <summary>Registra el resultado del intento solo si el estudio sigue siendo de este worker
@@ -1063,10 +1218,23 @@ public class MigrationWorker(
 
     public async Task PauseAsync(int migrationId, bool byWindow = false)
     {
-        if (_cts.TryRemove(migrationId, out var cts))
+        if (byWindow)
         {
-            await cts.CancelAsync();
-            cts.Dispose();
+            // Cierre de ventana: pausa ORDENADA, como la auto-pausa. Los C-MOVE en curso
+            // terminan (unos minutos después del cierre, como mucho lo que tarde ese estudio)
+            // en vez de cortarse y dejar una imagen a medias en el destino.
+            if (_cts.TryGetValue(migrationId, out var cur) && _drain.TryGetValue(migrationId, out var dr))
+                DrainRun(migrationId, cur, dr);
+        }
+        else
+        {
+            if (_cts.TryRemove(migrationId, out var cts))
+            {
+                await cts.CancelAsync();
+                cts.Dispose();
+            }
+            // Pausa o parada manual, o licencia: inmediata, también para lo que se drenaba.
+            CancelDraining(migrationId);
         }
         using var scope = scopeFactory.CreateScope();
         await MigrationRepo(scope).UpdateStatusAsync(migrationId, "Paused");

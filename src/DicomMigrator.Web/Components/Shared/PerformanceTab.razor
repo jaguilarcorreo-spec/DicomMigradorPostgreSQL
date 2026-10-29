@@ -123,28 +123,26 @@ else
         <div class="cmp-header"><span class="cmp-title">Por tipo de estudio</span><span class="cmp-muted">modalidad principal, como en Gráficas</span></div>
         <div class="cmp-body">
             <div class="cmp-tbl-wrap"><table class="cmp-table perf-types">
-                <thead><tr><th>Tipo</th><th>Estudios</th><th>Imágenes</th><th>Img/estudio</th><th>Media</th><th>Mediana</th><th>P95</th><th>s / 1.000 img por hilo</th><th>Parte del tiempo</th></tr></thead>
+                <thead><tr><th>Tipo</th><th>Estudios<br /><span class="perf-th-sub">migrados / lote</span></th><th>Imágenes<br /><span class="perf-th-sub">migradas / lote</span></th><th>Img/estudio</th><th>Media</th><th>Mediana</th><th>P95</th><th>Parte del tiempo</th></tr></thead>
                 <tbody>
                     @foreach (var t in m.Types)
                     {
                         var perStudy = t.Studies == 0 ? 0 : (double)t.Images / t.Studies;
                         <tr>
                             <td><span class="cmp-sw" style="background:@t.Color"></span>@t.Code · @t.Name</td>
-                            <td>@PerformanceModel.N(t.Studies)</td><td>@PerformanceModel.N(t.Images)</td><td>@PerformanceModel.N(perStudy, perStudy < 10 ? 1 : 0)</td>
-                            <td>@PerformanceModel.Dur(t.Avg)</td><td>@PerformanceModel.Dur(t.Median)</td><td>@PerformanceModel.Dur(t.P95)</td>
-                            <td>@(t.Images == 0 ? "—" : PerformanceModel.N(t.ThreadSeconds / t.Images * 1000))</td>
+                            <td>@OfLot(t.Studies, t.LotStudies)</td><td>@OfLot(t.Images, t.LotImages)</td><td>@(t.Studies == 0 ? "—" : PerformanceModel.N(perStudy, perStudy < 10 ? 1 : 0))</td>
+                            <td>@(t.Studies == 0 ? "—" : PerformanceModel.Dur(t.Avg))</td><td>@(t.Studies == 0 ? "—" : PerformanceModel.Dur(t.Median))</td><td>@(t.Studies == 0 ? "—" : PerformanceModel.Dur(t.P95))</td>
                             <td><div class="perf-barcell"><span>@PerformanceModel.Hm(t.Share * m.ActiveSeconds)</span><span class="perf-minibar"><i style="width:@F(t.Share * 100)%"></i></span><span class="pct">@PerformanceModel.N(t.Share * 100, 1) %</span></div></td>
                         </tr>
                     }
                 </tbody>
                 <tfoot><tr>
-                    <td>Total</td><td>@PerformanceModel.N(d.Migrated)</td><td>@PerformanceModel.N(d.Images)</td><td>@PerformanceModel.N((double)d.Images / Math.Max(1, d.Migrated), 1)</td>
+                    <td>Total</td><td>@OfLot(d.Migrated, m.LotStudies)</td><td>@OfLot(d.Images, m.LotImages)</td><td>@PerformanceModel.N((double)d.Images / Math.Max(1, d.Migrated), 1)</td>
                     <td>@PerformanceModel.Dur(d.ThreadSeconds / Math.Max(1, d.Migrated))</td><td></td><td></td>
-                    <td>@(d.Images == 0 ? "—" : PerformanceModel.N(d.ThreadSeconds / d.Images * 1000))</td>
                     <td><div class="perf-barcell"><span>@PerformanceModel.Hm(m.ActiveSeconds)</span><span class="perf-minibar"><i style="width:100%"></i></span><span class="pct">100 %</span></div></td>
                 </tr></tfoot>
             </table></div>
-            <p class="cmp-note">«Media», «Mediana» y «P95»: lo que tarda un estudio de ese tipo de principio a fin. «s / 1.000 img»: coste para un hilo; los tipos pequeños salen caros por imagen por el coste fijo de cada C-MOVE. «Parte del tiempo»: el tiempo trabajado repartido según lo que consumió cada tipo.</p>
+            <p class="cmp-note">«Estudios» e «Imágenes»: migrados / total del lote (el de la composición, pestaña Gráficas). «Media», «Mediana» y «P95»: lo que tarda un estudio de ese tipo de principio a fin. «Parte del tiempo»: el tiempo trabajado repartido según lo que consumió cada tipo.</p>
         </div>
     </section>
 
@@ -271,6 +269,10 @@ else
 
     private static string F(double v) => v.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
     private static string Compact(double v) => v >= 1e6 ? $"{PerformanceModel.N(v / 1e6, 1)} M" : v >= 1e4 ? $"{PerformanceModel.N(v / 1e3)} mil" : PerformanceModel.N(v);
+    /// <summary>«migrados / lote» (solo migrados si no hay composición).</summary>
+    private static string OfLot(long done, long? lot) =>
+        lot is null ? PerformanceModel.N(done) : $"{PerformanceModel.N(done)} / {PerformanceModel.N(lot.Value)}";
+
     private static string BigN(long n) => n >= 10_000_000 ? $"{PerformanceModel.N(n / 1e6, 1)} M" : PerformanceModel.N(n);
     private static double Nice(double max)
     {

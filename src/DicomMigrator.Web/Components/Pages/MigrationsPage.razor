@@ -716,6 +716,17 @@
                                         {
                                             <div style="margin-top:3px;font-size:10px;color:var(--yellow)">+@s.VerifyExtraCount sobran</div>
                                         }
+                                        @if (s.MigrationStatus is "Failed" or "RetryPending" && !string.IsNullOrWhiteSpace(s.LastError))
+                                        {
+                                            var rejected = s.LastError.Contains("rechazó", StringComparison.Ordinal);
+                                            <div style="margin-top:3px">
+                                                <button class="btn btn-ghost btn-sm" style="padding:1px 6px;font-size:10px;color:@(rejected ? "var(--red)" : "var(--text-dim)")"
+                                                        title="Ver el motivo del último fallo de migración"
+                                                        @onclick="() => _errorReport = s">
+                                                    @(rejected ? "⚠ El destino rechazó instancias" : "Ver motivo")
+                                                </button>
+                                            </div>
+                                        }
                                     </td>
                                     <td class="mono small" style="color:var(--text-dim)">
                                         @if (s.MigrationDate.HasValue &&
@@ -1120,6 +1131,30 @@ else
     }
 }
 
+@* ── Motivo del último fallo de migración (LastError), con las instancias rechazadas ── *@
+@if (_errorReport is not null)
+{
+    <div style="position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:50;display:flex;align-items:center;justify-content:center"
+         @onclick="() => _errorReport = null">
+        <div class="card" style="width:min(680px,92vw);max-height:82vh;display:flex;flex-direction:column" @onclick:stopPropagation="true">
+            <div class="card-body" style="display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--border)">
+                <div>
+                    <div style="font-size:13px;color:var(--text)">Motivo del último fallo de migración</div>
+                    <div class="mono small text-dim" style="margin-top:2px">@_errorReport.StudyInstanceUid</div>
+                </div>
+                <button class="btn btn-ghost btn-sm" @onclick="() => _errorReport = null">✕</button>
+            </div>
+            <div class="card-body" style="overflow:auto">
+                <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px">
+                    Estado <strong style="color:var(--text)">@_errorReport.MigrationStatus</strong> ·
+                    @_errorReport.RetryCount intento(s) fallido(s)
+                </div>
+                <pre class="mono small" style="white-space:pre-wrap;word-break:break-all;margin:0;color:var(--text)">@_errorReport.LastError</pre>
+            </div>
+        </div>
+    </div>
+}
+
 @* ── Informe de UIDs faltantes (Verificación Nivel 2) ── *@
 @if (_missingReport is not null)
 {
@@ -1180,6 +1215,7 @@ else
     private MigrationStats?     _stats;
     private bool                _migHasN2;   // solo lectura: la migración incluye UIDs Nivel 2 (viene del descubridor)
     private MigrationStudy?     _missingReport;   // estudio cuyo informe de faltantes se muestra
+    private MigrationStudy?     _errorReport;     // estudio cuyo motivo de fallo (LastError) se muestra
 
     // ── Nivel de verificación realmente aplicado (honestidad del "Verified") ──
     static string VerifiedByLabel(string? v) => v switch

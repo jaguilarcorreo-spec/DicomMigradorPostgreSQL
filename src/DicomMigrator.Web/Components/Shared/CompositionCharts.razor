@@ -17,6 +17,7 @@
 @using DicomMigrator.Core.Models
 @inject IStudyRepository StudyRepo
 @inject IJSRuntime JS
+@inject NavigationManager Nav
 @inject ILogger<CompositionCharts> Logger
 
 <div class="cmp-root">
@@ -51,6 +52,10 @@ else
     <section class="cmp-card" aria-label="Composición del lote">
         <div class="cmp-header">
             <span class="cmp-title">Composición del lote</span>
+            @* Descarga como el resumen de Migraciones: navegación completa al endpoint, que
+               devuelve el fichero adjunto (la página no se recarga). *@
+            <button type="button" class="cmp-link cmp-export" @onclick="ExportExcel"
+                    title="Descargar en Excel la composición (por modalidad y por mes) con las dos tartas">⬇ Excel</button>
             <div class="cmp-seg" role="group" aria-label="Vista">
                 <button type="button" aria-pressed="@(_table ? "false" : "true")" @onclick="() => _table = false">Gráficas</button>
                 <button type="button" aria-pressed="@(_table ? "true" : "false")" @onclick="() => _table = true">Tabla</button>
@@ -254,6 +259,8 @@ else
         }
         finally { _busy = false; }
     }
+
+    private void ExportExcel() => Nav.NavigateTo($"/migrations/{MigrationId}/composicion.xlsx", forceLoad: true);
 
     private void SetGrouping(DateGrouping g) { _grouping = g; _drill = null; }
 
